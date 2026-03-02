@@ -75,6 +75,26 @@ kubectl run test --image=busybox --rm -it --restart=Never \
 # Shows Kata guest kernel, not host kernel
 ```
 
+## Per-pod VM sizing
+
+Kata annotations control vCPUs and memory per pod:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: large-worker
+  annotations:
+    io.katacontainers.config.hypervisor.default_vcpus: "4"
+    io.katacontainers.config.hypervisor.default_memory: "4096"
+spec:
+  runtimeClassName: kata
+  containers:
+    - name: worker
+      image: busybox
+      command: ["sleep", "infinity"]
+```
+
 ## Multi-node
 
 k3s natively supports server + agent topology:
