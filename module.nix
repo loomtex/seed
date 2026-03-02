@@ -13,6 +13,18 @@ let
     qemu = pkgs.qemu_kvm;
   }.${cfg.hypervisor};
 
+  hypervisorConfigFile = {
+    clh = "configuration-clh.toml";
+    qemu = "configuration-qemu.toml";
+  }.${cfg.hypervisor};
+
+  # Upstream kata config with enable_annotations expanded to allow
+  # per-pod VM sizing via annotations (vCPUs, memory)
+  kataConfig = builtins.replaceStrings
+    [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params"]'' ]
+    [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory"]'' ]
+    (builtins.readFile "${pkgs.kata-runtime}/share/defaults/kata-containers/${hypervisorConfigFile}");
+
   runtimeClassManifest = pkgs.writeText "seed-kata-runtime-class.yaml" ''
     apiVersion: node.k8s.io/v1
     kind: RuntimeClass
@@ -104,6 +116,9 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Kata config with VM sizing annotations enabled
+    environment.etc."kata-containers/configuration.toml".text = kataConfig;
+
     # ip forwarding for pod networking
     boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
 
