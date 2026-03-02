@@ -41,7 +41,7 @@
     diskImage = null;
     forwardPorts = [
       { from = "host"; host.port = 2222; guest.port = 22; }
-      { from = "host"; host.port = 6443; guest.port = 6443; }
+      { from = "host"; host.port = 16443; guest.port = 6443; }
     ];
     # Nested KVM for Kata VMs inside this VM
     qemu.options = [ "-cpu host" "-enable-kvm" ];
