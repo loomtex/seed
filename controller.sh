@@ -83,7 +83,10 @@ generate_pod() {
           name: $instance,
           image: $image,
           stdin: true,
-          tty: true
+          tty: true,
+          securityContext: {
+            privileged: true
+          }
         }]
       }
     }'
