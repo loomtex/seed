@@ -16,6 +16,8 @@ seed/
 ├── controller.sh          # Reconciliation loop (bash)
 ├── persistence.nix        # Impermanence integration for /var/lib/rancher
 ├── vm.nix                 # NixOS VM configuration for testing
+├── patches/
+│   └── kata-multi-mount-rootfs.patch  # Kata shim: multi-mount rootfs + recursive bind
 ├── lib/
 │   ├── mkInstance.nix     # Build a Seed instance from a NixOS module
 │   └── mkImage.nix        # OCI image from a Seed instance (nix-snapshotter)
@@ -48,9 +50,14 @@ When `seed.enable = true`, the module sets:
 
 ### Kata config patching
 
-Two layers of patching:
+Three layers of patching:
 
-**Overlay (flake.nix)**: Upstream `kata-runtime` nixpkg builds both QEMU and CLH configuration files, but only includes QEMU binary in the derivation output. The CLH config (`configuration-clh.toml`) hardcodes a path to `cloud-hypervisor` inside the kata-runtime store path, where it doesn't exist. The overlay patches `configuration-clh.toml` to point to the actual `cloud-hypervisor` package binary.
+**Multi-mount rootfs patch (`patches/kata-multi-mount-rootfs.patch`)**: Upstream kata-runtime only handles single-mount rootfs, but nix-snapshotter returns overlay + N bind mounts (one per nix store path). The patch fixes three issues in kata's Go shim:
+1. `create.go`: Accept rootfs metadata when `len(Rootfs) >= 1` (was `== 1`)
+2. `create.go`: Copy `Mount.Target` field in `doMount()` for subdirectory bind mount resolution (containerd uses Target to place bind mounts at `/nix/store/xxx` inside the rootfs)
+3. `mount_linux.go`: Use `MS_BIND|MS_REC` in `bindMountContainerRootfs()` so nix store sub-mounts propagate through virtiofs into the guest VM
+
+**CLH path fix (flake.nix overlay)**: Upstream `kata-runtime` nixpkg builds both QEMU and CLH configuration files, but only includes QEMU binary in the derivation output. The CLH config (`configuration-clh.toml`) hardcodes a path to `cloud-hypervisor` inside the kata-runtime store path, where it doesn't exist. The overlay patches `configuration-clh.toml` to point to the actual `cloud-hypervisor` package binary.
 
 **VM sizing annotations (module.nix)**: Kata's upstream config only allows 3 annotations (`enable_iommu`, `virtio_fs_extra_args`, `kernel_params`). The module reads the upstream config via `builtins.readFile`, patches `enable_annotations` with `builtins.replaceStrings` to add `default_vcpus`, `default_memory`, `default_maxvcpus`, `default_maxmemory`, and drops it at `/etc/kata-containers/configuration.toml` (which kata checks before package defaults). This enables per-pod VM sizing via annotations like `io.katacontainers.config.hypervisor.default_vcpus: "4"`.
 
@@ -135,7 +142,7 @@ Wraps `pkgs.nix-snapshotter.buildImage` to produce an OCI image from a `mkInstan
 - Creates an FHS rootfs scaffold (proc, sys, dev, run, tmp, etc, var, nix/store)
 - Symlinks `${toplevel}` to `/run/current-system`
 - Sets entrypoint to `${toplevel}/init`
-- Uses `resolvedByNix = false` — Kata shares rootfs via virtiofs, and nix-snapshotter's bind-mount resolution doesn't survive the host→VM boundary. The image contains the full NixOS closure.
+- Uses `resolvedByNix = true` — nix-snapshotter resolves store paths via bind mounts, and the patched kata-runtime propagates them through virtiofs into the guest VM via recursive bind mount (`MS_BIND|MS_REC`).
 
 The image ref format is `nix:0/nix/store/...-seed-<name>` which nix-snapshotter resolves.
 

@@ -1,9 +1,9 @@
 # seed.lib.mkImage — OCI image from a Seed instance
 #
 # Wraps nix-snapshotter's buildImage to produce an image that boots NixOS
-# inside a Kata VM. Uses resolvedByNix = false because Kata shares the rootfs
-# via virtiofs — bind-mount-based resolution doesn't survive the host→VM boundary.
-# The image is larger (full NixOS closure) but works with Kata's shim.
+# inside a Kata VM. Uses resolvedByNix = true — nix-snapshotter resolves
+# store paths via bind mounts, and the patched kata-runtime propagates them
+# through virtiofs into the guest VM via recursive bind mount (MS_BIND|MS_REC).
 { pkgs }:
 
 { name, toplevel, ... }:
@@ -18,7 +18,7 @@ let
   '';
 in pkgs.nix-snapshotter.buildImage {
   name = "seed-${name}";
-  resolvedByNix = false;
+  resolvedByNix = true;
   copyToRoot = rootfs;
   config.entrypoint = [ "${toplevel}/init" ];
 }
