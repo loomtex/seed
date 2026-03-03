@@ -23,10 +23,21 @@
     mkInstance = import ./lib/mkInstance.nix { inherit nixpkgs self; };
     mkImage = import ./lib/mkImage.nix { inherit pkgs; };
   in {
-    # Overlay: fix kata-runtime CLH paths (upstream bug — package builds QEMU
-    # config but CLH config points to non-existent binary in kata-runtime store path)
+    # Overlay: patch kata-runtime for nix-snapshotter + CLH paths
     overlays.default = final: prev: {
       kata-runtime = prev.kata-runtime.overrideAttrs (old: {
+        # Patch kata shim to support multi-mount rootfs from snapshotters
+        # like nix-snapshotter that return overlay + bind mounts:
+        # 1. Populate rootFs metadata from first mount even with multiple mounts
+        # 2. Copy Mount.Target field for subdirectory bind mount resolution
+        # 3. Use recursive bind (MS_BIND|MS_REC) so sub-mounts propagate
+        #    through virtiofs into the guest VM
+        patches = (old.patches or []) ++ [
+          ./patches/kata-multi-mount-rootfs.patch
+        ];
+
+        # Fix CLH paths (upstream bug — package builds QEMU config but CLH
+        # config points to non-existent binary in kata-runtime store path)
         postInstall = (old.postInstall or "") + ''
           sed -i \
             -e 's!path = ".*cloud-hypervisor"!path = "${final.cloud-hypervisor}/bin/cloud-hypervisor"!' \

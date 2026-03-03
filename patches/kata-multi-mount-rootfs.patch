@@ -1,0 +1,59 @@
+--- a/pkg/containerd-shim-v2/create.go
++++ b/pkg/containerd-shim-v2/create.go
+@@ -76,7 +76,7 @@
+ 
+ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*container, error) {
+ 	rootFs := vc.RootFs{}
+-	if len(r.Rootfs) == 1 {
++	if len(r.Rootfs) >= 1 {
+ 		m := r.Rootfs[0]
+ 		rootFs.Source = m.Source
+ 		rootFs.Type = m.Type
+@@ -303,7 +303,7 @@
+ }
+ 
+ func checkAndMount(s *service, r *taskAPI.CreateTaskRequest) (bool, error) {
+-	if len(r.Rootfs) == 1 {
++	if len(r.Rootfs) >= 1 {
+ 		m := r.Rootfs[0]
+ 
+ 		// Plug the block backed rootfs directly instead of mounting it.
+@@ -341,6 +341,7 @@
+ 	for _, rm := range mounts {
+ 		m := &mount.Mount{
+ 			Type:    rm.Type,
++			Target:  rm.Target,
+ 			Source:  rm.Source,
+ 			Options: rm.Options,
+ 		}
+
+--- a/virtcontainers/mount_linux.go
++++ b/virtcontainers/mount_linux.go
+@@ -101,7 +101,26 @@
+ 
+ 	rootfsDest := filepath.Join(shareDir, cid, rootfsDir)
+ 
+-	return bindMount(ctx, cRootFs, rootfsDest, readonly, "private")
++	absSource, rootfsDest, err := evalMountPath(cRootFs, rootfsDest)
++	if err != nil {
++		return err
++	}
++
++	// Use recursive bind mount to propagate sub-mounts (e.g., nix store
++	// bind mounts) into the shared directory for virtiofs guest access.
++	if err := syscall.Mount(absSource, rootfsDest, "bind", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
++		return fmt.Errorf("Could not bind mount %v to %v: %v", absSource, rootfsDest, err)
++	}
++
++	if err := syscall.Mount("none", rootfsDest, "", syscall.MS_PRIVATE, ""); err != nil {
++		return fmt.Errorf("Could not make mount point %v private: %v", rootfsDest, err)
++	}
++
++	if readonly {
++		return syscall.Mount(absSource, rootfsDest, "bind", uintptr(syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY), "")
++	}
++
++	return nil
+ }
+ 
+ func bindUnmountContainerShareDir(ctx context.Context, sharedDir, cID, target string) error {
