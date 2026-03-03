@@ -218,21 +218,16 @@ reap_old() {
   # PVCs are never reaped — delete manually if needed
 }
 
-# Reconcile a single instance. Outputs "name=storepath" on stdout for hashing.
+# Reconcile a single instance using a pre-built image path.
 reconcile_instance() {
-  local name=$1 gen=$2
-
-  log "[$name] building image..."
-  local image_path
-  image_path=$(nix build "${FLAKE_PATH}#seeds.${SYSTEM}.${name}.image" --no-link --print-out-paths 2>&1) \
-    || { log "[$name] build failed: $image_path"; return 1; }
+  local name=$1 gen=$2 image_path=$3
 
   local image_ref="nix:0${image_path}"
 
   log "[$name] evaluating metadata..."
   local meta_json
-  meta_json=$(nix eval "${FLAKE_PATH}#seeds.${SYSTEM}.${name}.meta" --json 2>&1) \
-    || { log "[$name] eval failed: $meta_json"; return 1; }
+  meta_json=$(nix eval "${FLAKE_PATH}#seeds.${SYSTEM}.${name}.meta" --json 2>/dev/null) \
+    || { log "[$name] eval failed"; return 1; }
 
   local vcpus memory
   vcpus=$(echo "$meta_json" | jq -r '.resources.vcpus')
@@ -306,7 +301,7 @@ main() {
 
     # List all instance names from the flake
     local instances
-    instances=$(nix eval "${FLAKE_PATH}#seeds.${SYSTEM}" --apply 'builtins.attrNames' --json 2>/dev/null \
+    instances=$(nix eval "${FLAKE_PATH}#seeds.${SYSTEM}" --apply builtins.attrNames --json 2>/dev/null \
       | jq -r '.[]') \
       || { log "failed to list instances"; sleep "$INTERVAL"; continue; }
 
@@ -316,9 +311,10 @@ main() {
     local build_failed=0
 
     for name in $instances; do
+      log "[$name] building image..."
       local path
-      path=$(nix build "${FLAKE_PATH}#seeds.${SYSTEM}.${name}.image" --no-link --print-out-paths 2>&1) \
-        || { log "[$name] build failed: $path"; (( build_failed++ )) || true; continue; }
+      path=$(nix build "${FLAKE_PATH}#seeds.${SYSTEM}.${name}.image" --no-link --print-out-paths 2>/dev/null) \
+        || { log "[$name] build failed"; (( build_failed++ )) || true; continue; }
       image_paths[$name]="$path"
       hash_input+="${name}=${path}"$'\n'
     done
@@ -346,7 +342,7 @@ main() {
 
     local failed=0
     for name in $instances; do
-      reconcile_instance "$name" "$gen" || (( failed++ )) || true
+      reconcile_instance "$name" "$gen" "${image_paths[$name]}" || (( failed++ )) || true
     done
 
     if [ "$failed" -eq 0 ]; then

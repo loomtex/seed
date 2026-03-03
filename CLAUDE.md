@@ -135,7 +135,7 @@ Wraps `pkgs.nix-snapshotter.buildImage` to produce an OCI image from a `mkInstan
 - Creates an FHS rootfs scaffold (proc, sys, dev, run, tmp, etc, var, nix/store)
 - Symlinks `${toplevel}` to `/run/current-system`
 - Sets entrypoint to `${toplevel}/init`
-- Uses `resolvedByNix = true` — nix-snapshotter bind-mounts store paths at runtime, keeping the image tiny
+- Uses `resolvedByNix = false` — Kata shares rootfs via virtiofs, and nix-snapshotter's bind-mount resolution doesn't survive the host→VM boundary. The image contains the full NixOS closure.
 
 The image ref format is `nix:0/nix/store/...-seed-<name>` which nix-snapshotter resolves.
 
