@@ -122,6 +122,112 @@ nix run github:loomtex/seed#vm
 
 The VM boots with k3s + Kata ready. Requires KVM on the host.
 
+## Instances
+
+A Seed instance is a full NixOS configuration that runs inside a Kata VM on the cluster. Write standard NixOS modules and add seed-specific options for platform integration.
+
+### Quick start
+
+```bash
+nix flake init -t github:loomtex/seed#instance
+# edit web.nix
+nix build .#seeds.x86_64-linux.web.image
+```
+
+Or in an existing flake:
+
+```nix
+{
+  inputs.seed.url = "github:loomtex/seed";
+
+  outputs = { seed, ... }: {
+    seeds.x86_64-linux.web = seed.lib.mkInstance {
+      name = "web";
+      module = ./web.nix;
+    };
+  };
+}
+```
+
+### Instance module example
+
+```nix
+{ pkgs, ... }:
+
+{
+  seed.size = "m";
+  seed.expose.http = 8080;
+  seed.storage.data = "1Gi";
+  seed.connect.redis = "my-redis";
+
+  services.nginx.enable = true;
+  services.nginx.virtualHosts.default = {
+    listen = [{ addr = "0.0.0.0"; port = 8080; }];
+    root = "/seed/storage/data/www";
+  };
+}
+```
+
+### Instance options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `seed.size` | enum `[xs s m l xl]` | `"s"` | VM sizing tier (see table below) |
+| `seed.expose.<name>` | port or `{ port, protocol }` | `{}` | Ports to expose via k8s service |
+| `seed.storage.<name>` | size string or `{ size, mountPoint }` | `{}` | Persistent volumes |
+| `seed.connect.<name>` | service string or `{ service, port }` | `{}` | Service discovery for other instances |
+
+### Size tiers
+
+| Tier | vCPUs | Memory |
+|------|-------|--------|
+| `xs` | 1 | 512 MB |
+| `s` | 1 | 1 GB |
+| `m` | 2 | 2 GB |
+| `l` | 4 | 4 GB |
+| `xl` | 8 | 8 GB |
+
+## Controller
+
+The controller is a systemd service that reconciles instance definitions into running Kata pods. It evaluates the flake, builds OCI images via nix-snapshotter, and applies k8s manifests.
+
+### How it works
+
+1. Lists instance names from `seeds.<system>` in the flake
+2. Builds each instance's OCI image (`nix build ...#seeds.<system>.<name>.image`)
+3. Computes a generation hash from the set of image store paths
+4. Skips reconciliation if the deployed generation matches
+5. Applies pods, PVCs, and services with `seed.loomtex.com/*` labels
+6. Reaps resources with non-matching generation (except PVCs)
+
+Pods are immutable — if an instance's image changes, the controller deletes and recreates the pod.
+
+### Enable the controller
+
+```nix
+{
+  imports = [
+    seed.nixosModules.default
+    seed.nixosModules.controller
+  ];
+
+  seed.enable = true;
+  seed.controller = {
+    enable = true;
+    flakePath = "/path/to/your/flake";
+  };
+}
+```
+
+### Controller options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `seed.controller.enable` | bool | `false` | Enable the controller |
+| `seed.controller.flakePath` | str | required | Path to flake with `seeds.*` outputs |
+| `seed.controller.interval` | int | `30` | Reconciliation interval (seconds) |
+| `seed.controller.namespace` | str | `"default"` | Kubernetes namespace |
+
 ## Home Manager modules
 
 For rootless k3s (per-user k3s instances), Seed re-exports nix-snapshotter's home-manager modules:

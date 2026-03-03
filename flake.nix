@@ -21,6 +21,7 @@
     };
 
     mkInstance = import ./lib/mkInstance.nix { inherit nixpkgs self; };
+    mkImage = import ./lib/mkImage.nix { inherit pkgs; };
   in {
     # Overlay: fix kata-runtime CLH paths (upstream bug — package builds QEMU
     # config but CLH config points to non-existent binary in kata-runtime store path)
@@ -57,19 +58,24 @@
 
       # Stripped NixOS profile for Kata VM guests
       instance-base = ./instance-base.nix;
+
+      # Controller: reconciles instance definitions into Kata pods
+      controller = ./controller.nix;
     };
 
-    # Helper: build a Seed instance from a NixOS module
+    # Helpers: build Seed instances and images
     lib.mkInstance = mkInstance;
+    lib.mkImage = mkImage;
 
     # Re-export nix-snapshotter home modules for rootless k3s consumers
     homeModules = nix-snapshotter.homeModules;
 
-    # Test VM: boots k3s + Kata, requires KVM on host
+    # Test VM: boots k3s + Kata + controller, requires KVM on host
     nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
       inherit system;
       modules = [
         self.nixosModules.default
+        self.nixosModules.controller
         ./vm.nix
       ];
     };
@@ -80,9 +86,23 @@
     };
 
     # Dogfooding: seed's own instances (initially a web example for testing)
-    seeds.${system}.web = mkInstance {
-      name = "web";
-      module = ./templates/instance/web.nix;
+    seeds.${system} = let
+      instances = {
+        web = mkInstance {
+          name = "web";
+          module = ./templates/instance/web.nix;
+        };
+      };
+    in builtins.mapAttrs (name: instance:
+      instance // {
+        image = mkImage { inherit name; inherit (instance) toplevel; };
+      }
+    ) instances;
+
+    # Automated tests (run with: nix flake check)
+    checks.${system} = {
+      # Tests metadata eval + image build (no KVM needed)
+      image = import ./tests/image.nix { inherit self pkgs nixpkgs; };
     };
 
     templates = {
