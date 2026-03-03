@@ -19,6 +19,8 @@
         self.overlays.default
       ];
     };
+
+    mkInstance = import ./lib/mkInstance.nix { inherit nixpkgs self; };
   in {
     # Overlay: fix kata-runtime CLH paths (upstream bug — package builds QEMU
     # config but CLH config points to non-existent binary in kata-runtime store path)
@@ -33,8 +35,9 @@
       });
     };
 
-    # NixOS module: one import gives you k3s + nix-snapshotter + Kata/CLH
+    # NixOS modules
     nixosModules = {
+      # Node-level: k3s + nix-snapshotter + Kata/CLH
       default = {
         imports = [
           nix-snapshotter.nixosModules.default
@@ -48,7 +51,16 @@
 
       # Import alongside impermanence to auto-persist /var/lib/rancher
       persistence = ./persistence.nix;
+
+      # Instance-level: seed.size, seed.expose, seed.storage, seed.connect
+      instance = ./instance.nix;
+
+      # Stripped NixOS profile for Kata VM guests
+      instance-base = ./instance-base.nix;
     };
+
+    # Helper: build a Seed instance from a NixOS module
+    lib.mkInstance = mkInstance;
 
     # Re-export nix-snapshotter home modules for rootless k3s consumers
     homeModules = nix-snapshotter.homeModules;
@@ -67,9 +79,22 @@
       program = "${self.nixosConfigurations.vm.config.system.build.vm}/bin/run-nixos-vm";
     };
 
-    templates.default = {
-      path = ./templates/default;
-      description = "Seed compute node — k3s + nix-snapshotter + Kata/CLH";
+    # Dogfooding: seed's own instances (initially a web example for testing)
+    seeds.${system}.web = mkInstance {
+      name = "web";
+      module = ./templates/instance/web.nix;
+    };
+
+    templates = {
+      default = {
+        path = ./templates/default;
+        description = "Seed compute node — k3s + nix-snapshotter + Kata/CLH";
+      };
+
+      instance = {
+        path = ./templates/instance;
+        description = "Seed instance — NixOS workload running in a Kata VM";
+      };
     };
   };
 }
