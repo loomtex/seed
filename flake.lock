@@ -68,11 +68,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1772565388,
-        "narHash": "sha256-7vcBgPMbWUUktrfN0eECqRrY5SYXpXyAsT+CLP3GMnA=",
+        "lastModified": 1772568026,
+        "narHash": "sha256-WY+vxkRNiTLMdbtfmV0RfGFg6R1jAVPOTEydjg84jm8=",
         "owner": "joshperry",
         "repo": "nix-snapshotter",
-        "rev": "66bd24d5b417ed9c5b89f806ce81898e4e12e2e5",
+        "rev": "9569070e6f85584013d9a2ea0fbc7ac811d9dc9a",
         "type": "github"
       },
       "original": {
