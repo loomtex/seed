@@ -33,20 +33,13 @@ let
     # Log streamer: wait for journald, then stream JSON to container stdout.
     # This process inherits the container's stdout fd and keeps it across
     # the parent's exec into init. systemd adopts it as an orphan.
+    #
+    # trap: systemd sends SIGTERM to stray processes on startup — ignore it.
+    # TERM=dumb: prevent journalctl from adding ANSI color codes to JSON.
     (
       trap "" TERM HUP PIPE
-      echo "SEED-LOG: streamer BASHPID=$BASHPID starting, fd1=$(readlink /proc/self/fd/1 2>/dev/null || echo unknown)"
-      i=0
-      while [ $i -lt 30 ]; do
-        i=$((i + 1))
-        echo "SEED-LOG: tick $i, /run/systemd/journal=$(ls /run/systemd/journal/ 2>&1 || true)"
-        if [ -S /run/systemd/journal/stdout ]; then
-          echo "SEED-LOG: journald socket found at tick $i, starting stream"
-          exec journalctl -f --output=json --no-pager
-        fi
-        sleep 2
-      done
-      echo "SEED-LOG: gave up waiting for journald after 60s"
+      while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
+      TERM=dumb exec journalctl -f --output=json --no-pager
     ) &
 
     exec ${toplevel}/init
