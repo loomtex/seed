@@ -29,8 +29,9 @@ let
     export PATH=${pkgs.coreutils}/bin
 
     # FIFO bridge: systemd service → cat → container stdout → kubectl logs
-    mkfifo /tmp/seed-log
-    cat /tmp/seed-log &
+    # Use /dev because /tmp may get a tmpfs overlay from systemd
+    mkfifo /dev/seed-log
+    cat /dev/seed-log &
 
     exec ${toplevel}/init
   '';
