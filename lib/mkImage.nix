@@ -23,6 +23,8 @@ let
   # log aggregators. Without this, only NixOS stage 2 boot messages
   # appear — systemd captures everything else into its internal journal.
   entrypoint = pkgs.writeShellScript "seed-init" ''
+    export PATH=${pkgs.coreutils}/bin:${pkgs.systemd}/bin
+
     ${toplevel}/init &
     SYSD_PID=$!
 
@@ -33,7 +35,7 @@ let
     while [ ! -e /run/systemd/journal/stdout ]; do sleep 0.5; done
 
     # Stream structured journal to stdout (kubectl logs / log aggregator)
-    ${pkgs.systemd}/bin/journalctl -f --output=json --no-pager &
+    journalctl -f --output=json --no-pager &
 
     # Wait for systemd — if it exits, the container should stop
     wait $SYSD_PID
