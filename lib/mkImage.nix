@@ -34,9 +34,11 @@ let
     # This process inherits the container's stdout fd and keeps it across
     # the parent's exec into init. systemd adopts it as an orphan.
     (
-      trap '' TERM HUP PIPE
+      trap "" TERM HUP PIPE
       echo "SEED-LOG: streamer BASHPID=$BASHPID starting, fd1=$(readlink /proc/self/fd/1 2>/dev/null || echo unknown)"
-      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+      i=0
+      while [ $i -lt 30 ]; do
+        i=$((i + 1))
         echo "SEED-LOG: tick $i, /run/systemd/journal=$(ls /run/systemd/journal/ 2>&1 || true)"
         if [ -S /run/systemd/journal/stdout ]; then
           echo "SEED-LOG: journald socket found at tick $i, starting stream"
