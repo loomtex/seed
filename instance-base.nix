@@ -7,8 +7,8 @@
 
 {
   # boot.isContainer disables kernel, initrd, bootloader, and hardware scan.
-  # Kata VMs run real systemd (not container init), so if this strips too much,
-  # replace with manual boot.loader/initrd/kernel disables.
+  # Kata VMs run real systemd (not container init), but isContainer gives us
+  # the right closure size. Services needing /run/* dirs should use RuntimeDirectory.
   boot.isContainer = lib.mkDefault true;
 
   # No documentation — smaller closure
@@ -38,6 +38,14 @@
 
   # No polkit — headless instances don't need privilege negotiation
   security.polkit.enable = lib.mkDefault false;
+
+  # Forward structured journal to console — kubectl logs captures /dev/console
+  # output from Kata VMs, but systemd journal is internal by default
+  services.journald.extraConfig = lib.mkDefault ''
+    ForwardToConsole=yes
+    TTYPath=/dev/console
+    MaxLevelConsole=info
+  '';
 
   system.stateVersion = lib.mkDefault "25.11";
 }

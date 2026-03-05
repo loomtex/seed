@@ -10,9 +10,6 @@
   seed.expose.api = { port = 8081; protocol = "tcp"; };
   seed.storage.data = "1Gi";
 
-  # Forward journal to console so kubectl logs captures service output
-  services.journald.extraConfig = "ForwardToConsole=yes";
-
   services.powerdns = {
     enable = true;
     extraConfig = ''
@@ -31,8 +28,12 @@
       log-dns-queries=no
       cache-ttl=60
       zone-cache-refresh-interval=0
+      socket-dir=/run/pdns
     '';
   };
+
+  # pdns needs /run/pdns for its control socket
+  systemd.services.pdns.serviceConfig.RuntimeDirectory = "pdns";
 
   # Ensure pdns user owns the storage directory
   systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 pdns pdns -" ];
