@@ -10,6 +10,9 @@
   seed.expose.api = { port = 8081; protocol = "tcp"; };
   seed.storage.data = "1Gi";
 
+  # Forward journal to console so kubectl logs captures service output
+  services.journald.extraConfig = "ForwardToConsole=yes";
+
   services.powerdns = {
     enable = true;
     extraConfig = ''
