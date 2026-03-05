@@ -11,6 +11,7 @@ set -euo pipefail
 
 FLAKE_PATH="${SEED_FLAKE_PATH:?SEED_FLAKE_PATH must be set}"
 INTERVAL="${SEED_INTERVAL:-30}"
+REFRESH_TRIGGER="${SEED_REFRESH_TRIGGER:-/var/lib/seed-controller/refresh}"
 
 LABEL_MANAGED="seed.loom.farm/managed-by=seed"
 
@@ -346,9 +347,17 @@ main() {
   while true; do
     log "reconciliation starting..."
 
+    # Check for refresh trigger (webhook / manual)
+    local nix_refresh=""
+    if [ -f "$REFRESH_TRIGGER" ]; then
+      log "refresh trigger detected, bypassing nix cache"
+      nix_refresh="--refresh"
+      rm -f "$REFRESH_TRIGGER"
+    fi
+
     # List all instance names from the flake
     local instances
-    instances=$(nix eval "${FLAKE_PATH}#seeds" --apply builtins.attrNames --json 2>/dev/null \
+    instances=$(nix eval "${FLAKE_PATH}#seeds" --apply builtins.attrNames --json $nix_refresh 2>/dev/null \
       | jq -r '.[]') \
       || { log "failed to list instances"; sleep "$INTERVAL"; continue; }
 
@@ -360,7 +369,7 @@ main() {
     for name in $instances; do
       log "[$name] building image..."
       local path
-      path=$(nix build "${FLAKE_PATH}#seeds.${name}.image" --no-link --print-out-paths 2>/dev/null) \
+      path=$(nix build "${FLAKE_PATH}#seeds.${name}.image" --no-link --print-out-paths $nix_refresh 2>/dev/null) \
         || { log "[$name] build failed"; (( build_failed++ )) || true; continue; }
       image_paths[$name]="$path"
       hash_input+="${name}=${path}"$'\n'

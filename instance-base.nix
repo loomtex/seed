@@ -39,13 +39,5 @@
   # No polkit — headless instances don't need privilege negotiation
   security.polkit.enable = lib.mkDefault false;
 
-  # Forward structured journal to console — kubectl logs captures /dev/console
-  # output from Kata VMs, but systemd journal is internal by default
-  services.journald.extraConfig = lib.mkDefault ''
-    ForwardToConsole=yes
-    TTYPath=/dev/console
-    MaxLevelConsole=info
-  '';
-
   system.stateVersion = lib.mkDefault "25.11";
 }
