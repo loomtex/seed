@@ -34,10 +34,12 @@ let
     # This process inherits the container's stdout fd and keeps it across
     # the parent's exec into init. systemd adopts it as an orphan.
     (
+      echo "SEED-LOG: streamer pid=$$ starting, fd1=$(readlink /proc/self/fd/1 2>/dev/null || echo unknown)"
       # Wait for journald socket
       while [ ! -S /run/systemd/journal/stdout ]; do
         sleep 1
       done
+      echo "SEED-LOG: journald found, starting stream"
       exec journalctl -f --output=json --no-pager
     ) &
 
