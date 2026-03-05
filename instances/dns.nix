@@ -31,14 +31,20 @@
     '';
   };
 
+  # Ensure pdns user owns the storage directory
+  systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 pdns pdns -" ];
+
   # Initialize SQLite schema on first boot
   systemd.services.pdns-init-db = {
     description = "Initialize PowerDNS SQLite database";
     wantedBy = [ "pdns.service" ];
     before = [ "pdns.service" ];
+    after = [ "systemd-tmpfiles-setup.service" ];
     unitConfig.ConditionPathExists = "!/seed/storage/data/pdns.db";
     serviceConfig = {
       Type = "oneshot";
+      User = "pdns";
+      Group = "pdns";
       ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db < ${pkgs.pdns}/share/doc/pdns/schema.sqlite3.sql'";
     };
   };
