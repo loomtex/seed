@@ -128,7 +128,7 @@ Implemented in `instance.nix`, these options live in a separate NixOS evaluation
 | Option | Purpose |
 |--------|---------|
 | `seed.size` | VM sizing tier: xs (1/512MB), s (1/1GB), m (2/2GB), l (4/4GB), xl (8/8GB) |
-| `seed.expose` | Ports to expose via k8s service. Accepts bare port or `{ port, protocol }` |
+| `seed.expose` | Ports to expose via k8s service. Accepts bare port or `{ port, protocol }`. Protocols: `tcp`, `udp`, `dns` (both TCP+UDP), `http`, `grpc` |
 | `seed.storage` | Persistent volumes. Accepts size string or `{ size, mountPoint }` |
 | `seed.connect` | Service discovery. Accepts service name or `{ service, port }` |
 | `seed.meta` | Read-only computed metadata for controller consumption |
@@ -150,14 +150,17 @@ The image ref format is `nix:0/nix/store/...-seed-<name>` which nix-snapshotter 
 
 A bash-based systemd service (`controller.sh` + `controller.nix`) that runs on the seed node with direct access to nix and kubectl.
 
+**Namespace isolation**: each flake gets its own k8s namespace derived deterministically from the flake URI. `namespace = "s-" + base32(sha256(flake_uri))[:12]`. No flake can choose or influence its namespace — platform-enforced isolation. The `SEED_NAMESPACE` env var overrides this for dev/testing only.
+
 **Reconciliation loop:**
 
-1. Lists instance names from `seeds.<system>` in the flake
-2. Builds each instance's OCI image via `nix build`
-3. Computes a generation hash (sha256 of sorted name=storepath pairs)
-4. Skips if the deployed generation matches (content-addressed — same closures = no-op)
-5. For each instance: evaluates metadata, applies PVCs, pod (with Kata annotations), and service
-6. Reaps seed-managed resources with non-matching generation (except PVCs)
+1. Creates/labels namespace on startup (with `seed.loom.farm/flake-uri` annotation for debugging)
+2. Lists instance names from `seeds` in the flake
+3. Builds each instance's OCI image via `nix build`
+4. Computes a generation hash (sha256 of sorted name=storepath pairs)
+5. Skips if the deployed generation matches (content-addressed — same closures = no-op)
+6. For each instance: evaluates metadata, applies PVCs, pod (with Kata annotations), and service
+7. Reaps seed-managed resources with non-matching generation (except PVCs)
 
 **Label scheme** — every resource gets:
 ```
@@ -173,6 +176,26 @@ seed.loom.farm/generation: <hash>
 **Reaping**: after applying all instances, resources with a non-matching generation hash are deleted. PVCs are exempt to protect persistent data.
 
 **Manifest generation**: done in bash with `jq`, not nix. Generation hashes are runtime values that would create an impedance mismatch in nix eval.
+
+**Protocol handling**: the controller reads `.protocol` from each expose entry in metadata. `"dns"` generates both TCP and UDP service ports. `"udp"` generates UDP-only. Everything else generates TCP.
+
+**Known limitation**: the generation-based skip only checks if _any_ pod has the current generation label. If a pod is deleted externally (not via generation change), the controller won't recreate it until the next generation change. Workaround: delete all pods or restart the controller.
+
+### Instance authoring gotchas
+
+Instances run NixOS inside Kata VMs with `boot.isContainer = true` (set in `instance-base.nix`). This strips kernel/initrd/bootloader for smaller closures, but has side effects:
+
+**`/run` subdirectories**: `boot.isContainer` skips some tmpfiles setup. Services that need `/run/<name>/` directories (e.g. pdns needs `/run/pdns/` for its control socket) must set `systemd.services.<name>.serviceConfig.RuntimeDirectory = "<name>"` explicitly.
+
+**No `kubectl exec`**: Kata VMs don't support `kubectl exec` (cgroup attach fails). Interact with services via their network APIs or k8s port-forward, not exec.
+
+**No systemd journal in `kubectl logs`**: `kubectl logs` captures the container runtime's stdout/stderr pipe, not `/dev/console`. NixOS stage 2 boot messages appear (they go to console), but once systemd starts, its journal is internal. `ForwardToConsole` doesn't reach kubectl logs either. Debug via service APIs or readiness probes.
+
+**PVC ownership**: PVC filesystems are root-owned by default. If a service runs as a non-root user (e.g. pdns runs as `pdns`), add a tmpfiles rule to chown the mount point: `systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 pdns pdns -" ];`
+
+**Schema initialization**: Use `ConditionPathExists` for one-shot DB init services, but be aware that if a previous bad run created the file with wrong permissions, the condition will skip re-init. To fix: delete the PVC and let it recreate, or add an `ExecStartPre` that fixes ownership.
+
+**Nix flake caching**: The controller evaluates `github:loomtex/seed#seeds`. Nix caches flake lookups for ~1 hour (3600s TTL). After pushing changes, either run `nix eval ... --refresh` on the node, or wait for the cache to expire.
 
 ### Why not ArgoCD?
 
@@ -192,6 +215,9 @@ ArgoCD assumes YAML/Helm/Kustomize in → k8s manifests out. Seed's unit of depl
 - ~~Instance module (`seed.expose`, `seed.storage`, `seed.connect`, `seed.size`)~~ ✓
 - ~~Seed controller (nix eval + build + pod reconciler)~~ ✓
 - ~~Image bridge (mkImage wrapping nix-snapshotter buildImage)~~ ✓
+- ~~Namespace-per-flake isolation (hash-derived, platform-enforced)~~ ✓
+- ~~UDP/DNS protocol support in instance module and controller~~ ✓
+- ~~DNS instance (PowerDNS authoritative for loom.farm)~~ ✓
 - Sandboxed nix evaluation for untrusted tenant flakes
 - Service connectivity between instances (DNS / env var injection)
 - Multi-server HA via embedded etcd (`--cluster-init`)
