@@ -39,20 +39,5 @@
   # No polkit — headless instances don't need privilege negotiation
   security.polkit.enable = lib.mkDefault false;
 
-  # Stream structured journal to container stdout for kubectl logs / log aggregators.
-  # The entrypoint creates a FIFO at /dev/seed-log with a cat process holding the
-  # container's stdout fd. This service writes journalctl JSON to the FIFO.
-  systemd.services.seed-log = {
-    description = "Stream journal to container log pipe";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "systemd-journald.service" ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.systemd}/bin/journalctl -f --output=json --no-pager > /dev/seed-log'";
-      Restart = "always";
-      RestartSec = 1;
-    };
-  };
-
   system.stateVersion = lib.mkDefault "25.11";
 }

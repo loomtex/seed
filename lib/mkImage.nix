@@ -17,21 +17,29 @@ let
     ln -s ${toplevel} $out/run/current-system
   '';
 
-  # Entrypoint wrapper: creates a FIFO, starts a cat process that holds
-  # the container's stdout fd, then execs NixOS init (→ systemd as PID 1).
-  # A systemd service (seed-log, defined in instance-base.nix) writes
-  # journalctl --output=json to the FIFO. The cat process forwards it to
-  # stdout, which kubectl logs captures.
+  # Entrypoint wrapper: forks a log streamer that holds the container's
+  # stdout fd, then execs NixOS init (→ systemd as PID 1).
   #
   # Why not just background init? systemd requires PID 1 — it refuses to
   # start with "Explicit --user argument required" otherwise.
+  #
+  # Why a background process instead of a systemd service? NixOS stage 2
+  # init redirects stdout to /dev/null before exec'ing systemd. A systemd
+  # service has no access to the original container stdout fd. The background
+  # process inherits the fd before the redirect and keeps its own copy.
   entrypoint = pkgs.writeShellScript "seed-init" ''
-    export PATH=${pkgs.coreutils}/bin
+    export PATH=${pkgs.coreutils}/bin:${pkgs.systemd}/bin
 
-    # FIFO bridge: systemd service → cat → container stdout → kubectl logs
-    # Use /dev because /tmp may get a tmpfs overlay from systemd
-    mkfifo /dev/seed-log
-    cat /dev/seed-log &
+    # Log streamer: wait for journald, then stream JSON to container stdout.
+    # This process inherits the container's stdout fd and keeps it across
+    # the parent's exec into init. systemd adopts it as an orphan.
+    (
+      # Wait for journald socket
+      while [ ! -S /run/systemd/journal/stdout ]; do
+        sleep 1
+      done
+      exec journalctl -f --output=json --no-pager
+    ) &
 
     exec ${toplevel}/init
   '';
