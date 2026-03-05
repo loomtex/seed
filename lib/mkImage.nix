@@ -17,28 +17,22 @@ let
     ln -s ${toplevel} $out/run/current-system
   '';
 
-  # Entrypoint wrapper: starts NixOS init (which execs systemd) in the
-  # background, then streams the journal as JSON to stdout. This makes
-  # all systemd service logs visible via kubectl logs and shippable to
-  # log aggregators. Without this, only NixOS stage 2 boot messages
-  # appear — systemd captures everything else into its internal journal.
+  # Entrypoint wrapper: creates a FIFO, starts a cat process that holds
+  # the container's stdout fd, then execs NixOS init (→ systemd as PID 1).
+  # A systemd service (seed-log, defined in instance-base.nix) writes
+  # journalctl --output=json to the FIFO. The cat process forwards it to
+  # stdout, which kubectl logs captures.
+  #
+  # Why not just background init? systemd requires PID 1 — it refuses to
+  # start with "Explicit --user argument required" otherwise.
   entrypoint = pkgs.writeShellScript "seed-init" ''
-    export PATH=${pkgs.coreutils}/bin:${pkgs.systemd}/bin
+    export PATH=${pkgs.coreutils}/bin
 
-    ${toplevel}/init &
-    SYSD_PID=$!
+    # FIFO bridge: systemd service → cat → container stdout → kubectl logs
+    mkfifo /tmp/seed-log
+    cat /tmp/seed-log &
 
-    # Forward SIGTERM to systemd for graceful shutdown
-    trap "kill $SYSD_PID 2>/dev/null; wait $SYSD_PID 2>/dev/null; exit 0" TERM INT
-
-    # Wait for journald to be ready
-    while [ ! -e /run/systemd/journal/stdout ]; do sleep 0.5; done
-
-    # Stream structured journal to stdout (kubectl logs / log aggregator)
-    journalctl -f --output=json --no-pager &
-
-    # Wait for systemd — if it exits, the container should stop
-    wait $SYSD_PID
+    exec ${toplevel}/init
   '';
 in pkgs.nix-snapshotter.buildImage {
   name = "seed-${name}";
