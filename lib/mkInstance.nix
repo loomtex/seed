@@ -1,7 +1,8 @@
 # seed.lib.mkInstance — build a Seed instance (Kata VM workload)
 #
 # Takes a NixOS module and wraps it with the instance base profile + options.
-# Returns { toplevel, meta, config } for controller consumption.
+# Returns { toplevel, meta, config, module } for controller consumption.
+# The module is preserved so downstream consumers can re-evaluate with overrides.
 { nixpkgs, self }:
 
 { name
@@ -24,4 +25,5 @@ in {
   toplevel = eval.config.system.build.toplevel;
   meta = eval.config.seed.meta // { inherit name system; };
   config = eval.config;
+  inherit module;
 }
