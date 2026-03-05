@@ -161,9 +161,9 @@ A bash-based systemd service (`controller.sh` + `controller.nix`) that runs on t
 
 **Label scheme** — every resource gets:
 ```
-seed.loomtex.com/managed-by: seed
-seed.loomtex.com/instance: <name>
-seed.loomtex.com/generation: <hash>
+seed.loom.farm/managed-by: seed
+seed.loom.farm/instance: <name>
+seed.loom.farm/generation: <hash>
 ```
 
 **Stateless**: all state lives in k8s labels. The generation hash is content-addressed from image store paths — the controller reads deployed generation from existing pod labels at each loop.

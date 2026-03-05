@@ -197,7 +197,7 @@ The controller is a systemd service that reconciles instance definitions into ru
 2. Builds each instance's OCI image (`nix build ...#seeds.<system>.<name>.image`)
 3. Computes a generation hash from the set of image store paths
 4. Skips reconciliation if the deployed generation matches
-5. Applies pods, PVCs, and services with `seed.loomtex.com/*` labels
+5. Applies pods, PVCs, and services with `seed.loom.farm/*` labels
 6. Reaps resources with non-matching generation (except PVCs)
 
 Pods are immutable — if an instance's image changes, the controller deletes and recreates the pod.

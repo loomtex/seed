@@ -103,6 +103,10 @@
           name = "web";
           module = ./templates/instance/web.nix;
         };
+        dns = mkInstance {
+          name = "dns";
+          module = ./instances/dns.nix;
+        };
       };
     in builtins.mapAttrs (name: instance:
       instance // {

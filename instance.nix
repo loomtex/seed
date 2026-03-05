@@ -26,9 +26,12 @@ let
         description = "Port number to expose.";
       };
       protocol = lib.mkOption {
-        type = lib.types.enum [ "tcp" "http" "grpc" ];
+        type = lib.types.enum [ "tcp" "udp" "dns" "http" "grpc" ];
         default = "http";
-        description = "Protocol hint for the ingress controller.";
+        description = ''
+          Protocol hint for the ingress controller.
+          "dns" exposes on both TCP and UDP (standard for DNS).
+        '';
       };
     };
   };
@@ -139,7 +142,16 @@ in {
 
     # Open firewall for exposed ports
     networking.firewall.allowedTCPPorts =
-      lib.mapAttrsToList (_: e: e.port) cfg.expose;
+      lib.pipe cfg.expose [
+        (lib.filterAttrs (_: e: e.protocol != "udp"))
+        (lib.mapAttrsToList (_: e: e.port))
+      ];
+
+    networking.firewall.allowedUDPPorts =
+      lib.pipe cfg.expose [
+        (lib.filterAttrs (_: e: e.protocol == "udp" || e.protocol == "dns"))
+        (lib.mapAttrsToList (_: e: e.port))
+      ];
 
     # Service discovery: environment variables
     environment.sessionVariables = lib.mapAttrs'

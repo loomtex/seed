@@ -11,12 +11,26 @@ set -euo pipefail
 
 FLAKE_PATH="${SEED_FLAKE_PATH:?SEED_FLAKE_PATH must be set}"
 INTERVAL="${SEED_INTERVAL:-30}"
-NAMESPACE="${SEED_NAMESPACE:-default}"
 
-LABEL_MANAGED="seed.loomtex.com/managed-by=seed"
+LABEL_MANAGED="seed.loom.farm/managed-by=seed"
 
 log() { echo "[seed] $(date -Iseconds) $*"; }
 die() { log "FATAL: $*"; exit 1; }
+
+# Derive a deterministic k8s-safe namespace from a flake URI
+# Format: s-<12 chars of base32(sha256(uri))>
+derive_namespace() {
+  echo -n "$1" | sha256sum | cut -c1-20 \
+    | basenc --base32 -w0 | tr '[:upper:]' '[:lower:]' | cut -c1-12 \
+    | sed 's/^/s-/'
+}
+
+# Namespace: use override if set, otherwise derive from flake URI
+if [ -n "${SEED_NAMESPACE:-}" ]; then
+  NAMESPACE="$SEED_NAMESPACE"
+else
+  NAMESPACE=$(derive_namespace "$FLAKE_PATH")
+fi
 
 # Wait for k3s API to be reachable
 wait_for_k3s() {
@@ -31,7 +45,7 @@ wait_for_k3s() {
 deployed_generation() {
   kubectl get pods -n "$NAMESPACE" \
     -l "$LABEL_MANAGED" \
-    -o jsonpath='{.items[0].metadata.labels.seed\.loomtex\.com/generation}' 2>/dev/null || true
+    -o jsonpath='{.items[0].metadata.labels.seed\.loom\.farm/generation}' 2>/dev/null || true
 }
 
 # Compute generation hash from a sorted list of "name=storepath" pairs
@@ -65,9 +79,9 @@ generate_pod() {
         name: $name,
         namespace: "'"$NAMESPACE"'",
         labels: {
-          "seed.loomtex.com/managed-by": "seed",
-          "seed.loomtex.com/instance": $instance,
-          "seed.loomtex.com/generation": $gen
+          "seed.loom.farm/managed-by": "seed",
+          "seed.loom.farm/instance": $instance,
+          "seed.loom.farm/generation": $gen
         },
         annotations: {
           "io.katacontainers.config.hypervisor.default_vcpus": $vcpus,
@@ -108,9 +122,9 @@ generate_pvc() {
         name: $name,
         namespace: "'"$NAMESPACE"'",
         labels: {
-          "seed.loomtex.com/managed-by": "seed",
-          "seed.loomtex.com/instance": $instance,
-          "seed.loomtex.com/generation": $gen
+          "seed.loom.farm/managed-by": "seed",
+          "seed.loom.farm/instance": $instance,
+          "seed.loom.farm/generation": $gen
         }
       },
       spec: {
@@ -141,14 +155,14 @@ generate_service() {
         name: $name,
         namespace: "'"$NAMESPACE"'",
         labels: {
-          "seed.loomtex.com/managed-by": "seed",
-          "seed.loomtex.com/instance": $instance,
-          "seed.loomtex.com/generation": $gen
+          "seed.loom.farm/managed-by": "seed",
+          "seed.loom.farm/instance": $instance,
+          "seed.loom.farm/generation": $gen
         }
       },
       spec: {
         selector: {
-          "seed.loomtex.com/instance": $instance
+          "seed.loom.farm/instance": $instance
         },
         ports: $ports
       }
@@ -198,7 +212,7 @@ reap_old() {
     -l "$LABEL_MANAGED" \
     -o json 2>/dev/null \
     | jq -r --arg gen "$gen" \
-      '.items[] | select(.metadata.labels["seed.loomtex.com/generation"] != $gen) | .metadata.name')
+      '.items[] | select(.metadata.labels["seed.loom.farm/generation"] != $gen) | .metadata.name')
 
   for pod in $old_pods; do
     log "reaping pod: $pod"
@@ -210,7 +224,7 @@ reap_old() {
     -l "$LABEL_MANAGED" \
     -o json 2>/dev/null \
     | jq -r --arg gen "$gen" \
-      '.items[] | select(.metadata.labels["seed.loomtex.com/generation"] != $gen) | .metadata.name')
+      '.items[] | select(.metadata.labels["seed.loom.farm/generation"] != $gen) | .metadata.name')
 
   for svc in $old_svcs; do
     log "reaping service: $svc"
@@ -276,13 +290,36 @@ reconcile_instance() {
   if [ -n "$expose_keys" ]; then
     local ports_array="[]"
     for key in $expose_keys; do
-      local port
+      local port proto
       port=$(echo "$expose_json" | jq -r --arg k "$key" '.[$k].port')
+      proto=$(echo "$expose_json" | jq -r --arg k "$key" '.[$k].protocol')
 
-      ports_array=$(echo "$ports_array" | jq \
-        --arg name "$key" \
-        --argjson port "$port" \
-        '. + [{ name: $name, port: $port, targetPort: $port, protocol: "TCP" }]')
+      case "$proto" in
+        dns)
+          # DNS needs both TCP and UDP on the same port
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "${key}-tcp" \
+            --argjson port "$port" \
+            '. + [{ name: $name, port: $port, targetPort: $port, protocol: "TCP" }]')
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "${key}-udp" \
+            --argjson port "$port" \
+            '. + [{ name: $name, port: $port, targetPort: $port, protocol: "UDP" }]')
+          ;;
+        udp)
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "$key" \
+            --argjson port "$port" \
+            '. + [{ name: $name, port: $port, targetPort: $port, protocol: "UDP" }]')
+          ;;
+        *)
+          # tcp, http, grpc — all TCP transport
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "$key" \
+            --argjson port "$port" \
+            '. + [{ name: $name, port: $port, targetPort: $port, protocol: "TCP" }]')
+          ;;
+      esac
     done
 
     local svc_json
@@ -297,6 +334,14 @@ reconcile_instance() {
 # Main reconciliation loop
 main() {
   wait_for_k3s
+
+  log "using namespace: $NAMESPACE"
+  kubectl get namespace "$NAMESPACE" &>/dev/null || \
+    kubectl create namespace "$NAMESPACE"
+  kubectl label namespace "$NAMESPACE" \
+    "seed.loom.farm/managed-by=seed" --overwrite 2>/dev/null || true
+  kubectl annotate namespace "$NAMESPACE" \
+    "seed.loom.farm/flake-uri=$FLAKE_PATH" --overwrite 2>/dev/null || true
 
   while true; do
     log "reconciliation starting..."

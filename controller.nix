@@ -23,8 +23,11 @@ in {
 
     namespace = lib.mkOption {
       type = lib.types.str;
-      default = "default";
-      description = "Kubernetes namespace for seed resources.";
+      default = "";
+      description = ''
+        Kubernetes namespace for seed resources.
+        Empty (default) = auto-derive from flake URI. Set to override for dev/testing.
+      '';
     };
   };
 
@@ -38,13 +41,14 @@ in {
       environment = {
         SEED_FLAKE_PATH = cfg.flakePath;
         SEED_INTERVAL = toString cfg.interval;
-        SEED_NAMESPACE = cfg.namespace;
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+      } // lib.optionalAttrs (cfg.namespace != "") {
+        SEED_NAMESPACE = cfg.namespace;
       };
 
       path = with pkgs; [
         bash
-        coreutils
+        coreutils  # includes basenc for namespace derivation
         git
         jq
         kubectl
