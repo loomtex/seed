@@ -7,7 +7,7 @@
   };
 
   outputs = { seed, ... }: {
-    seeds.x86_64-linux.web = seed.lib.mkInstance {
+    seeds.web = seed.lib.mkInstance {
       name = "web";
       module = ./web.nix;
     };

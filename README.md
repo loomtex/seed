@@ -131,7 +131,7 @@ A Seed instance is a full NixOS configuration that runs inside a Kata VM on the 
 ```bash
 nix flake init -t github:loomtex/seed#instance
 # edit web.nix
-nix build .#seeds.x86_64-linux.web.image
+nix build .#seeds.web.image
 ```
 
 Or in an existing flake:
@@ -141,7 +141,7 @@ Or in an existing flake:
   inputs.seed.url = "github:loomtex/seed";
 
   outputs = { seed, ... }: {
-    seeds.x86_64-linux.web = seed.lib.mkInstance {
+    seeds.web = seed.lib.mkInstance {
       name = "web";
       module = ./web.nix;
     };

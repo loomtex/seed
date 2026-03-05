@@ -97,7 +97,7 @@
     };
 
     # Dogfooding: seed's own instances (initially a web example for testing)
-    seeds.${system} = let
+    seeds = let
       instances = {
         web = mkInstance {
           name = "web";

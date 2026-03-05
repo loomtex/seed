@@ -90,7 +90,7 @@ nix-snapshotter must be running before k3s starts (containerd needs the snapshot
 nix flake check
 
 # Build an instance image
-nix build .#seeds.x86_64-linux.web.image
+nix build .#seeds.web.image
 
 # Run test VM (requires KVM)
 nix run .#vm
