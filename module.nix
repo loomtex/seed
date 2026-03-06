@@ -100,6 +100,8 @@ in {
         default = "644";
         description = "File permissions for /etc/rancher/k3s/k3s.yaml.";
       };
+
+      dualStack = lib.mkEnableOption "IPv4/IPv6 dual-stack networking for pods and services";
     };
 
     nixSnapshotter = {
@@ -144,6 +146,10 @@ in {
         (lib.optionals (cfg.role == "server") disableFlags)
         [ "--https-listen-port ${toString cfg.k3s.port}" ]
         [ "--write-kubeconfig-mode ${cfg.k3s.kubeconfigMode}" ]
+        (lib.optionals cfg.k3s.dualStack [
+          "--cluster-cidr=10.42.0.0/16,fd00::/108"
+          "--service-cidr=10.43.0.0/16,fd01::/108"
+        ])
         cfg.k3s.extraFlags
       ];
 
