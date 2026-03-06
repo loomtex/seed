@@ -40,13 +40,16 @@ seed/
 
 When `seed.enable = true`, the module sets:
 
-- `boot.kernel.sysctl."net.ipv4.ip_forward" = 1` — pod networking
+- `boot.kernel.sysctl."net.ipv4.ip_forward" = 1` — pod networking (IPv4)
+- `boot.kernel.sysctl."net.ipv6.conf.all.forwarding" = 1` — pod networking (IPv6)
 - `boot.kernelModules = [ "vhost_net" "vhost_vsock" ]` — Kata VM devices
 - `services.nix-snapshotter.enable = true` — nix store path resolution in images
 - `services.k3s.enable = true` with Kata runtime in containerd config
 - `systemd.services.k3s.path` — kata-runtime + hypervisor in service PATH
 - `systemd.services.k3s.serviceConfig.DeviceAllow` — KVM + vhost device access
 - RuntimeClass manifest auto-deployed via ExecStartPre (server role)
+- MetalLB v0.15.3 manifest auto-deployed via ExecStartPre (server role)
+- Optional `seed.k3s.dualStack` for IPv4+IPv6 cluster/service CIDRs
 
 ### Kata config patching
 
@@ -199,9 +202,46 @@ Each route entry has: `port` (external), `protocol` (`tcp`/`udp`/`dns`/`http`/`g
 
 The controller groups routes by instance and creates one `LoadBalancer` service per instance (`seed-<instance>-ipv4`) with `loadBalancerIP` set to `SEED_IPV4_ADDRESS` and `externalTrafficPolicy: Local`. These are distinct from the ClusterIP services created by `seed.expose`.
 
-The `seed.controller.ipv4Address` NixOS option passes the reserved IP as `SEED_IPV4_ADDRESS` to the controller. k3s ServiceLB handles routing traffic from the node IP to the pods.
+The `seed.controller.ipv4Address` NixOS option passes the reserved IP as `SEED_IPV4_ADDRESS` to the controller.
 
 IPv4 services are labeled with `seed.loom.farm/service-type: ipv4` and participate in generation-based reaping like all other resources.
+
+### IPv6 route block
+
+Same pattern as IPv4 but with a reserved /64 block. The flake exports an `ipv6` output:
+
+```nix
+ipv6 = {
+  enable = true;
+  block = "2001:19f0:6402:7eb::/64";
+  routes = {
+    dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
+  };
+};
+```
+
+The `block` is the /64 prefix. Each route's `host` is the host portion (appended to the block prefix) — e.g. `host = "1"` with the above block yields `2001:19f0:6402:7eb::1`. This gives each route a dedicated IPv6 address from the block.
+
+Services are created with `ipFamilies: ["IPv6"]` and `ipFamilyPolicy: SingleStack` so MetalLB assigns from the IPv6 pool.
+
+### MetalLB
+
+The seed module deploys MetalLB v0.15.3 via k3s auto-deploy manifests. k3s's built-in ServiceLB is disabled (it can't handle dual-stack — port conflicts when both IPv4 and IPv6 services bind the same host port).
+
+The controller configures MetalLB on startup:
+- Creates an `IPAddressPool` named `seed-pool` with both the IPv4 /32 and IPv6 /64 ranges
+- Creates an `L2Advertisement` for ARP (IPv4) and NDP (IPv6) announcements
+- Waits for MetalLB CRDs AND webhook endpoints before applying (race condition on fresh deploy)
+
+All LoadBalancer services are annotated with `metallb.universe.tf/address-pool: seed-pool`.
+
+### Dual-stack networking
+
+`seed.k3s.dualStack = true` adds `--cluster-cidr=10.42.0.0/16,fd00::/56` and `--service-cidr=10.43.0.0/16,fd01::/108` to k3s. The node must also have `--node-ip` set with both IPv4 and IPv6 addresses.
+
+**Important**: existing pods from before dual-stack only have IPv4 IPs. They must be deleted and recreated to get dual-stack IPs (both IPv4 and IPv6). The flannel lease also needs re-registration — delete the node from kine (`/registry/minions/<name>`) if the node was created without dual-stack.
+
+**IPv6 in instances**: services like PowerDNS must explicitly listen on `::` in addition to `0.0.0.0` to accept IPv6 traffic from the LoadBalancer.
 
 ### Instance authoring gotchas
 
@@ -241,6 +281,8 @@ ArgoCD assumes YAML/Helm/Kustomize in → k8s manifests out. Seed's unit of depl
 - ~~UDP/DNS protocol support in instance module and controller~~ ✓
 - ~~DNS instance (PowerDNS authoritative for loom.farm)~~ ✓
 - ~~IPv4 route block (public ingress via Vultr reserved IP)~~ ✓
+- ~~IPv6 route block (public ingress via reserved /64 block)~~ ✓
+- ~~MetalLB dual-stack LoadBalancer (replaces k3s ServiceLB)~~ ✓
 - Sandboxed nix evaluation for untrusted tenant flakes
 - Service connectivity between instances (DNS / env var injection)
 - Multi-server HA via embedded etcd (`--cluster-init`)
