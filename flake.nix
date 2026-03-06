@@ -27,8 +27,60 @@
     mkInstance = import ./lib/mkInstance.nix { inherit nixpkgs self; };
     mkImage = import ./lib/mkImage.nix { inherit pkgs; };
   in {
-    # Overlay: patch kata-runtime for nix-snapshotter + CLH paths
+    # Overlay: patch kata-runtime for nix-snapshotter + CLH paths + TPM kernel
     overlays.default = final: prev: {
+      # Custom guest kernel: kata's minimal config + TPM 2.0 CRB support
+      # Upstream kata-images ships without CONFIG_TCG_TPM — we rebuild
+      # the guest vmlinux from the same config with TPM options enabled.
+      kata-guest-kernel-tpm = final.stdenv.mkDerivation {
+        pname = "kata-guest-kernel-tpm";
+        version = "6.12.22";
+
+        src = final.fetchurl {
+          url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.22.tar.xz";
+          hash = "sha256-q0iACrSZhaeNIxiuisXyj9PhI+oXNX7yFJgQWlMzczY=";
+        };
+
+        nativeBuildInputs = with final; [
+          flex bison bc perl openssl elfutils
+        ];
+
+        configurePhase = ''
+          runHook preConfigure
+
+          # Start from kata's minimal guest kernel config
+          cp ${prev.kata-runtime.passthru.kata-images}/share/kata-containers/config-6.12.22-151 .config
+          chmod +w .config
+
+          # Enable TPM 2.0 support (CRB interface for CLH/swtpm)
+          sed -i 's/^# CONFIG_TCG_TPM is not set$/CONFIG_TCG_TPM=y/' .config
+          sed -i 's/^# CONFIG_SECURITYFS is not set$/CONFIG_SECURITYFS=y/' .config
+          echo 'CONFIG_TCG_CRB=y' >> .config
+          echo 'CONFIG_TCG_TPM2_HMAC=y' >> .config
+
+          # Resolve new dependencies
+          make olddefconfig
+
+          runHook postConfigure
+        '';
+
+        buildPhase = ''
+          runHook preBuild
+          make -j$NIX_BUILD_CORES vmlinux
+          runHook postBuild
+        '';
+
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out
+          cp vmlinux $out/vmlinux
+          runHook postInstall
+        '';
+
+        # Don't try to strip the kernel binary
+        dontStrip = true;
+      };
+
       kata-runtime = prev.kata-runtime.overrideAttrs (old: {
         # Patch kata shim to support multi-mount rootfs from snapshotters
         # like nix-snapshotter that return overlay + bind mounts:
@@ -41,12 +93,12 @@
           ./patches/kata-tpm-socket.patch
         ];
 
-        # Fix CLH paths (upstream bug — package builds QEMU config but CLH
-        # config points to non-existent binary in kata-runtime store path)
+        # Fix CLH paths and use TPM-enabled guest kernel
         postInstall = (old.postInstall or "") + ''
           sed -i \
             -e 's!path = ".*cloud-hypervisor"!path = "${final.cloud-hypervisor}/bin/cloud-hypervisor"!' \
             -e 's!valid_hypervisor_paths = \[".*cloud-hypervisor"\]!valid_hypervisor_paths = ["${final.cloud-hypervisor}/bin/cloud-hypervisor"]!' \
+            -e 's!kernel = ".*vmlinux.container"!kernel = "${final.kata-guest-kernel-tpm}/vmlinux"!' \
             "$out/share/defaults/kata-containers/configuration-clh.toml"
         '';
       });
