@@ -207,15 +207,15 @@ add_volumes_to_pod() {
 # Generate LoadBalancer service manifest for public ingress routes
 # Args: instance gen lb_ip ports_json [service_type]
 generate_lb_service() {
-  local instance=$1 gen=$2 lb_ip=$3
-  local ports_json=$4
-  local svc_type=${5:-ipv4}
+  local svc_name=$1 instance=$2 gen=$3 lb_ip=$4
+  local ports_json=$5
+  local svc_type=${6:-ipv4}
 
   local ip_family="IPv4"
   [ "$svc_type" = "ipv6" ] && ip_family="IPv6"
 
   jq -n \
-    --arg name "seed-${instance}-${svc_type}" \
+    --arg name "$svc_name" \
     --arg instance "$instance" \
     --arg gen "$gen" \
     --arg lb_ip "$lb_ip" \
@@ -323,7 +323,7 @@ reconcile_ipv4_routes() {
     done
 
     local svc_json
-    svc_json=$(generate_lb_service "$instance" "$gen" "$ipv4_address" "$ports_array")
+    svc_json=$(generate_lb_service "seed-${instance}-ipv4" "$instance" "$gen" "$ipv4_address" "$ports_array")
     log "[ipv4] applying LoadBalancer service: seed-${instance}-ipv4"
     echo "$svc_json" | kubectl apply -f - 2>&1 | sed "s/^/  [ipv4] /"
   done
@@ -355,64 +355,54 @@ reconcile_ipv6_routes() {
   local routes_json
   routes_json=$(echo "$ipv6_json" | jq '.routes // {}')
 
-  # Group routes by instance
-  local instances_with_routes
-  instances_with_routes=$(echo "$routes_json" | jq -r '[.[].instance] | unique | .[]')
+  # Each route gets its own service (each has a unique address from the block)
+  local route_keys
+  route_keys=$(echo "$routes_json" | jq -r 'keys[]')
 
-  for instance in $instances_with_routes; do
+  for key in $route_keys; do
+    local host port target_port proto instance
+    host=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].host')
+    port=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].port')
+    target_port=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].targetPort // .[$k].port')
+    proto=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].protocol')
+    instance=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].instance')
+
+    local lb_ip="${block_prefix}${host}"
     local ports_array="[]"
-    local lb_ip=""
 
-    # Get all route entries for this instance
-    local route_keys
-    route_keys=$(echo "$routes_json" | jq -r --arg inst "$instance" \
-      'to_entries[] | select(.value.instance == $inst) | .key')
+    case "$proto" in
+      dns)
+        ports_array=$(echo "$ports_array" | jq \
+          --arg name "${key}-tcp" \
+          --argjson port "$port" \
+          --argjson tp "$target_port" \
+          '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "TCP" }]')
+        ports_array=$(echo "$ports_array" | jq \
+          --arg name "${key}-udp" \
+          --argjson port "$port" \
+          --argjson tp "$target_port" \
+          '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "UDP" }]')
+        ;;
+      udp)
+        ports_array=$(echo "$ports_array" | jq \
+          --arg name "$key" \
+          --argjson port "$port" \
+          --argjson tp "$target_port" \
+          '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "UDP" }]')
+        ;;
+      *)
+        ports_array=$(echo "$ports_array" | jq \
+          --arg name "$key" \
+          --argjson port "$port" \
+          --argjson tp "$target_port" \
+          '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "TCP" }]')
+        ;;
+    esac
 
-    for key in $route_keys; do
-      local host port target_port proto
-      host=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].host')
-      port=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].port')
-      target_port=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].targetPort // .[$k].port')
-      proto=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].protocol')
-
-      # Use host from first route for this instance's LB address
-      if [ -z "$lb_ip" ]; then
-        lb_ip="${block_prefix}${host}"
-      fi
-
-      case "$proto" in
-        dns)
-          ports_array=$(echo "$ports_array" | jq \
-            --arg name "${key}-tcp" \
-            --argjson port "$port" \
-            --argjson tp "$target_port" \
-            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "TCP" }]')
-          ports_array=$(echo "$ports_array" | jq \
-            --arg name "${key}-udp" \
-            --argjson port "$port" \
-            --argjson tp "$target_port" \
-            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "UDP" }]')
-          ;;
-        udp)
-          ports_array=$(echo "$ports_array" | jq \
-            --arg name "$key" \
-            --argjson port "$port" \
-            --argjson tp "$target_port" \
-            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "UDP" }]')
-          ;;
-        *)
-          ports_array=$(echo "$ports_array" | jq \
-            --arg name "$key" \
-            --argjson port "$port" \
-            --argjson tp "$target_port" \
-            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "TCP" }]')
-          ;;
-      esac
-    done
-
+    local svc_name="seed-${key}-ipv6"
     local svc_json
-    svc_json=$(generate_lb_service "$instance" "$gen" "$lb_ip" "$ports_array" "ipv6")
-    log "[ipv6] applying LoadBalancer service: seed-${instance}-ipv6 (addr=$lb_ip)"
+    svc_json=$(generate_lb_service "$svc_name" "$instance" "$gen" "$lb_ip" "$ports_array" "ipv6")
+    log "[ipv6] applying LoadBalancer service: $svc_name (addr=$lb_ip)"
     echo "$svc_json" | kubectl apply -f - 2>&1 | sed "s/^/  [ipv6] /"
   done
 }

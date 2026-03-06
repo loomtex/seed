@@ -128,6 +128,7 @@
       block = "2001:19f0:6402:7eb::/64";
       routes = {
         dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
+        dns2 = { host = "2"; port = 53; protocol = "dns"; instance = "dns"; };
       };
     };
 
