@@ -5,7 +5,34 @@
 # All settings use mkDefault so tenants can override if needed.
 { lib, pkgs, ... }:
 
-{
+let
+  tpmDevCreate = pkgs.writeShellScript "tpm-dev-create" ''
+    for tpm in /sys/class/tpm/tpm*; do
+      [ -e "$tpm" ] || continue
+      name=$(basename "$tpm")
+      if [ ! -e "/dev/$name" ]; then
+        dev=$(cat "$tpm/dev" 2>/dev/null) || continue
+        major=''${dev%%:*}
+        minor=''${dev##*:}
+        mknod "/dev/$name" c "$major" "$minor"
+        chmod 0660 "/dev/$name"
+      fi
+    done
+
+    # Also create /dev/tpmrm* (resource manager interface)
+    for tpmrm in /sys/class/tpmrm/tpmrm*; do
+      [ -e "$tpmrm" ] || continue
+      name=$(basename "$tpmrm")
+      if [ ! -e "/dev/$name" ]; then
+        dev=$(cat "$tpmrm/dev" 2>/dev/null) || continue
+        major=''${dev%%:*}
+        minor=''${dev##*:}
+        mknod "/dev/$name" c "$major" "$minor"
+        chmod 0660 "/dev/$name"
+      fi
+    done
+  '';
+in {
   # boot.isContainer disables kernel, initrd, bootloader, and hardware scan.
   # Kata VMs run real systemd (not container init), but isContainer gives us
   # the right closure size. Services needing /run/* dirs should use RuntimeDirectory.
@@ -44,49 +71,34 @@
   # No polkit — headless instances don't need privilege negotiation
   security.polkit.enable = lib.mkDefault false;
 
+  # Create TPM device nodes on every boot. Kata VMs use tmpfs on /dev (not
+  # devtmpfs), so the kernel doesn't auto-create device nodes. This must run
+  # unconditionally — seed-tpm-init only runs on first boot, but sops-nix
+  # needs /dev/tpm0 on every boot for decryption.
+  systemd.services.seed-tpm-dev = {
+    description = "Create TPM device nodes from sysfs";
+    wantedBy = [ "multi-user.target" ];
+    before = lib.mkDefault [ "seed-tpm-init.service" "sops-nix.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = "+" + tpmDevCreate;
+    };
+  };
+
   # TPM identity provisioning — generates age-plugin-tpm identity on first boot.
   # The identity file at /seed/tpm/age-identity contains the public key (recipient)
   # on its first line, usable for encrypting sops secrets for this instance.
   systemd.services.seed-tpm-init = {
     description = "Generate age-plugin-tpm identity for sops-nix";
     wantedBy = [ "multi-user.target" ];
+    after = [ "seed-tpm-dev.service" ];
+    requires = [ "seed-tpm-dev.service" ];
     before = lib.mkDefault [ "sops-nix.service" ];
     unitConfig.ConditionPathExists = "!/seed/tpm/age-identity";
-    path = [ pkgs.coreutils pkgs.util-linux pkgs.gnugrep ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStartPre = [
-        "${pkgs.coreutils}/bin/mkdir -p /seed/tpm"
-        # Create TPM device nodes if kernel detected TPM but /dev nodes are missing.
-        # Kata VMs use tmpfs on /dev (not devtmpfs), so kernel doesn't auto-create nodes.
-        # Read major:minor from sysfs and mknod manually.
-        "+${pkgs.writeShellScript "tpm-dev-create" ''
-          for tpm in /sys/class/tpm/tpm*; do
-            [ -e "$tpm" ] || continue
-            name=$(basename "$tpm")
-            if [ ! -e "/dev/$name" ]; then
-              dev=$(cat "$tpm/dev" 2>/dev/null) || continue
-              major=''${dev%%:*}
-              minor=''${dev##*:}
-              mknod "/dev/$name" c "$major" "$minor"
-              chmod 0660 "/dev/$name"
-            fi
-          done
-
-          # Also create /dev/tpmrm* (resource manager interface)
-          for tpmrm in /sys/class/tpmrm/tpmrm*; do
-            [ -e "$tpmrm" ] || continue
-            name=$(basename "$tpmrm")
-            if [ ! -e "/dev/$name" ]; then
-              dev=$(cat "$tpmrm/dev" 2>/dev/null) || continue
-              major=''${dev%%:*}
-              minor=''${dev##*:}
-              mknod "/dev/$name" c "$major" "$minor"
-              chmod 0660 "/dev/$name"
-            fi
-          done
-        ''}"
-      ];
+      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /seed/tpm";
       ExecStart = "${pkgs.age-plugin-tpm}/bin/age-plugin-tpm --generate -o /seed/tpm/age-identity";
       RemainAfterExit = true;
     };
