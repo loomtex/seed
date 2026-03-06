@@ -138,22 +138,6 @@
     lib.mkInstance = mkInstance;
     lib.mkImage = mkImage;
 
-    # swtpm OCI image for vTPM pods (runs on default runtime, not Kata)
-    packages.${system}.swtpmImage = pkgs.nix-snapshotter.buildImage {
-      name = "seed-swtpm";
-      resolvedByNix = true;
-      config.entrypoint = [ "${pkgs.writeShellScript "swtpm-entrypoint" ''
-        exec ${pkgs.swtpm}/bin/swtpm socket \
-          --tpmstate dir=/tpm-state \
-          --ctrl type=unixio,path=/tpm-socket/swtpm-sock \
-          --flags startup-clear \
-          --tpm2
-      ''}" ];
-      copyToRoot = pkgs.runCommand "swtpm-rootfs" {} ''
-        mkdir -p $out/{tpm-state,tpm-socket,tmp}
-      '';
-    };
-
     # Re-export nix-snapshotter home modules for rootless k3s consumers
     homeModules = nix-snapshotter.homeModules;
 

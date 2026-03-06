@@ -12,8 +12,6 @@ set -euo pipefail
 FLAKE_PATH="${SEED_FLAKE_PATH:?SEED_FLAKE_PATH must be set}"
 INTERVAL="${SEED_INTERVAL:-30}"
 REFRESH_TRIGGER="${SEED_REFRESH_TRIGGER:-/var/lib/seed-controller/refresh}"
-SWTPM_IMAGE="${SEED_SWTPM_IMAGE:-}"
-
 LABEL_MANAGED="seed.loom.farm/managed-by=seed"
 
 log() { echo "[seed] $(date -Iseconds) $*"; }
@@ -215,100 +213,60 @@ add_volumes_to_pod() {
     '.spec.volumes = $vols | .spec.containers[0].volumeMounts = $mnts'
 }
 
-# Generate swtpm PVC manifest (persistent TPM state)
-generate_tpm_pvc() {
-  local instance=$1 gen=$2
-
-  jq -n \
-    --arg name "seed-${instance}-tpm" \
-    --arg instance "$instance" \
-    --arg gen "$gen" \
-    '{
-      apiVersion: "v1",
-      kind: "PersistentVolumeClaim",
-      metadata: {
-        name: $name,
-        namespace: "'"$NAMESPACE"'",
-        labels: {
-          "seed.loom.farm/managed-by": "seed",
-          "seed.loom.farm/instance": $instance,
-          "seed.loom.farm/generation": $gen,
-          "seed.loom.farm/service-type": "tpm"
-        }
-      },
-      spec: {
-        accessModes: ["ReadWriteOnce"],
-        resources: {
-          requests: {
-            storage: "10Mi"
-          }
-        }
-      }
-    }'
-}
-
-# Generate swtpm pod manifest (runs on default runtime, not Kata)
-generate_tpm_pod() {
-  local instance=$1 gen=$2 image_ref=$3
+# Ensure swtpm is running for an instance (host process, not a pod)
+# swtpm runs directly on the host so CLH can connect to its Unix socket.
+# State persists in /var/lib/seed-controller/tpm/<ns>-<instance>/
+# Socket at /run/swtpm/<ns>-<instance>/swtpm-sock
+ensure_swtpm() {
+  local instance=$1
+  local state_dir="/var/lib/seed-controller/tpm/${NAMESPACE}-${instance}"
   local socket_dir="/run/swtpm/${NAMESPACE}-${instance}"
+  local socket_path="${socket_dir}/swtpm-sock"
+  local pid_file="${state_dir}/swtpm.pid"
 
-  jq -n \
-    --arg name "seed-${instance}-tpm" \
-    --arg instance "$instance" \
-    --arg gen "$gen" \
-    --arg image "$image_ref" \
-    --arg socket_dir "$socket_dir" \
-    '{
-      apiVersion: "v1",
-      kind: "Pod",
-      metadata: {
-        name: $name,
-        namespace: "'"$NAMESPACE"'",
-        labels: {
-          "seed.loom.farm/managed-by": "seed",
-          "seed.loom.farm/instance": $instance,
-          "seed.loom.farm/generation": $gen,
-          "seed.loom.farm/service-type": "tpm"
-        }
-      },
-      spec: {
-        restartPolicy: "Always",
-        terminationGracePeriodSeconds: 5,
-        containers: [{
-          name: "swtpm",
-          image: $image,
-          volumeMounts: [
-            { name: "tpm-state", mountPath: "/tpm-state" },
-            { name: "tpm-socket", mountPath: "/tpm-socket" }
-          ]
-        }],
-        volumes: [
-          {
-            name: "tpm-state",
-            persistentVolumeClaim: { claimName: ("seed-" + $instance + "-tpm") }
-          },
-          {
-            name: "tpm-socket",
-            hostPath: { path: $socket_dir, type: "DirectoryOrCreate" }
-          }
-        ]
-      }
-    }'
-}
+  mkdir -p "$state_dir" "$socket_dir"
 
-# Wait for a pod to be Ready (up to 60s)
-wait_for_pod_ready() {
-  local pod_name=$1
+  # Check if swtpm is already running
+  if [ -f "$pid_file" ]; then
+    local pid
+    pid=$(cat "$pid_file")
+    if kill -0 "$pid" 2>/dev/null; then
+      # Already running, verify socket exists
+      if [ -S "$socket_path" ]; then
+        return 0
+      fi
+      # Socket gone but process alive — kill and restart
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+    fi
+    rm -f "$pid_file"
+  fi
+
+  # Clean up stale socket
+  rm -f "$socket_path"
+
+  log "[$instance] starting swtpm (state=$state_dir socket=$socket_path)"
+  swtpm socket \
+    --tpmstate dir="$state_dir" \
+    --ctrl type=unixio,path="$socket_path" \
+    --flags startup-clear \
+    --tpm2 \
+    --daemon \
+    --pid file="$pid_file" \
+    --log level=0
+
+  # Wait for socket to appear
   local attempts=0
-  until kubectl get pod "$pod_name" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; do
-    sleep 2
+  until [ -S "$socket_path" ]; do
+    sleep 0.5
     (( attempts++ )) || true
-    if [ "$attempts" -ge 30 ]; then
-      log "[$pod_name] not ready after 60s"
+    if [ "$attempts" -ge 20 ]; then
+      log "[$instance] swtpm socket not ready after 10s"
       return 1
     fi
   done
-  return 0
+
+  log "[$instance] swtpm running (pid=$(cat "$pid_file"))"
 }
 
 # Generate LoadBalancer service manifest for public ingress routes
@@ -568,39 +526,14 @@ reconcile_instance() {
     kubectl delete pod "seed-${name}" -n "$NAMESPACE" --grace-period=10 2>/dev/null || true
   fi
 
-  # swtpm: deploy vTPM pod if swtpm image is available
+  # swtpm: ensure host-managed swtpm process is running for this instance
   local tpm_socket=""
-  if [ -n "$SWTPM_IMAGE" ]; then
-    local swtpm_image_ref="nix:0${SWTPM_IMAGE}"
-    local socket_dir="/run/swtpm/${NAMESPACE}-${name}"
-    tpm_socket="${socket_dir}/swtpm-sock"
+  local socket_dir="/run/swtpm/${NAMESPACE}-${name}"
+  tpm_socket="${socket_dir}/swtpm-sock"
 
-    # Apply swtpm PVC (persistent TPM state — never reaped)
-    local tpm_pvc_json
-    tpm_pvc_json=$(generate_tpm_pvc "$name" "$gen")
-    log "[$name] applying TPM PVC: seed-${name}-tpm"
-    echo "$tpm_pvc_json" | kubectl apply -f - 2>&1 | sed "s/^/  [$name] /"
-
-    # Apply swtpm pod
-    local tpm_pod_json
-    tpm_pod_json=$(generate_tpm_pod "$name" "$gen" "$swtpm_image_ref")
-
-    # Delete existing tpm pod if image changed
-    local current_tpm_ref
-    current_tpm_ref=$(kubectl get pod "seed-${name}-tpm" -n "$NAMESPACE" \
-      -o jsonpath='{.spec.containers[0].image}' 2>/dev/null || true)
-    if [ -n "$current_tpm_ref" ] && [ "$current_tpm_ref" != "$swtpm_image_ref" ]; then
-      log "[$name] swtpm image changed, replacing tpm pod..."
-      kubectl delete pod "seed-${name}-tpm" -n "$NAMESPACE" --grace-period=5 2>/dev/null || true
-    fi
-
-    log "[$name] applying swtpm pod..."
-    echo "$tpm_pod_json" | kubectl apply -f - 2>&1 | sed "s/^/  [$name] /"
-
-    # Wait for swtpm pod to be running
-    log "[$name] waiting for swtpm pod..."
-    wait_for_pod_ready "seed-${name}-tpm" \
-      || log "[$name] swtpm pod not ready, continuing without TPM"
+  if ! ensure_swtpm "$name"; then
+    log "[$name] swtpm failed to start, continuing without TPM"
+    tpm_socket=""
   fi
 
   # Generate and apply pod
