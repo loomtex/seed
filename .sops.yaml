@@ -1,0 +1,17 @@
+keys:
+  - &josh_age age100uztnkcqanyhq2v37lwq2jtg8563lz25w22u88qhppld526t9zsxy3n3h
+  - &dns_tpm age1tpm1q0y0c4utw22tunzeuyu2vzerq7ehfn2qtr977z2xc97h35dd4d08jk26v8j
+  - &web_tpm age1tpm1q08cny6t7h03cc9pau8pqlfgu5r4ekf7054dy35ed99rrhuvddykx34qzyx
+
+creation_rules:
+  - path_regex: secrets/dns\.yaml$
+    key_groups:
+      - age:
+          - *josh_age
+          - *dns_tpm
+
+  - path_regex: secrets/web\.yaml$
+    key_groups:
+      - age:
+          - *josh_age
+          - *web_tpm

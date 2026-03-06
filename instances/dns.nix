@@ -10,6 +10,10 @@
   seed.expose.api = { port = 8081; protocol = "tcp"; };
   seed.storage.data = "1Gi";
 
+  # sops-nix: decrypt API key using the instance's TPM-backed age identity
+  sops.defaultSopsFile = ../secrets/dns.yaml;
+  sops.secrets.pdns-api-key = {};
+
   services.powerdns = {
     enable = true;
     extraConfig = ''
@@ -19,7 +23,7 @@
       local-address=0.0.0.0, ::
       local-port=53
       api=yes
-      api-key=seed-internal
+      include-dir=/run/pdns/conf.d
       webserver=yes
       webserver-address=0.0.0.0
       webserver-port=8081
@@ -34,6 +38,16 @@
 
   # pdns needs /run/pdns for its control socket
   systemd.services.pdns.serviceConfig.RuntimeDirectory = "pdns";
+
+  # Inject the sops-decrypted API key into pdns config at startup
+  systemd.services.pdns.serviceConfig.ExecStartPre = lib.mkAfter [
+    "+${pkgs.writeShellScript "pdns-inject-secrets" ''
+      mkdir -p /run/pdns/conf.d
+      echo "api-key=$(cat ${config.sops.secrets.pdns-api-key.path})" > /run/pdns/conf.d/secrets.conf
+      chown pdns:pdns /run/pdns/conf.d/secrets.conf
+      chmod 0400 /run/pdns/conf.d/secrets.conf
+    ''}"
+  ];
 
   # Ensure pdns user owns the storage directory
   systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 pdns pdns -" ];
