@@ -211,12 +211,16 @@ generate_lb_service() {
   local ports_json=$4
   local svc_type=${5:-ipv4}
 
+  local ip_family="IPv4"
+  [ "$svc_type" = "ipv6" ] && ip_family="IPv6"
+
   jq -n \
     --arg name "seed-${instance}-${svc_type}" \
     --arg instance "$instance" \
     --arg gen "$gen" \
     --arg lb_ip "$lb_ip" \
     --arg svc_type "$svc_type" \
+    --arg ip_family "$ip_family" \
     --argjson ports "$ports_json" \
     '{
       apiVersion: "v1",
@@ -237,6 +241,8 @@ generate_lb_service() {
       spec: {
         type: "LoadBalancer",
         loadBalancerIP: $lb_ip,
+        ipFamilyPolicy: "SingleStack",
+        ipFamilies: [$ip_family],
         externalTrafficPolicy: "Local",
         selector: {
           "seed.loom.farm/instance": $instance
@@ -546,14 +552,15 @@ configure_metallb_pools() {
 
   [ -n "$ipv4" ] || [ -n "$ipv6" ] || return 0
 
-  # Wait for MetalLB CRDs to be available
-  log "[metallb] waiting for CRDs..."
+  # Wait for MetalLB CRDs and webhook to be available
+  log "[metallb] waiting for CRDs and webhook..."
   local attempts=0
-  until kubectl get crd ipaddresspools.metallb.io &>/dev/null; do
+  until kubectl get crd ipaddresspools.metallb.io &>/dev/null \
+    && kubectl get endpoints metallb-webhook-service -n metallb-system -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null | grep -q .; do
     sleep 5
     (( attempts++ )) || true
     if [ "$attempts" -ge 60 ]; then
-      log "[metallb] CRDs not available after 5 minutes, skipping pool config"
+      log "[metallb] not ready after 5 minutes, skipping pool config"
       return 1
     fi
   done
