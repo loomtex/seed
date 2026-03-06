@@ -16,7 +16,7 @@
       launch=gsqlite3
       gsqlite3-database=/seed/storage/data/pdns.db
       primary=yes
-      local-address=0.0.0.0
+      local-address=0.0.0.0, ::
       local-port=53
       api=yes
       api-key=seed-internal
