@@ -229,6 +229,9 @@ generate_lb_service() {
           "seed.loom.farm/instance": $instance,
           "seed.loom.farm/generation": $gen,
           "seed.loom.farm/service-type": $svc_type
+        },
+        annotations: {
+          "metallb.universe.tf/address-pool": "seed-pool"
         }
       },
       spec: {
@@ -536,6 +539,60 @@ reconcile_instance() {
   log "[$name] done (image=$image_ref)"
 }
 
+# Configure MetalLB address pools from SEED_IPV4_ADDRESS and SEED_IPV6_BLOCK
+configure_metallb_pools() {
+  local ipv4="${SEED_IPV4_ADDRESS:-}"
+  local ipv6="${SEED_IPV6_BLOCK:-}"
+
+  [ -n "$ipv4" ] || [ -n "$ipv6" ] || return 0
+
+  # Wait for MetalLB CRDs to be available
+  log "[metallb] waiting for CRDs..."
+  local attempts=0
+  until kubectl get crd ipaddresspools.metallb.io &>/dev/null; do
+    sleep 5
+    (( attempts++ )) || true
+    if [ "$attempts" -ge 60 ]; then
+      log "[metallb] CRDs not available after 5 minutes, skipping pool config"
+      return 1
+    fi
+  done
+
+  # Build address list
+  local addresses="[]"
+  [ -n "$ipv4" ] && addresses=$(echo "$addresses" | jq --arg a "${ipv4}/32" '. + [$a]')
+  [ -n "$ipv6" ] && addresses=$(echo "$addresses" | jq --arg a "$ipv6" '. + [$a]')
+
+  log "[metallb] configuring address pool: $(echo "$addresses" | jq -c '.')"
+
+  # Apply IPAddressPool
+  jq -n --argjson addrs "$addresses" '{
+    apiVersion: "metallb.io/v1beta1",
+    kind: "IPAddressPool",
+    metadata: {
+      name: "seed-pool",
+      namespace: "metallb-system"
+    },
+    spec: {
+      addresses: $addrs,
+      autoAssign: false
+    }
+  }' | kubectl apply -f - 2>&1 | sed 's/^/  [metallb] /'
+
+  # Apply L2Advertisement
+  jq -n '{
+    apiVersion: "metallb.io/v1beta1",
+    kind: "L2Advertisement",
+    metadata: {
+      name: "seed-l2",
+      namespace: "metallb-system"
+    },
+    spec: {
+      ipAddressPools: ["seed-pool"]
+    }
+  }' | kubectl apply -f - 2>&1 | sed 's/^/  [metallb] /'
+}
+
 # Main reconciliation loop
 main() {
   wait_for_k3s
@@ -547,6 +604,9 @@ main() {
     "seed.loom.farm/managed-by=seed" --overwrite 2>/dev/null || true
   kubectl annotate namespace "$NAMESPACE" \
     "seed.loom.farm/flake-uri=$FLAKE_PATH" --overwrite 2>/dev/null || true
+
+  # Configure MetalLB address pools (once at startup)
+  configure_metallb_pools || true
 
   while true; do
     log "reconciliation starting..."

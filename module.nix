@@ -25,6 +25,12 @@ let
     [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory"]'' ]
     (builtins.readFile "${pkgs.kata-runtime}/share/defaults/kata-containers/${hypervisorConfigFile}");
 
+  # MetalLB: bare-metal LoadBalancer implementation (L2/BGP)
+  metallbManifest = pkgs.fetchurl {
+    url = "https://raw.githubusercontent.com/metallb/metallb/v0.15.3/config/manifests/metallb-native.yaml";
+    hash = "sha256-hLThAvK2X11pCF9YFsKTYrdGQYc9isPemW5fhqghkXY=";
+  };
+
   runtimeClassManifest = pkgs.writeText "seed-kata-runtime-class.yaml" ''
     apiVersion: node.k8s.io/v1
     kind: RuntimeClass
@@ -121,6 +127,7 @@ in {
 
     # ip forwarding for pod networking
     boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
+    boot.kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
 
     # Kernel modules for Kata VM isolation
     boot.kernelModules = [ "vhost_net" "vhost_vsock" ];
@@ -177,6 +184,7 @@ in {
           "+${pkgs.writeShellScript "seed-manifests" ''
             mkdir -p /var/lib/rancher/k3s/server/manifests
             ln -sf ${runtimeClassManifest} /var/lib/rancher/k3s/server/manifests/seed-kata-runtime-class.yaml
+            ln -sf ${metallbManifest} /var/lib/rancher/k3s/server/manifests/seed-metallb.yaml
           ''}"
         ];
       };
