@@ -57,29 +57,34 @@
       Type = "oneshot";
       ExecStartPre = [
         "${pkgs.coreutils}/bin/mkdir -p /seed/tpm"
-        # TPM diagnostics: write to PVC so host can read results
-        "+${pkgs.writeShellScript "tpm-diag" ''
-          exec > /seed/tpm/diagnostics.txt 2>&1
-          echo "=== TPM diagnostics $(date) ==="
-          echo "--- dmesg tpm/crb/acpi ---"
-          dmesg 2>/dev/null | grep -i -E 'tpm|crb|msft0101|fed40' || echo "(no matches)"
-          echo "--- /proc/iomem (fed40) ---"
-          grep -i fed40 /proc/iomem 2>/dev/null || echo "(no matches)"
-          echo "--- /sys/firmware/acpi/tables ---"
-          ls -la /sys/firmware/acpi/tables/ 2>/dev/null | grep -i tpm || echo "(no TPM2 table)"
-          echo "--- /sys/class/tpm ---"
-          ls -la /sys/class/tpm/ 2>/dev/null || echo "(no tpm class)"
-          echo "--- /dev/tpm* ---"
-          ls -la /dev/tpm* 2>/dev/null || echo "(no tpm devices)"
-          echo "--- /sys/devices/LNXSYSTM:00/MSFT0101:00/tpm/tpm0/dev ---"
-          cat /sys/devices/LNXSYSTM:00/MSFT0101:00/tpm/tpm0/dev 2>/dev/null || echo "(no dev file)"
-          echo "--- mount | grep dev ---"
-          mount | grep '/dev ' 2>/dev/null | head -5
-          echo "--- ls /dev (tpm,char) ---"
-          ls -la /dev/tpm* /dev/char/10:* 2>/dev/null || echo "(not found)"
-          echo "--- devtmpfs ---"
-          grep devtmpfs /proc/filesystems 2>/dev/null || echo "(devtmpfs not available)"
-          echo "=== end TPM diagnostics ==="
+        # Create TPM device nodes if kernel detected TPM but /dev nodes are missing.
+        # Kata VMs use tmpfs on /dev (not devtmpfs), so kernel doesn't auto-create nodes.
+        # Read major:minor from sysfs and mknod manually.
+        "+${pkgs.writeShellScript "tpm-dev-create" ''
+          for tpm in /sys/class/tpm/tpm*; do
+            [ -e "$tpm" ] || continue
+            name=$(basename "$tpm")
+            if [ ! -e "/dev/$name" ]; then
+              dev=$(cat "$tpm/dev" 2>/dev/null) || continue
+              major=''${dev%%:*}
+              minor=''${dev##*:}
+              mknod "/dev/$name" c "$major" "$minor"
+              chmod 0660 "/dev/$name"
+            fi
+          done
+
+          # Also create /dev/tpmrm* (resource manager interface)
+          for tpmrm in /sys/class/tpmrm/tpmrm*; do
+            [ -e "$tpmrm" ] || continue
+            name=$(basename "$tpmrm")
+            if [ ! -e "/dev/$name" ]; then
+              dev=$(cat "$tpmrm/dev" 2>/dev/null) || continue
+              major=''${dev%%:*}
+              minor=''${dev##*:}
+              mknod "/dev/$name" c "$major" "$minor"
+              chmod 0660 "/dev/$name"
+            fi
+          done
         ''}"
       ];
       ExecStart = "${pkgs.age-plugin-tpm}/bin/age-plugin-tpm --generate -o /seed/tpm/age-identity";
