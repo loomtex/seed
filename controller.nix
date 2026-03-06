@@ -102,6 +102,16 @@ in {
       description = "Reserved IPv6 /64 block for public LoadBalancer services (e.g. 2001:db8::/64).";
     };
 
+    swtpmImage = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = ''
+        Store path of the swtpm OCI image for vTPM pods.
+        When set, each instance gets a swtpm sidecar pod providing a vTPM device.
+        Build with: nix build .#swtpmImage
+      '';
+    };
+
     webhook = {
       enable = lib.mkEnableOption "Seed webhook for cache-busting reconciliation";
 
@@ -146,6 +156,8 @@ in {
         SEED_IPV4_ADDRESS = cfg.ipv4Address;
       } // lib.optionalAttrs (cfg.ipv6Block != "") {
         SEED_IPV6_BLOCK = cfg.ipv6Block;
+      } // lib.optionalAttrs (cfg.swtpmImage != "") {
+        SEED_SWTPM_IMAGE = cfg.swtpmImage;
       };
 
       path = with pkgs; [
@@ -155,6 +167,7 @@ in {
         jq
         kubectl
         nix
+        swtpm
       ];
 
       serviceConfig = {

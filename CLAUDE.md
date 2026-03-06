@@ -17,7 +17,8 @@ seed/
 ├── persistence.nix        # Impermanence integration for /var/lib/rancher
 ├── vm.nix                 # NixOS VM configuration for testing
 ├── patches/
-│   └── kata-multi-mount-rootfs.patch  # Kata shim: multi-mount rootfs + recursive bind
+│   ├── kata-multi-mount-rootfs.patch  # Kata shim: multi-mount rootfs + recursive bind
+│   └── kata-tpm-socket.patch          # Kata shim: TPM socket annotation for CLH vTPM
 ├── lib/
 │   ├── mkInstance.nix     # Build a Seed instance from a NixOS module
 │   └── mkImage.nix        # OCI image from a Seed instance (nix-snapshotter)
@@ -235,6 +236,53 @@ The controller configures MetalLB on startup:
 
 All LoadBalancer services are annotated with `metallb.universe.tf/address-pool: seed-pool`.
 
+### vTPM + sops-nix (instance secrets)
+
+Each instance gets a vTPM device (`/dev/tpm0`) backed by swtpm on the host, enabling standard TPM-based secrets decryption via sops-nix + age-plugin-tpm.
+
+**Architecture**: swtpm runs as a regular (non-Kata) pod per instance. Its socket is exposed via hostPath. CLH reads the socket path from the pod annotation `io.katacontainers.config.hypervisor.tpm_socket` and presents a TPM 2.0 CRB device to the guest.
+
+**Kata patch** (`patches/kata-tpm-socket.patch`): Adds annotation-based TPM socket support to Kata's Go runtime. Modifies 5 files:
+1. `hypervisor.go` — `TpmSocket` field on `HypervisorConfig`
+2. `config.go` — TOML parsing + CLH config mapping
+3. `clh.go` — Sets `vmconfig.Tpm` in `CreateVM()` when socket path is set
+4. `annotations.go` — `tpm_socket` annotation constant
+5. `utils.go` — Annotation-to-config mapping
+
+**Controller lifecycle** (when `SEED_SWTPM_IMAGE` is set):
+1. Creates `seed-<instance>-tpm` PVC (10Mi, persistent TPM state)
+2. Deploys `seed-<instance>-tpm` pod (swtpm socket on hostPath `/run/swtpm/<ns>-<instance>/`)
+3. Waits for swtpm pod Ready
+4. Creates `seed-<instance>-tpm-identity` PVC (10Mi, persistent age key)
+5. Applies instance pod with `tpm_socket` annotation pointing to swtpm socket
+
+**Instance-side** (`instance-base.nix`):
+- `age`, `age-plugin-tpm`, `tpm2-tools`, `sops` in system packages
+- `seed-tpm-init` oneshot service: generates `/seed/tpm/age-identity` on first boot via `age-plugin-tpm --generate`
+- sops-nix module imported via `mkInstance` — instances use standard `sops.secrets.*` options
+
+**swtpm OCI image**: Built with `nix-snapshotter.buildImage`, available at `packages.x86_64-linux.swtpmImage`. Runs on default runtime (not Kata).
+
+**Provisioning flow**:
+1. First deploy — no secrets. Instance boots, `seed-tpm-init` creates TPM identity. Public key in `/seed/tpm/age-identity`.
+2. Export public key (via kubectl port-forward or controller).
+3. Encrypt secrets: `sops --age <recipient> secrets/dns.yaml`
+4. Redeploy — sops-nix decrypts via TPM → `/run/secrets/*`
+
+**Instance author experience** — standard sops-nix:
+```nix
+{ config, ... }: {
+  sops.defaultSopsFile = ./secrets/dns.yaml;
+  sops.age.keyFile = "/seed/tpm/age-identity";
+  sops.secrets.api-key = {};
+  services.powerdns.extraConfig = ''
+    api-key-file=${config.sops.secrets.api-key.path}
+  '';
+}
+```
+
+**NixOS option**: `seed.controller.swtpmImage` — set to the swtpm image store path to enable vTPM for all instances.
+
 ### Dual-stack networking
 
 `seed.k3s.dualStack = true` adds `--cluster-cidr=10.42.0.0/16,fd00::/56` and `--service-cidr=10.43.0.0/16,fd01::/108` to k3s. The node must also have `--node-ip` set with both IPv4 and IPv6 addresses.
@@ -283,6 +331,7 @@ ArgoCD assumes YAML/Helm/Kustomize in → k8s manifests out. Seed's unit of depl
 - ~~IPv4 route block (public ingress via Vultr reserved IP)~~ ✓
 - ~~IPv6 route block (public ingress via reserved /64 block)~~ ✓
 - ~~MetalLB dual-stack LoadBalancer (replaces k3s ServiceLB)~~ ✓
+- ~~vTPM (swtpm + Kata TPM socket annotation + sops-nix + age-plugin-tpm)~~ ✓
 - Sandboxed nix evaluation for untrusted tenant flakes
 - Service connectivity between instances (DNS / env var injection)
 - Multi-server HA via embedded etcd (`--cluster-init`)

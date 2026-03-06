@@ -22,7 +22,7 @@ let
   # per-pod VM sizing via annotations (vCPUs, memory)
   kataConfig = builtins.replaceStrings
     [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params"]'' ]
-    [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory"]'' ]
+    [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory", "tpm_socket"]'' ]
     (builtins.readFile "${pkgs.kata-runtime}/share/defaults/kata-containers/${hypervisorConfigFile}");
 
   # MetalLB: bare-metal LoadBalancer implementation (L2/BGP)

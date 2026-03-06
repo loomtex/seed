@@ -7,9 +7,13 @@
       url = "github:joshperry/nix-snapshotter/k3s-1.34-support";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, nix-snapshotter, ... }:
+  outputs = { self, nixpkgs, nix-snapshotter, sops-nix, ... }:
   let
     system = "x86_64-linux";
     pkgs = import nixpkgs {
@@ -34,6 +38,7 @@
         #    through virtiofs into the guest VM
         patches = (old.patches or []) ++ [
           ./patches/kata-multi-mount-rootfs.patch
+          ./patches/kata-tpm-socket.patch
         ];
 
         # Fix CLH paths (upstream bug — package builds QEMU config but CLH
@@ -70,6 +75,9 @@
       # Stripped NixOS profile for Kata VM guests
       instance-base = ./instance-base.nix;
 
+      # sops-nix for instance secrets decryption via TPM
+      sops = sops-nix.nixosModules.sops;
+
       # Controller: reconciles instance definitions into Kata pods
       controller = ./controller.nix;
     };
@@ -77,6 +85,22 @@
     # Helpers: build Seed instances and images
     lib.mkInstance = mkInstance;
     lib.mkImage = mkImage;
+
+    # swtpm OCI image for vTPM pods (runs on default runtime, not Kata)
+    packages.${system}.swtpmImage = pkgs.nix-snapshotter.buildImage {
+      name = "seed-swtpm";
+      resolvedByNix = true;
+      config.entrypoint = [ "${pkgs.writeShellScript "swtpm-entrypoint" ''
+        exec ${pkgs.swtpm}/bin/swtpm socket \
+          --tpmstate dir=/tpm-state \
+          --ctrl type=unixio,path=/tpm-socket/swtpm-sock \
+          --flags startup-clear \
+          --tpm2
+      ''}" ];
+      copyToRoot = pkgs.runCommand "swtpm-rootfs" {} ''
+        mkdir -p $out/{tpm-state,tpm-socket,tmp}
+      '';
+    };
 
     # Re-export nix-snapshotter home modules for rootless k3s consumers
     homeModules = nix-snapshotter.homeModules;

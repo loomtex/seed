@@ -1,0 +1,81 @@
+Kata Containers: add TPM socket support for Cloud Hypervisor
+
+Pod annotation io.katacontainers.config.hypervisor.tpm_socket passes
+a host-side swtpm socket path to CLH, which exposes a TPM 2.0 CRB
+device to the guest VM.
+
+--- a/virtcontainers/hypervisor.go
++++ b/virtcontainers/hypervisor.go
+@@ -558,6 +558,9 @@
+ 	// GuestHookPath is the path within the VM that will be used for 'drop-in' hooks
+ 	GuestHookPath string
+
++	// TpmSocket is the path to the swtpm socket for vTPM device passthrough via CLH
++	TpmSocket string
++
+ 	// VMid is the id of the VM that create the hypervisor if the VM is created by the factory.
+ 	// VMid is "" if the hypervisor is not created by the factory.
+ 	VMid string
+
+--- a/pkg/katautils/config.go
++++ b/pkg/katautils/config.go
+@@ -113,6 +113,7 @@
+ 	RemoteHypervisorSocket         string                    `toml:"remote_hypervisor_socket"`
+ 	SnpIdBlock                     string                    `toml:"snp_id_block"`
+ 	SnpIdAuth                      string                    `toml:"snp_id_auth"`
++	TpmSocket                      string                    `toml:"tpm_socket"`
+ 	HypervisorPathList             []string                  `toml:"valid_hypervisor_paths"`
+ 	JailerPathList                 []string                  `toml:"valid_jailer_paths"`
+ 	VirtioFSDaemonList             []string                  `toml:"valid_virtio_fs_daemon_paths"`
+@@ -1094,6 +1095,7 @@
+ 		DisableSeLinux:                 h.DisableSeLinux,
+ 		DisableGuestSeLinux:            h.DisableGuestSeLinux,
+ 		NetRateLimiterBwMaxRate:        h.getNetRateLimiterBwMaxRate(),
++		TpmSocket:                      h.TpmSocket,
+ 		NetRateLimiterBwOneTimeBurst:   h.getNetRateLimiterBwOneTimeBurst(),
+ 		NetRateLimiterOpsMaxRate:       h.getNetRateLimiterOpsMaxRate(),
+ 		NetRateLimiterOpsOneTimeBurst:  h.getNetRateLimiterOpsOneTimeBurst(),
+
+--- a/virtcontainers/clh.go
++++ b/virtcontainers/clh.go
+@@ -568,6 +568,11 @@
+ 	clh.vmconfig.Rng = chclient.NewRngConfig(clh.config.EntropySource)
+ 	clh.vmconfig.Rng.SetIommu(clh.config.IOMMU)
+
++	// vTPM: pass swtpm socket to CLH for TPM 2.0 CRB device in guest
++	if clh.config.TpmSocket != "" {
++		clh.vmconfig.Tpm = chclient.NewTpmConfig(clh.config.TpmSocket)
++	}
++
+ 	// set the initial root/boot disk of hypervisor
+ 	assetPath, assetType, err := clh.config.ImageOrInitrdAssetPath()
+ 	if err != nil {
+
+--- a/virtcontainers/pkg/annotations/annotations.go
++++ b/virtcontainers/pkg/annotations/annotations.go
+@@ -207,6 +207,9 @@
+ 	// Iommu is a sandbox annotation to specify if the VM should have a vIOMMU device
+ 	IOMMU = kataAnnotHypervisorPrefix + "enable_iommu"
+
++	// TpmSocket is a sandbox annotation to specify the swtpm socket path for vTPM device
++	TpmSocket = kataAnnotHypervisorPrefix + "tpm_socket"
++
+ 	// Enable Hypervisor Devices IOMMU_PLATFORM
+ 	IOMMUPlatform = kataAnnotHypervisorPrefix + "enable_iommu_platform"
+
+
+--- a/pkg/oci/utils.go
++++ b/pkg/oci/utils.go
+@@ -575,6 +575,12 @@
+ 		return err
+ 	}
+
++	if value, ok := ocispec.Annotations[vcAnnotations.TpmSocket]; ok {
++		if value != "" {
++			config.HypervisorConfig.TpmSocket = value
++		}
++	}
++
+ 	return nil
+ }
+

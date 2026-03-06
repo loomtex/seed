@@ -17,6 +17,7 @@ let
     modules = [
       self.nixosModules.instance-base
       self.nixosModules.instance
+      self.nixosModules.sops
       { networking.hostName = name; }
       module
     ] ++ extraModules;
