@@ -57,9 +57,10 @@
       Type = "oneshot";
       ExecStartPre = [
         "${pkgs.coreutils}/bin/mkdir -p /seed/tpm"
-        # TPM diagnostics: dump kernel detection info to journal for debugging
+        # TPM diagnostics: write to PVC so host can read results
         "+${pkgs.writeShellScript "tpm-diag" ''
-          echo "=== TPM diagnostics ==="
+          exec > /seed/tpm/diagnostics.txt 2>&1
+          echo "=== TPM diagnostics $(date) ==="
           echo "--- dmesg tpm/crb/acpi ---"
           dmesg 2>/dev/null | grep -i -E 'tpm|crb|msft0101|fed40' || echo "(no matches)"
           echo "--- /proc/iomem (fed40) ---"
