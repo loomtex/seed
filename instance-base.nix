@@ -71,6 +71,14 @@
           ls -la /sys/class/tpm/ 2>/dev/null || echo "(no tpm class)"
           echo "--- /dev/tpm* ---"
           ls -la /dev/tpm* 2>/dev/null || echo "(no tpm devices)"
+          echo "--- /sys/devices/LNXSYSTM:00/MSFT0101:00/tpm/tpm0/dev ---"
+          cat /sys/devices/LNXSYSTM:00/MSFT0101:00/tpm/tpm0/dev 2>/dev/null || echo "(no dev file)"
+          echo "--- mount | grep dev ---"
+          mount | grep '/dev ' 2>/dev/null | head -5
+          echo "--- ls /dev (tpm,char) ---"
+          ls -la /dev/tpm* /dev/char/10:* 2>/dev/null || echo "(not found)"
+          echo "--- devtmpfs ---"
+          grep devtmpfs /proc/filesystems 2>/dev/null || echo "(devtmpfs not available)"
           echo "=== end TPM diagnostics ==="
         ''}"
       ];
