@@ -181,6 +181,28 @@ seed.loom.farm/generation: <hash>
 
 **Known limitation**: the generation-based skip only checks if _any_ pod has the current generation label. If a pod is deleted externally (not via generation change), the controller won't recreate it until the next generation change. Workaround: delete all pods or restart the controller.
 
+### IPv4 route block
+
+Public ingress via a Vultr reserved IP. The flake exports an `ipv4` output that maps external ports to instance ports:
+
+```nix
+ipv4 = {
+  enable = true;
+  routes = {
+    dns = { port = 53; protocol = "dns"; instance = "dns"; };
+    # web = { port = 443; protocol = "tcp"; instance = "web"; targetPort = 8080; };
+  };
+};
+```
+
+Each route entry has: `port` (external), `protocol` (`tcp`/`udp`/`dns`/`http`/`grpc`), `instance` (target), and optional `targetPort` (defaults to `port`).
+
+The controller groups routes by instance and creates one `LoadBalancer` service per instance (`seed-<instance>-ipv4`) with `loadBalancerIP` set to `SEED_IPV4_ADDRESS` and `externalTrafficPolicy: Local`. These are distinct from the ClusterIP services created by `seed.expose`.
+
+The `seed.controller.ipv4Address` NixOS option passes the reserved IP as `SEED_IPV4_ADDRESS` to the controller. k3s ServiceLB handles routing traffic from the node IP to the pods.
+
+IPv4 services are labeled with `seed.loom.farm/service-type: ipv4` and participate in generation-based reaping like all other resources.
+
 ### Instance authoring gotchas
 
 Instances run NixOS inside Kata VMs with `boot.isContainer = true` (set in `instance-base.nix`). This strips kernel/initrd/bootloader for smaller closures, but has side effects:
@@ -218,6 +240,7 @@ ArgoCD assumes YAML/Helm/Kustomize in → k8s manifests out. Seed's unit of depl
 - ~~Namespace-per-flake isolation (hash-derived, platform-enforced)~~ ✓
 - ~~UDP/DNS protocol support in instance module and controller~~ ✓
 - ~~DNS instance (PowerDNS authoritative for loom.farm)~~ ✓
+- ~~IPv4 route block (public ingress via Vultr reserved IP)~~ ✓
 - Sandboxed nix evaluation for untrusted tenant flakes
 - Service connectivity between instances (DNS / env var injection)
 - Multi-server HA via embedded etcd (`--cluster-init`)

@@ -114,6 +114,14 @@
       }
     ) instances;
 
+    # IPv4 route block — maps external ports on a shared reserved IP to instances
+    ipv4 = {
+      enable = true;
+      routes = {
+        dns = { port = 53; protocol = "dns"; instance = "dns"; };
+      };
+    };
+
     # Automated tests (run with: nix flake check)
     checks.${system} = {
       # Tests metadata eval + image build (no KVM needed)

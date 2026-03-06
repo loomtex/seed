@@ -204,6 +204,119 @@ add_volumes_to_pod() {
     '.spec.volumes = $vols | .spec.containers[0].volumeMounts = $mnts'
 }
 
+# Generate LoadBalancer service manifest for ipv4 routes
+generate_lb_service() {
+  local instance=$1 gen=$2 lb_ip=$3
+  local ports_json=$4
+
+  jq -n \
+    --arg name "seed-${instance}-ipv4" \
+    --arg instance "$instance" \
+    --arg gen "$gen" \
+    --arg lb_ip "$lb_ip" \
+    --argjson ports "$ports_json" \
+    '{
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: {
+        name: $name,
+        namespace: "'"$NAMESPACE"'",
+        labels: {
+          "seed.loom.farm/managed-by": "seed",
+          "seed.loom.farm/instance": $instance,
+          "seed.loom.farm/generation": $gen,
+          "seed.loom.farm/service-type": "ipv4"
+        }
+      },
+      spec: {
+        type: "LoadBalancer",
+        loadBalancerIP: $lb_ip,
+        externalTrafficPolicy: "Local",
+        selector: {
+          "seed.loom.farm/instance": $instance
+        },
+        ports: $ports
+      }
+    }'
+}
+
+# Reconcile ipv4 route block — creates LoadBalancer services for public ingress
+reconcile_ipv4_routes() {
+  local gen=$1
+  local ipv4_address="${SEED_IPV4_ADDRESS:-}"
+
+  # Check if ipv4 output exists and is enabled
+  local ipv4_json
+  ipv4_json=$(nix eval "${FLAKE_PATH}#ipv4" --json 2>/dev/null) || return 0
+  local enabled
+  enabled=$(echo "$ipv4_json" | jq -r '.enable // false')
+  [ "$enabled" = "true" ] || return 0
+
+  if [ -z "$ipv4_address" ]; then
+    log "[ipv4] SEED_IPV4_ADDRESS not set, skipping route reconciliation"
+    return 0
+  fi
+
+  log "[ipv4] reconciling routes (loadBalancerIP=$ipv4_address)"
+
+  local routes_json
+  routes_json=$(echo "$ipv4_json" | jq '.routes // {}')
+
+  # Group routes by instance
+  local instances_with_routes
+  instances_with_routes=$(echo "$routes_json" | jq -r '[.[].instance] | unique | .[]')
+
+  for instance in $instances_with_routes; do
+    local ports_array="[]"
+
+    # Get all route entries for this instance
+    local route_keys
+    route_keys=$(echo "$routes_json" | jq -r --arg inst "$instance" \
+      'to_entries[] | select(.value.instance == $inst) | .key')
+
+    for key in $route_keys; do
+      local port target_port proto
+      port=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].port')
+      target_port=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].targetPort // .[$k].port')
+      proto=$(echo "$routes_json" | jq -r --arg k "$key" '.[$k].protocol')
+
+      case "$proto" in
+        dns)
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "${key}-tcp" \
+            --argjson port "$port" \
+            --argjson tp "$target_port" \
+            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "TCP" }]')
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "${key}-udp" \
+            --argjson port "$port" \
+            --argjson tp "$target_port" \
+            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "UDP" }]')
+          ;;
+        udp)
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "$key" \
+            --argjson port "$port" \
+            --argjson tp "$target_port" \
+            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "UDP" }]')
+          ;;
+        *)
+          ports_array=$(echo "$ports_array" | jq \
+            --arg name "$key" \
+            --argjson port "$port" \
+            --argjson tp "$target_port" \
+            '. + [{ name: $name, port: $port, targetPort: $tp, protocol: "TCP" }]')
+          ;;
+      esac
+    done
+
+    local svc_json
+    svc_json=$(generate_lb_service "$instance" "$gen" "$ipv4_address" "$ports_array")
+    log "[ipv4] applying LoadBalancer service: seed-${instance}-ipv4"
+    echo "$svc_json" | kubectl apply -f - 2>&1 | sed "s/^/  [ipv4] /"
+  done
+}
+
 # Reap resources whose generation doesn't match current
 reap_old() {
   local gen=$1
@@ -400,6 +513,9 @@ main() {
     for name in $instances; do
       reconcile_instance "$name" "$gen" "${image_paths[$name]}" || (( failed++ )) || true
     done
+
+    # Reconcile ipv4 routes (LoadBalancer services for public ingress)
+    reconcile_ipv4_routes "$gen" || log "ipv4 route reconciliation failed"
 
     if [ "$failed" -eq 0 ]; then
       reap_old "$gen"

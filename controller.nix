@@ -90,6 +90,12 @@ in {
       '';
     };
 
+    ipv4Address = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "Reserved IPv4 address for public LoadBalancer services.";
+    };
+
     webhook = {
       enable = lib.mkEnableOption "Seed webhook for cache-busting reconciliation";
 
@@ -130,6 +136,8 @@ in {
         KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
       } // lib.optionalAttrs (cfg.namespace != "") {
         SEED_NAMESPACE = cfg.namespace;
+      } // lib.optionalAttrs (cfg.ipv4Address != "") {
+        SEED_IPV4_ADDRESS = cfg.ipv4Address;
       };
 
       path = with pkgs; [
