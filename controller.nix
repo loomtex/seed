@@ -96,6 +96,12 @@ in {
       description = "Reserved IPv4 address for public LoadBalancer services.";
     };
 
+    ipv6Block = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "Reserved IPv6 /64 block for public LoadBalancer services (e.g. 2001:db8::/64).";
+    };
+
     webhook = {
       enable = lib.mkEnableOption "Seed webhook for cache-busting reconciliation";
 
@@ -138,6 +144,8 @@ in {
         SEED_NAMESPACE = cfg.namespace;
       } // lib.optionalAttrs (cfg.ipv4Address != "") {
         SEED_IPV4_ADDRESS = cfg.ipv4Address;
+      } // lib.optionalAttrs (cfg.ipv6Block != "") {
+        SEED_IPV6_BLOCK = cfg.ipv6Block;
       };
 
       path = with pkgs; [

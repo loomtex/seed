@@ -122,6 +122,15 @@
       };
     };
 
+    # IPv6 route block — maps external ports on addresses from a reserved /64 to instances
+    ipv6 = {
+      enable = true;
+      block = "2001:19f0:6402:7eb::/64";
+      routes = {
+        dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
+      };
+    };
+
     # Automated tests (run with: nix flake check)
     checks.${system} = {
       # Tests metadata eval + image build (no KVM needed)
