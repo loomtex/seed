@@ -109,6 +109,7 @@ in {
   # Default sops-nix to use the TPM-backed age identity provisioned by seed-tpm-init.
   # Instances using sops.secrets.* will decrypt via their unique vTPM key automatically.
   sops.age.keyFile = lib.mkDefault "/seed/tpm/age-identity";
+  sops.age.plugins = lib.mkDefault [ pkgs.age-plugin-tpm ];
 
   system.stateVersion = lib.mkDefault "25.11";
 }
