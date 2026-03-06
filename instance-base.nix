@@ -52,9 +52,27 @@
     wantedBy = [ "multi-user.target" ];
     before = lib.mkDefault [ "sops-nix.service" ];
     unitConfig.ConditionPathExists = "!/seed/tpm/age-identity";
+    path = [ pkgs.coreutils pkgs.util-linux pkgs.gnugrep ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /seed/tpm";
+      ExecStartPre = [
+        "${pkgs.coreutils}/bin/mkdir -p /seed/tpm"
+        # TPM diagnostics: dump kernel detection info to journal for debugging
+        "+${pkgs.writeShellScript "tpm-diag" ''
+          echo "=== TPM diagnostics ==="
+          echo "--- dmesg tpm/crb/acpi ---"
+          dmesg 2>/dev/null | grep -i -E 'tpm|crb|msft0101|fed40' || echo "(no matches)"
+          echo "--- /proc/iomem (fed40) ---"
+          grep -i fed40 /proc/iomem 2>/dev/null || echo "(no matches)"
+          echo "--- /sys/firmware/acpi/tables ---"
+          ls -la /sys/firmware/acpi/tables/ 2>/dev/null | grep -i tpm || echo "(no TPM2 table)"
+          echo "--- /sys/class/tpm ---"
+          ls -la /sys/class/tpm/ 2>/dev/null || echo "(no tpm class)"
+          echo "--- /dev/tpm* ---"
+          ls -la /dev/tpm* 2>/dev/null || echo "(no tpm devices)"
+          echo "=== end TPM diagnostics ==="
+        ''}"
+      ];
       ExecStart = "${pkgs.age-plugin-tpm}/bin/age-plugin-tpm --generate -o /seed/tpm/age-identity";
       RemainAfterExit = true;
     };
