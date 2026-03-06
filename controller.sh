@@ -498,6 +498,9 @@ main() {
     local gen
     gen=$(echo -n "$hash_input" | sort | compute_generation)
 
+    # Reconcile ipv4 routes on every loop (independent of instance generation)
+    reconcile_ipv4_routes "$gen" || log "ipv4 route reconciliation failed"
+
     # Check if this generation is already deployed
     local deployed
     deployed=$(deployed_generation)
@@ -513,9 +516,6 @@ main() {
     for name in $instances; do
       reconcile_instance "$name" "$gen" "${image_paths[$name]}" || (( failed++ )) || true
     done
-
-    # Reconcile ipv4 routes (LoadBalancer services for public ingress)
-    reconcile_ipv4_routes "$gen" || log "ipv4 route reconciliation failed"
 
     if [ "$failed" -eq 0 ]; then
       reap_old "$gen"
