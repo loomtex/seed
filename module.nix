@@ -147,7 +147,7 @@ in {
         [ "--https-listen-port ${toString cfg.k3s.port}" ]
         [ "--write-kubeconfig-mode ${cfg.k3s.kubeconfigMode}" ]
         (lib.optionals cfg.k3s.dualStack [
-          "--cluster-cidr=10.42.0.0/16,fd00::/108"
+          "--cluster-cidr=10.42.0.0/16,fd00::/56"
           "--service-cidr=10.43.0.0/16,fd01::/108"
         ])
         cfg.k3s.extraFlags
