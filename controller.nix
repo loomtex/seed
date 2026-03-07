@@ -193,6 +193,11 @@ in {
       };
     };
 
+    # Allow pods to reach the webhook listener (pod CIDR → host port)
+    networking.firewall.extraCommands = lib.mkIf cfg.webhook.enable ''
+      iptables -A nixos-fw -p tcp -s 10.42.0.0/16 --dport ${toString cfg.webhook.port} -j nixos-fw-accept
+    '';
+
     systemd.services.seed-webhook = lib.mkIf cfg.webhook.enable {
       description = "Seed webhook — triggers cache-busting reconciliation";
       wantedBy = [ "multi-user.target" ];
