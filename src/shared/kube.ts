@@ -175,14 +175,20 @@ export async function applyDeployment(
   const name = deployment.metadata?.name;
   if (!name) throw new Error("Deployment manifest missing metadata.name");
 
+  // Separate read from write — a replace 409 (stale resourceVersion during
+  // rollout) must not fall through to create, which would 409 AlreadyExists.
+  let existing: k8s.V1Deployment | null = null;
   try {
-    const existing = await apps.readNamespacedDeployment({ name, namespace });
-    // Clone to avoid mutating the desired state object with resourceVersion
+    existing = await apps.readNamespacedDeployment({ name, namespace });
+  } catch {
+    // Not found — will create below
+  }
+
+  if (existing) {
     const body = structuredClone(deployment);
     body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
     await apps.replaceNamespacedDeployment({ name, namespace, body });
-  } catch {
-    // Clone to ensure no stale resourceVersion from a previous apply
+  } else {
     const body = structuredClone(deployment);
     delete body.metadata?.resourceVersion;
     await apps.createNamespacedDeployment({ namespace, body });

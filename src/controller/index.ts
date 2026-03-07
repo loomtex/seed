@@ -519,14 +519,17 @@ function startWatches(
   async function handleDeploymentChange(obj: k8s.V1Deployment): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
-    if (isReconciling()) return;
 
     const key = `deployment/${name}`;
     const gen = obj.metadata?.generation;
 
-    // Skip if spec generation hasn't changed (status-only update or our own apply)
+    // Always track generation, even during reconciliation — so our own
+    // changes don't trigger false drift detection after reconciliation ends.
     if (gen !== undefined && knownGeneration.get(key) === gen) return;
     if (gen !== undefined) knownGeneration.set(key, gen);
+
+    // Only correct drift outside of reconciliation
+    if (isReconciling()) return;
 
     const desired = getDesired();
     if (!desired) return;
@@ -545,8 +548,8 @@ function startWatches(
   async function handleDeploymentDelete(obj: k8s.V1Deployment): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
-    if (isReconciling()) return;
     knownGeneration.delete(`deployment/${name}`);
+    if (isReconciling()) return;
 
     const desired = getDesired();
     if (!desired) return;
@@ -592,13 +595,14 @@ function startWatches(
   async function handleServiceChange(obj: k8s.V1Service): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
-    if (isReconciling()) return;
 
     const key = `service/${name}`;
     const gen = obj.metadata?.generation;
 
     if (gen !== undefined && knownGeneration.get(key) === gen) return;
     if (gen !== undefined) knownGeneration.set(key, gen);
+
+    if (isReconciling()) return;
 
     const desired = getDesired();
     if (!desired) return;
@@ -617,8 +621,8 @@ function startWatches(
   async function handleServiceDelete(obj: k8s.V1Service): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
-    if (isReconciling()) return;
     knownGeneration.delete(`service/${name}`);
+    if (isReconciling()) return;
 
     const desired = getDesired();
     if (!desired) return;
