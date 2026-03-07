@@ -72,14 +72,15 @@
     };
   };
 
-  # Write SEED_NODE_IP (from k8s downward API) to a file so Caddy can read it.
-  # Kata agent sets env vars on the init process, but systemd doesn't propagate
-  # them to services. An activation script captures it early in boot.
+  # Extract SEED_NODE_IP from PID 1's environment for Caddy.
+  # Kata agent sets env vars on the init process (systemd), but systemd
+  # doesn't propagate them to activation scripts or services.
+  # Read from /proc/1/environ (null-delimited) instead.
   system.activationScripts.seedNodeEnv = {
     deps = [];
     text = ''
       mkdir -p /run/seed
-      echo "SEED_NODE_IP=''${SEED_NODE_IP:-}" > /run/seed/env
+      tr '\0' '\n' < /proc/1/environ | grep '^SEED_NODE_IP=' > /run/seed/env || echo "SEED_NODE_IP=" > /run/seed/env
     '';
   };
 
