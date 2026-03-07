@@ -8,14 +8,32 @@ Seed is a NixOS module that bundles k3s + nix-snapshotter + Kata Containers into
 
 ```
 seed/
-├── flake.nix              # Inputs, overlays, module/template exports
+├── flake.nix              # Inputs, overlays, module/template exports, packages
 ├── module.nix             # seed.* NixOS options and config (node-level)
 ├── instance.nix           # seed.* instance options (size, expose, storage, connect)
 ├── instance-base.nix      # Stripped NixOS profile for Kata VM guests
-├── controller.nix         # seed.controller.* NixOS module (systemd service)
-├── controller.sh          # Reconciliation loop (bash)
+├── controller.nix         # seed.controller.* NixOS module (k8s manifests)
+├── controller.sh          # Legacy reconciliation loop (bash, replaced by src/)
 ├── persistence.nix        # Impermanence integration for /var/lib/rancher
 ├── vm.nix                 # NixOS VM configuration for testing
+├── src/                   # TypeScript controller components
+│   ├── shared/
+│   │   ├── types.ts       # SeedHostTask CRD types, metadata types
+│   │   ├── labels.ts      # Label constants, helpers
+│   │   └── kube.ts        # k8s client setup, helpers
+│   ├── controller/
+│   │   ├── index.ts       # Main reconciliation loop, informer setup
+│   │   ├── builder.ts     # Builder Job creation/watching
+│   │   ├── manifests.ts   # Pod/Service/PVC generation
+│   │   ├── routes.ts      # IPv4/IPv6 LB services
+│   │   ├── metallb.ts     # MetalLB configuration
+│   │   └── webhook.ts     # HTTP webhook handler
+│   └── host-agent/
+│       ├── index.ts       # CRD watcher, main loop
+│       └── swtpm.ts       # swtpm process management
+├── package.json           # Node.js deps (@kubernetes/client-node)
+├── tsconfig.json          # TypeScript config
+├── build.mjs              # esbuild bundler script
 ├── patches/
 │   ├── kata-multi-mount-rootfs.patch  # Kata shim: multi-mount rootfs + recursive bind
 │   └── kata-tpm-socket.patch          # Kata shim: TPM socket annotation for CLH vTPM
@@ -152,19 +170,31 @@ The image ref format is `nix:0/nix/store/...-seed-<name>` which nix-snapshotter 
 
 ### Controller
 
-A bash-based systemd service (`controller.sh` + `controller.nix`) that runs on the seed node with direct access to nix and kubectl.
+Three k8s-native TypeScript components replace the legacy bash controller:
+
+1. **seed-controller** (Deployment) — main reconciliation engine + webhook handler
+2. **seed-host-agent** (DaemonSet) — privileged pod managing swtpm processes on host
+3. **seed-builder** (Jobs) — nix build/eval in isolated pods
+
+Written in TypeScript with `@kubernetes/client-node`. Bundled via esbuild, packaged as OCI images via `nix-snapshotter.buildImage`.
+
+**CRD: SeedHostTask** — controller creates SeedHostTasks, host agent watches them and starts swtpm processes, updates status with socket paths. The controller reads the status to get socket paths for Kata pod annotations.
 
 **Namespace isolation**: each flake gets its own k8s namespace derived deterministically from the flake URI. `namespace = "s-" + base32(sha256(flake_uri))[:12]`. No flake can choose or influence its namespace — platform-enforced isolation. The `SEED_NAMESPACE` env var overrides this for dev/testing only.
 
-**Reconciliation loop:**
+**Two-level reconciliation:**
 
-1. Creates/labels namespace on startup (with `seed.loom.farm/flake-uri` annotation for debugging)
-2. Lists instance names from `seeds` in the flake
-3. Builds each instance's OCI image via `nix build`
-4. Computes a generation hash (sha256 of sorted name=storepath pairs)
-5. Skips if the deployed generation matches (content-addressed — same closures = no-op)
-6. For each instance: evaluates metadata, applies PVCs, pod (with Kata annotations), and service
-7. Reaps seed-managed resources with non-matching generation (except PVCs)
+Level 1 — Generation reconciliation (on flake change):
+1. Lists instance names via `nix eval`
+2. Creates builder Jobs (one per instance, nix build + eval)
+3. Waits for Jobs, reads results from ConfigMaps
+4. Computes generation hash (sha256 of sorted name=storepath pairs)
+5. Renders desired state, applies to cluster
+
+Level 2 — Continuous self-healing (always running):
+- Watches pods, services, PVCs via k8s API
+- Recreates missing resources within seconds (e.g. pod deleted externally)
+- Reaps old-generation resources (except PVCs)
 
 **Label scheme** — every resource gets:
 ```
@@ -173,17 +203,23 @@ seed.loom.farm/instance: <name>
 seed.loom.farm/generation: <hash>
 ```
 
-**Stateless**: all state lives in k8s labels. The generation hash is content-addressed from image store paths — the controller reads deployed generation from existing pod labels at each loop.
+**Stateless**: all state lives in k8s labels. The generation hash is content-addressed from image store paths.
 
 **Pod updates**: pods are immutable. If an instance's image ref changes, the controller deletes the old pod before applying the new one.
 
 **Reaping**: after applying all instances, resources with a non-matching generation hash are deleted. PVCs are exempt to protect persistent data.
 
-**Manifest generation**: done in bash with `jq`, not nix. Generation hashes are runtime values that would create an impedance mismatch in nix eval.
+**Manifest generation**: done in TypeScript (replaces jq). Type-safe k8s manifests with `@kubernetes/client-node` types.
 
 **Protocol handling**: the controller reads `.protocol` from each expose entry in metadata. `"dns"` generates both TCP and UDP service ports. `"udp"` generates UDP-only. Everything else generates TCP.
 
-**Known limitation**: the generation-based skip only checks if _any_ pod has the current generation label. If a pod is deleted externally (not via generation change), the controller won't recreate it until the next generation change. Workaround: delete all pods or restart the controller.
+**Webhook**: HTTP server in the controller pod, Caddy reverse-proxies to it via k8s Service. HMAC-SHA256 verification for GitHub webhooks.
+
+**Builder Jobs**: run on default runtime (not Kata — unix sockets don't traverse virtiofs). Mount host nix-daemon socket and nix store. Results delivered via ConfigMap.
+
+**RBAC**: ClusterRole with access to namespaces, pods, pvcs, services, configmaps, jobs, runtimeclasses, metallb CRDs, and SeedHostTask CRDs.
+
+**Legacy**: `controller.sh` is preserved for reference but no longer used in production.
 
 ### IPv4 route block
 

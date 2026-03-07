@@ -174,6 +174,90 @@
       }
     ) instances;
 
+    # Controller + host agent TypeScript packages
+    packages.${system} = let
+      # Build TypeScript controller and host agent
+      seedController = pkgs.buildNpmPackage {
+        pname = "seed-controller";
+        version = "0.1.0";
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            let base = builtins.baseNameOf path; in
+            (type == "directory" && builtins.elem base [ "src" ]) ||
+            (type == "directory" && builtins.elem base [ "shared" "controller" "host-agent" ]) ||
+            builtins.match ".*\\.ts$" path != null ||
+            builtins.match ".*\\.mjs$" path != null ||
+            builtins.elem base [ "package.json" "package-lock.json" "tsconfig.json" "build.mjs" ];
+        };
+        npmDepsHash = "sha256-4YKyDpdPk57FpfeR6ilPVpS5JS/n2//Ph1dW8BksRL0=";
+        buildPhase = ''
+          runHook preBuild
+          node build.mjs
+          runHook postBuild
+        '';
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/app
+          cp dist/controller.mjs $out/app/
+          cp dist/host-agent.mjs $out/app/
+          # Copy k8s client (external in esbuild)
+          cp -r node_modules $out/app/
+          runHook postInstall
+        '';
+      };
+    in {
+      # Bundled TypeScript
+      controller = seedController;
+
+      # OCI images for k8s deployment
+      controllerImage = pkgs.nix-snapshotter.buildImage {
+        name = "seed-controller";
+        resolvedByNix = true;
+        copyToRoot = pkgs.runCommand "controller-rootfs" {} ''
+          mkdir -p $out/{app,tmp,nix/store}
+          cp ${seedController}/app/controller.mjs $out/app/
+          cp -r ${seedController}/app/node_modules $out/app/
+        '';
+        config.entrypoint = [ "${pkgs.nodejs_22}/bin/node" "/app/controller.mjs" ];
+      };
+
+      hostAgentImage = pkgs.nix-snapshotter.buildImage {
+        name = "seed-host-agent";
+        resolvedByNix = true;
+        copyToRoot = pkgs.runCommand "host-agent-rootfs" {} ''
+          mkdir -p $out/{app,tmp,nix/store,usr/bin}
+          cp ${seedController}/app/host-agent.mjs $out/app/
+          cp -r ${seedController}/app/node_modules $out/app/
+          ln -s ${pkgs.swtpm}/bin/swtpm $out/usr/bin/swtpm
+        '';
+        config.entrypoint = [ "${pkgs.nodejs_22}/bin/node" "/app/host-agent.mjs" ];
+      };
+
+      builderImage = pkgs.nix-snapshotter.buildImage {
+        name = "seed-builder";
+        resolvedByNix = true;
+        copyToRoot = pkgs.runCommand "builder-rootfs" {} ''
+          mkdir -p $out/{tmp,nix/store,bin}
+          ln -s ${pkgs.bash}/bin/bash $out/bin/sh
+        '';
+        config.entrypoint = [ "${pkgs.bash}/bin/bash" ];
+        config.env = [
+          "PATH=${pkgs.lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.nix pkgs.kubectl pkgs.git ]}"
+        ];
+      };
+
+      # swtpm image (existing, for TPM pods)
+      swtpmImage = pkgs.nix-snapshotter.buildImage {
+        name = "seed-swtpm";
+        resolvedByNix = true;
+        copyToRoot = pkgs.runCommand "swtpm-rootfs" {} ''
+          mkdir -p $out/{tmp,nix/store,run}
+        '';
+        config.entrypoint = [ "${pkgs.swtpm}/bin/swtpm" ];
+      };
+    };
+
     # IPv4 route block — maps external ports on a shared reserved IP to instances
     ipv4 = {
       enable = true;
