@@ -407,6 +407,7 @@ function startWatches(
   clients: ReturnType<typeof makeClients>,
   namespace: string,
   getDesired: () => DesiredState | null,
+  isReconciling: () => boolean,
 ): void {
   // Track recently-applied resources to avoid self-triggered corrections
   const recentlyApplied = new Set<string>();
@@ -430,6 +431,7 @@ function startWatches(
   async function handleDeploymentChange(obj: k8s.V1Deployment): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
+    if (isReconciling()) return;
     const key = `deployment/${name}`;
     if (recentlyApplied.has(key)) return;
 
@@ -452,6 +454,7 @@ function startWatches(
   async function handleDeploymentDelete(obj: k8s.V1Deployment): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
+    if (isReconciling()) return;
     const key = `deployment/${name}`;
     if (recentlyApplied.has(key)) return;
 
@@ -494,6 +497,7 @@ function startWatches(
   async function handleServiceChange(obj: k8s.V1Service): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
+    if (isReconciling()) return;
     const key = `service/${name}`;
     if (recentlyApplied.has(key)) return;
 
@@ -515,6 +519,7 @@ function startWatches(
   async function handleServiceDelete(obj: k8s.V1Service): Promise<void> {
     const name = obj.metadata?.name;
     if (!name) return;
+    if (isReconciling()) return;
     const key = `service/${name}`;
     if (recentlyApplied.has(key)) return;
 
@@ -638,11 +643,14 @@ async function main(): Promise<void> {
     log("controller", `MetalLB configuration failed: ${err}`);
   }
 
-  // Webhook: resolves a Promise so the main loop wakes immediately
+  // Webhook signaling: sets a flag and wakes the main loop.
+  // If a webhook fires during reconciliation, the flag stays set so we re-reconcile.
+  let refreshRequested = false;
   let webhookResolve: (() => void) | null = null;
   if (config.webhookSecretFile || process.env["SEED_WEBHOOK_PORT"]) {
     const port = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
     startWebhookServer(port, config.webhookSecretFile, () => {
+      refreshRequested = true;
       if (webhookResolve) {
         webhookResolve();
         webhookResolve = null;
@@ -650,8 +658,9 @@ async function main(): Promise<void> {
     });
   }
 
-  /** Wait for a webhook event. Returns a Promise that resolves on webhook fire. */
+  /** Wait for a webhook event. Returns immediately if one is already queued. */
   function waitForWebhook(): Promise<void> {
+    if (refreshRequested) return Promise.resolve();
     return new Promise<void>((resolve) => {
       webhookResolve = resolve;
     });
@@ -659,9 +668,11 @@ async function main(): Promise<void> {
 
   // State
   let currentDesired: DesiredState | null = null;
+  let reconciling = false;
 
   /** Run a full reconciliation cycle. Throws on failure. */
   async function reconcile(useRefresh: boolean): Promise<void> {
+    reconciling = true;
     log("controller", `reconciliation starting...${useRefresh ? " (--refresh)" : ""}`);
 
     // List instances from flake
@@ -750,6 +761,7 @@ async function main(): Promise<void> {
     await reapOldResources(clients, config.namespace, generation);
 
     currentDesired = desired;
+    reconciling = false;
 
     log("controller", `reconciliation complete (generation=${generation})`);
   }
@@ -760,12 +772,14 @@ async function main(): Promise<void> {
 
   // Start k8s API watches for drift correction.
   // Watches react to external changes (edits, deletions) and re-apply desired state.
-  startWatches(kc, clients, config.namespace, () => currentDesired);
+  startWatches(kc, clients, config.namespace, () => currentDesired, () => reconciling);
 
   // Event-driven loop: wait for webhook, then reconcile with --refresh.
+  // If a webhook fires during reconciliation, we re-reconcile immediately after.
   // Crashes on failure — k8s restart gives free backoff and retry.
   while (true) {
     await waitForWebhook();
+    refreshRequested = false;
     log("controller", "webhook triggered, starting reconciliation");
     await reconcile(true);
   }

@@ -177,11 +177,14 @@ export async function applyDeployment(
 
   try {
     const existing = await apps.readNamespacedDeployment({ name, namespace });
-    // Preserve resourceVersion for replace
-    deployment.metadata = deployment.metadata || {};
-    deployment.metadata.resourceVersion = existing.metadata?.resourceVersion;
-    await apps.replaceNamespacedDeployment({ name, namespace, body: deployment });
+    // Clone to avoid mutating the desired state object with resourceVersion
+    const body = structuredClone(deployment);
+    body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
+    await apps.replaceNamespacedDeployment({ name, namespace, body });
   } catch {
-    await apps.createNamespacedDeployment({ namespace, body: deployment });
+    // Clone to ensure no stale resourceVersion from a previous apply
+    const body = structuredClone(deployment);
+    delete body.metadata?.resourceVersion;
+    await apps.createNamespacedDeployment({ namespace, body });
   }
 }
