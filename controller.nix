@@ -188,8 +188,9 @@ let
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
               { name = "SEED_BUILDER_IMAGE"; value = cfg.builderImage; }
-              # nix needs flakes + nix-command enabled
+              # nix needs flakes + nix-command enabled, and daemon mode (store is read-only mount)
               { name = "NIX_CONFIG"; value = "experimental-features = nix-command flakes"; }
+              { name = "NIX_REMOTE"; value = "daemon"; }
               # PATH: nix + git + coreutils (for nix eval/build)
               { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz ]; }
             ] ++ lib.optional (cfg.namespace != "") {

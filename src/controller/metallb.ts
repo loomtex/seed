@@ -118,10 +118,26 @@ async function applyCustomResource(
 ): Promise<void> {
   try {
     await api.getNamespacedCustomObject({ group, version, namespace, plural, name });
-    await api.replaceNamespacedCustomObject({ group, version, namespace, plural, name, body });
-    log("metallb", `updated ${plural}/${name}`);
+    // Exists — update it
+    try {
+      await api.replaceNamespacedCustomObject({ group, version, namespace, plural, name, body });
+      log("metallb", `updated ${plural}/${name}`);
+    } catch (replaceErr) {
+      log("metallb", `failed to update ${plural}/${name}: ${replaceErr}`);
+    }
   } catch {
-    await api.createNamespacedCustomObject({ group, version, namespace, plural, body });
-    log("metallb", `created ${plural}/${name}`);
+    // Doesn't exist (or get failed) — try create
+    try {
+      await api.createNamespacedCustomObject({ group, version, namespace, plural, body });
+      log("metallb", `created ${plural}/${name}`);
+    } catch (createErr) {
+      // 409 = already exists, which is fine
+      const code = (createErr as { code?: number }).code;
+      if (code === 409) {
+        log("metallb", `${plural}/${name} already exists, skipping`);
+      } else {
+        throw createErr;
+      }
+    }
   }
 }
