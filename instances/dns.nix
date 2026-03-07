@@ -62,12 +62,6 @@ let
         "$API/zones"
     fi
 
-    # Clear stale SOA-EDIT-API metadata — 'INCEPTION-INCREMENT' was removed in
-    # recent pdns versions and causes 500 errors on all record updates.
-    curl -sf -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-      -d '{"soa_edit_api":"DEFAULT","soa_edit":"INCEPTION-INCREMENT"}' \
-      "$API/zones/${zone}" || true
-
     # Build REPLACE patch for all desired rrsets
     REPLACE=$(jq '{rrsets: [.rrsets[] | . + {changetype: "REPLACE", records: [.records[] | . + {disabled: false}]}]}' "$DESIRED")
 
@@ -126,9 +120,17 @@ in
   # pdns needs /run/pdns for its control socket
   systemd.services.pdns.serviceConfig.RuntimeDirectory = "pdns";
 
-  # Inject the sops-decrypted API key into pdns config at startup
+  # Pre-start: fix stale zone metadata + inject secrets
   systemd.services.pdns.serviceConfig.ExecStartPre = lib.mkAfter [
-    "+${pkgs.writeShellScript "pdns-inject-secrets" ''
+    "+${pkgs.writeShellScript "pdns-pre-start" ''
+      # Clear INCEPTION-INCREMENT SOA-EDIT-API metadata — removed in pdns 4.9,
+      # causes 500 on all record updates (including ACME DNS-01 challenges).
+      if [ -f /seed/storage/data/pdns.db ]; then
+        ${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db \
+          "DELETE FROM domainmetadata WHERE kind IN ('SOA-EDIT-API','SOA-EDIT') AND content='INCEPTION-INCREMENT';"
+      fi
+
+      # Inject sops-decrypted API key into pdns config
       mkdir -p /run/pdns/conf.d
       echo "api-key=$(cat ${config.sops.secrets.pdns-api-key.path})" > /run/pdns/conf.d/secrets.conf
       chown pdns:pdns /run/pdns/conf.d/secrets.conf
