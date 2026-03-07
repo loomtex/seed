@@ -8,7 +8,7 @@
 import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, makeClients, log } from "../shared/kube.js";
 import type { SeedHostTask } from "../shared/types.js";
-import { ensureSwtpm, stopSwtpm, stopAll } from "./swtpm.js";
+import { ensureSwtpm, stopSwtpm, stopAll, isSocketAlive } from "./swtpm.js";
 
 const COMPONENT = "host-agent";
 const CRD_GROUP = "seed.loom.farm";
@@ -74,8 +74,13 @@ async function handleTask(
 
   const { type, instance, namespace: ns } = task.spec;
 
-  // Already ready? Skip.
-  if (task.status?.ready) return;
+  // Already ready? Verify socket still exists (swtpm may have died on pod restart).
+  if (task.status?.ready && task.status?.socketPath) {
+    if (await isSocketAlive(task.status.socketPath)) {
+      return; // Socket exists, nothing to do
+    }
+    log(COMPONENT, `task says ready but socket missing, re-ensuring swtpm`, name);
+  }
 
   if (type !== "swtpm") {
     log(COMPONENT, `unknown task type "${type}", skipping`, name);

@@ -151,6 +151,16 @@ export function stopAll(): void {
   managed.clear();
 }
 
+/** Check if a socket file exists. */
+export async function isSocketAlive(socketPath: string): Promise<boolean> {
+  try {
+    await access(socketPath, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Get the number of actively managed swtpm processes. */
 export function managedCount(): number {
   return managed.size;
