@@ -300,7 +300,8 @@ generate_lb_service() {
           "seed.loom.farm/service-type": $svc_type
         },
         annotations: {
-          "metallb.universe.tf/address-pool": "seed-pool"
+          "metallb.universe.tf/address-pool": "seed-pool",
+          "metallb.universe.tf/allow-shared-ip": ("seed-" + $svc_type)
         }
       },
       spec: {
