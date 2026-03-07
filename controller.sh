@@ -300,8 +300,8 @@ generate_lb_service() {
           "seed.loom.farm/service-type": $svc_type
         },
         annotations: {
-          "metallb.universe.tf/address-pool": "seed-pool",
-          "metallb.universe.tf/allow-shared-ip": ("seed-" + $svc_type)
+          "metallb.io/address-pool": "seed-pool",
+          "metallb.io/allow-shared-ip": ("seed-" + $svc_type)
         }
       },
       spec: {
@@ -309,7 +309,7 @@ generate_lb_service() {
         loadBalancerIP: $lb_ip,
         ipFamilyPolicy: "SingleStack",
         ipFamilies: [$ip_family],
-        externalTrafficPolicy: "Local",
+        externalTrafficPolicy: "Cluster",
         selector: {
           "seed.loom.farm/instance": $instance
         },
