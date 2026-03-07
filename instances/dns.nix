@@ -13,7 +13,7 @@ let
 
   rrsets = [
     { name = zone; type = "SOA"; ttl = 3600;
-      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030702 10800 3600 604800 3600"; }]; }
+      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030703 10800 3600 604800 3600"; }]; }
     { name = zone; type = "NS"; ttl = 3600;
       records = [{ content = "ns1.loom.farm."; } { content = "ns2.loom.farm."; }]; }
     { name = "ns1.${zone}"; type = "A"; ttl = 3600;
@@ -24,6 +24,18 @@ let
       records = [{ content = "216.128.141.222"; }]; }
     { name = "ns2.${zone}"; type = "AAAA"; ttl = 3600;
       records = [{ content = "2001:19f0:6402:7eb::2"; }]; }
+
+    # Namespace wildcard — all instances in our namespace
+    { name = "*.s-gaydazldmnsg.${zone}"; type = "A"; ttl = 3600;
+      records = [{ content = "216.128.141.222"; }]; }
+    { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 3600;
+      records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
+
+    # Zone apex — can't CNAME at apex, use A/AAAA
+    { name = zone; type = "A"; ttl = 3600;
+      records = [{ content = "216.128.141.222"; }]; }
+    { name = zone; type = "AAAA"; ttl = 3600;
+      records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
   ];
 
   zoneData = pkgs.writeText "loom-farm-zone.json" (builtins.toJSON {

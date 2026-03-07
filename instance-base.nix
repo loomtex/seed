@@ -56,6 +56,9 @@ in {
   # Kata handles networking via virtio-net + tc redirects
   networking.useDHCP = lib.mkDefault false;
 
+  # k8s service DNS (CoreDNS) — enables service name resolution + external DNS
+  networking.nameservers = lib.mkDefault [ "10.43.0.10" ];
+
   # Minimal package set — just enough for systemd services to function,
   # plus TPM/secrets tooling for sops-nix integration
   environment.systemPackages = lib.mkDefault (with pkgs; [

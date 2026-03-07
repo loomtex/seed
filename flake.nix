@@ -161,7 +161,7 @@
       instances = {
         web = mkInstance {
           name = "web";
-          module = ./templates/instance/web.nix;
+          module = ./instances/web.nix;
         };
         dns = mkInstance {
           name = "dns";
@@ -179,6 +179,8 @@
       enable = true;
       routes = {
         dns = { port = 53; protocol = "dns"; instance = "dns"; };
+        http = { port = 80; protocol = "tcp"; instance = "web"; };
+        https = { port = 443; protocol = "tcp"; instance = "web"; };
       };
     };
 
@@ -189,6 +191,8 @@
       routes = {
         dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
         dns2 = { host = "2"; port = 53; protocol = "dns"; instance = "dns"; };
+        http = { host = "3"; port = 80; protocol = "tcp"; instance = "web"; };
+        https = { host = "3"; port = 443; protocol = "tcp"; instance = "web"; };
       };
     };
 
