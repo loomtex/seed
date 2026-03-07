@@ -80,11 +80,6 @@
     deps = [];
     text = ''
       mkdir -p /run/seed
-      # Diagnostic: dump env sources to PVC for debugging
-      echo "--- shell env ---" > /seed/storage/data/env-debug.txt
-      env >> /seed/storage/data/env-debug.txt
-      echo "--- /proc/1/environ ---" >> /seed/storage/data/env-debug.txt
-      tr '\0' '\n' < /proc/1/environ >> /seed/storage/data/env-debug.txt 2>&1 || true
       tr '\0' '\n' < /proc/1/environ | grep '^SEED_NODE_IP=' > /run/seed/env || echo "SEED_NODE_IP=" > /run/seed/env
     '';
   };
