@@ -126,24 +126,38 @@ async function updateStatus(
   if (!name) return;
 
   try {
-    // SeedHostTask is cluster-scoped (no namespace on the CRD itself),
-    // but if it has a namespace, use namespaced API. Check which applies.
+    // Read existing, merge status, replace (avoids JSON patch content-type issues)
     if (ns) {
-      await clients.custom.patchNamespacedCustomObjectStatus({
+      const existing = await clients.custom.getNamespacedCustomObject({
         group: CRD_GROUP,
         version: CRD_VERSION,
         plural: CRD_PLURAL,
         namespace: ns,
         name,
-        body: { status },
+      }) as SeedHostTask;
+      existing.status = status;
+      await clients.custom.replaceNamespacedCustomObjectStatus({
+        group: CRD_GROUP,
+        version: CRD_VERSION,
+        plural: CRD_PLURAL,
+        namespace: ns,
+        name,
+        body: existing,
       });
     } else {
-      await clients.custom.patchClusterCustomObjectStatus({
+      const existing = await clients.custom.getClusterCustomObject({
         group: CRD_GROUP,
         version: CRD_VERSION,
         plural: CRD_PLURAL,
         name,
-        body: { status },
+      }) as SeedHostTask;
+      existing.status = status;
+      await clients.custom.replaceClusterCustomObjectStatus({
+        group: CRD_GROUP,
+        version: CRD_VERSION,
+        plural: CRD_PLURAL,
+        name,
+        body: existing,
       });
     }
     log(COMPONENT, `status updated: ready=${status?.ready}`, name);

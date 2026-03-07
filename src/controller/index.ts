@@ -393,9 +393,11 @@ async function deployedGeneration(
       namespace,
       labelSelector: MANAGED_SELECTOR,
     });
-    // Find first non-builder pod
+    // Find first non-builder pod that is actually running (not Unknown/Failed)
     for (const pod of pods.items) {
       if (pod.metadata?.labels?.["seed.loom.farm/builder"] === "true") continue;
+      const phase = pod.status?.phase;
+      if (phase !== "Running" && phase !== "Pending") continue;
       const gen = pod.metadata?.labels?.[LABELS.GENERATION];
       if (gen) return gen;
     }
@@ -420,12 +422,28 @@ async function selfHeal(
   const { namespace } = desired;
 
   for (const [name, instance] of desired.instances) {
-    // Check pod exists
+    // Check pod exists and is healthy
     try {
-      await clients.core.readNamespacedPod({
+      const existing = await clients.core.readNamespacedPod({
         name: instance.pod.metadata!.name!,
         namespace,
       });
+      // Delete unhealthy pods (Unknown/Failed) so they get recreated
+      const phase = existing.status?.phase;
+      if (phase === "Unknown" || phase === "Failed") {
+        log("controller", `self-heal: deleting unhealthy pod (phase=${phase})`, name);
+        await clients.core.deleteNamespacedPod({
+          name: instance.pod.metadata!.name!,
+          namespace,
+          gracePeriodSeconds: 0,
+        });
+        await sleep(2000);
+        await clients.core.createNamespacedPod({
+          namespace,
+          body: instance.pod,
+        });
+        log("controller", `self-heal: recreated pod`, name);
+      }
     } catch {
       // Pod missing — recreate
       log("controller", `self-heal: recreating missing pod`, name);
