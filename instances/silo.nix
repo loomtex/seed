@@ -203,12 +203,15 @@ in {
 
   environment.systemPackages = [ pkgs.git siloShell ];
 
-  # Publish SSHFP DNS record after openssh generates host keys
+  # Force host key generation on boot (startWhenNeeded=true defers it to first connection)
+  systemd.services.sshd-keygen.wantedBy = [ "multi-user.target" ];
+
+  # Publish SSHFP DNS record after host keys exist
   systemd.services.silo-publish-sshfp = {
     description = "Publish SSH host key fingerprint as SSHFP DNS record";
     wantedBy = [ "multi-user.target" ];
-    after = [ "sshd.service" "network-online.target" ];
-    wants = [ "network-online.target" ];
+    after = [ "sshd-keygen.service" "network-online.target" ];
+    wants = [ "sshd-keygen.service" "network-online.target" ];
     path = [ pkgs.curl pkgs.openssl pkgs.gawk pkgs.coreutils ];
     serviceConfig = {
       Type = "oneshot";
