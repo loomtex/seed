@@ -33,7 +33,7 @@
     deps = [ "setupSecrets" ];
     text = ''
       mkdir -p /run/acme-env
-      echo "PDNS_API_URL=http://seed-dns:8081" > /run/acme-env/pdns
+      echo "PDNS_API_URL=http://seed-dns.s-gaydazldmnsg.svc.cluster.local:8081" > /run/acme-env/pdns
       echo "PDNS_API_KEY=$(cat ${config.sops.secrets.pdns-api-key.path})" >> /run/acme-env/pdns
       chmod 0400 /run/acme-env/pdns
     '';
