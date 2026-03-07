@@ -18,6 +18,7 @@ export function loadKubeConfig(): k8s.KubeConfig {
 export function makeClients(kc: k8s.KubeConfig) {
   return {
     core: kc.makeApiClient(k8s.CoreV1Api),
+    apps: kc.makeApiClient(k8s.AppsV1Api),
     batch: kc.makeApiClient(k8s.BatchV1Api),
     custom: kc.makeApiClient(k8s.CustomObjectsApi),
     node: kc.makeApiClient(k8s.NodeV1Api),
@@ -109,29 +110,19 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Apply a resource using server-side apply (PATCH with fieldManager).
- * Falls back to create-or-update for compatibility.
+ * Apply a resource using create-or-update.
  */
 export async function applyResource(
   core: k8s.CoreV1Api,
-  kind: "Pod" | "Service" | "PersistentVolumeClaim" | "Namespace",
+  kind: "Service" | "PersistentVolumeClaim" | "Namespace",
   namespace: string,
-  manifest: k8s.V1Pod | k8s.V1Service | k8s.V1PersistentVolumeClaim | k8s.V1Namespace,
+  manifest: k8s.V1Service | k8s.V1PersistentVolumeClaim | k8s.V1Namespace,
 ): Promise<void> {
   const name = manifest.metadata?.name;
   if (!name) throw new Error(`${kind} manifest missing metadata.name`);
 
   try {
     switch (kind) {
-      case "Pod":
-        try {
-          await core.readNamespacedPod({ name, namespace });
-          // Pod exists — pods are immutable, skip
-          return;
-        } catch {
-          await core.createNamespacedPod({ namespace, body: manifest as k8s.V1Pod });
-        }
-        break;
       case "Service":
         try {
           const existing = await core.readNamespacedService({ name, namespace });
@@ -169,5 +160,28 @@ export async function applyResource(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to apply ${kind} ${name}: ${msg}`);
+  }
+}
+
+/**
+ * Apply a Deployment — create if missing, update if spec changed.
+ * k8s handles pod replacement via the Deployment controller.
+ */
+export async function applyDeployment(
+  apps: k8s.AppsV1Api,
+  namespace: string,
+  deployment: k8s.V1Deployment,
+): Promise<void> {
+  const name = deployment.metadata?.name;
+  if (!name) throw new Error("Deployment manifest missing metadata.name");
+
+  try {
+    const existing = await apps.readNamespacedDeployment({ name, namespace });
+    // Preserve resourceVersion for replace
+    deployment.metadata = deployment.metadata || {};
+    deployment.metadata.resourceVersion = existing.metadata?.resourceVersion;
+    await apps.replaceNamespacedDeployment({ name, namespace, body: deployment });
+  } catch {
+    await apps.createNamespacedDeployment({ namespace, body: deployment });
   }
 }

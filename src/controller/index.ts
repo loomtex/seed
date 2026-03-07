@@ -1,14 +1,18 @@
 // Seed controller — main reconciliation engine.
 //
-// Two-level reconciliation:
-// 1. Generation: on flake change, build instances, compute generation hash, render desired state
-// 2. Continuous: watch for drift and self-heal (missing/extra/drifted resources)
+// Event-driven reconciliation:
+// - On startup: run one full reconciliation
+// - On webhook: run reconciliation with --refresh
+// - Self-heal: periodic check that cluster matches desired state
+//
+// Instances are managed as Deployments (replicas=1, strategy=Recreate).
+// k8s handles pod replacement, restart, and health.
 
 import * as k8s from "@kubernetes/client-node";
-import { loadKubeConfig, makeClients, deriveNamespace, computeGeneration, log, sleep, applyResource } from "../shared/kube.js";
+import { loadKubeConfig, makeClients, deriveNamespace, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
 import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, BuildResult } from "../shared/types.js";
-import { generatePod, generatePVC, generateService, generateHostTask } from "./manifests.js";
+import { generateDeployment, generatePVC, generateService, generateHostTask } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB } from "./metallb.js";
 import { runBuilders } from "./builder.js";
@@ -30,7 +34,6 @@ function loadConfig(): ControllerConfig {
   return {
     flakePath,
     namespace,
-    interval: parseInt(process.env["SEED_INTERVAL"] || "30", 10),
     ipv4Address: process.env["SEED_IPV4_ADDRESS"] || "",
     ipv6Block: process.env["SEED_IPV6_BLOCK"] || "",
     webhookSecretFile: process.env["SEED_WEBHOOK_SECRET_FILE"] || "",
@@ -114,7 +117,7 @@ export function renderDesiredState(
       }
     }
 
-    const pod = generatePod(
+    const deployment = generateDeployment(
       name,
       imageRef,
       generation,
@@ -141,7 +144,7 @@ export function renderDesiredState(
       ? generateHostTask(name, config.namespace, generation)
       : null;
 
-    instances.set(name, { imagePath: result.imagePath, meta, pod, services, pvcs, hostTask });
+    instances.set(name, { imagePath: result.imagePath, meta, deployment, services, pvcs, hostTask });
   }
 
   // Route services
@@ -162,7 +165,7 @@ export function renderDesiredState(
 
 /**
  * Apply the desired state to the cluster.
- * Creates missing resources, skips existing ones (pods are immutable).
+ * Creates missing resources, updates existing ones.
  */
 async function applyDesiredState(
   clients: ReturnType<typeof makeClients>,
@@ -214,7 +217,7 @@ async function applyDesiredState(
     }
   }
 
-  // Apply PVCs (before pods, so volumes are available)
+  // Apply PVCs (before deployments, so volumes are available)
   for (const [name, instance] of desired.instances) {
     for (const pvc of instance.pvcs) {
       try {
@@ -226,72 +229,13 @@ async function applyDesiredState(
     }
   }
 
-  // Apply pods
+  // Apply Deployments — k8s handles pod replacement on spec change
   for (const [name, instance] of desired.instances) {
     try {
-      // Check if existing pod has different image → delete first
-      try {
-        const existing = await clients.core.readNamespacedPod({
-          name: instance.pod.metadata!.name!,
-          namespace,
-        });
-        const currentImage = existing.spec?.containers?.[0]?.image;
-        const desiredImage = instance.pod.spec!.containers[0].image;
-        if (currentImage !== desiredImage) {
-          log("controller", `image changed, replacing pod...`, name);
-          await clients.core.deleteNamespacedPod({
-            name: instance.pod.metadata!.name!,
-            namespace,
-            gracePeriodSeconds: 10,
-          });
-          // Wait for pod to actually be gone
-          for (let i = 0; i < 30; i++) {
-            await sleep(1000);
-            try {
-              await clients.core.readNamespacedPod({
-                name: instance.pod.metadata!.name!,
-                namespace,
-              });
-            } catch {
-              break; // Pod is gone
-            }
-          }
-          await clients.core.createNamespacedPod({
-            namespace,
-            body: instance.pod,
-          });
-          log("controller", `pod replaced`, name);
-        } else {
-          // Pod image unchanged — update generation label
-          const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
-          if (existingGen !== desired.generation) {
-            existing.metadata = existing.metadata || {};
-            existing.metadata.labels = {
-              ...existing.metadata.labels,
-              [LABELS.GENERATION]: desired.generation,
-            };
-            // Can't replace pod spec, but we can replace metadata
-            // Use a targeted label replace via read-modify-replace on the pod
-            await clients.core.replaceNamespacedPod({
-              name: instance.pod.metadata!.name!,
-              namespace,
-              body: existing,
-            });
-            log("controller", `pod generation label updated`, name);
-          } else {
-            log("controller", `pod unchanged`, name);
-          }
-        }
-      } catch {
-        // Pod doesn't exist — create it
-        await clients.core.createNamespacedPod({
-          namespace,
-          body: instance.pod,
-        });
-        log("controller", `pod created`, name);
-      }
+      await applyDeployment(clients.apps, namespace, instance.deployment);
+      log("controller", `applied deployment seed-${name}`, name);
     } catch (err) {
-      log("controller", `pod error: ${err}`, name);
+      log("controller", `deployment error: ${err}`, name);
     }
   }
 
@@ -327,27 +271,24 @@ async function reapOldResources(
   namespace: string,
   generation: string,
 ): Promise<void> {
-  // Reap old pods
+  // Reap old Deployments
   try {
-    const pods = await clients.core.listNamespacedPod({
+    const deployments = await clients.apps.listNamespacedDeployment({
       namespace,
       labelSelector: MANAGED_SELECTOR,
     });
-    for (const pod of pods.items) {
-      const podGen = pod.metadata?.labels?.[LABELS.GENERATION];
-      // Skip builder pods
-      if (pod.metadata?.labels?.["seed.loom.farm/builder"] === "true") continue;
-      if (podGen && podGen !== generation) {
-        log("controller", `reaping pod: ${pod.metadata!.name}`);
-        await clients.core.deleteNamespacedPod({
-          name: pod.metadata!.name!,
+    for (const dep of deployments.items) {
+      const depGen = dep.metadata?.labels?.[LABELS.GENERATION];
+      if (depGen && depGen !== generation) {
+        log("controller", `reaping deployment: ${dep.metadata!.name}`);
+        await clients.apps.deleteNamespacedDeployment({
+          name: dep.metadata!.name!,
           namespace,
-          gracePeriodSeconds: 10,
         });
       }
     }
   } catch (err) {
-    log("controller", `error reaping pods: ${err}`);
+    log("controller", `error reaping deployments: ${err}`);
   }
 
   // Reap old services
@@ -429,36 +370,32 @@ async function readHostTaskStatuses(
 }
 
 /**
- * Get the generation currently deployed (from any seed-managed pod).
+ * Get the generation currently deployed (from any seed-managed Deployment).
  */
 async function deployedGeneration(
   clients: ReturnType<typeof makeClients>,
   namespace: string,
 ): Promise<string> {
   try {
-    const pods = await clients.core.listNamespacedPod({
+    const deployments = await clients.apps.listNamespacedDeployment({
       namespace,
       labelSelector: MANAGED_SELECTOR,
     });
-    // Find first non-builder pod that is actually running (not Unknown/Failed)
-    for (const pod of pods.items) {
-      if (pod.metadata?.labels?.["seed.loom.farm/builder"] === "true") continue;
-      const phase = pod.status?.phase;
-      if (phase !== "Running" && phase !== "Pending") continue;
-      const gen = pod.metadata?.labels?.[LABELS.GENERATION];
+    for (const dep of deployments.items) {
+      const gen = dep.metadata?.labels?.[LABELS.GENERATION];
       if (gen) return gen;
     }
   } catch {
-    // Namespace or pods might not exist yet
+    // Namespace or deployments might not exist yet
   }
   return "";
 }
 
-// --- Self-healing reconciliation (Level 2) ---
+// --- Self-healing reconciliation ---
 
 /**
  * Check for and fix drift between desired and actual state.
- * Runs on a timer and recreates missing resources.
+ * Recreates missing Deployments, Services, and SeedHostTasks.
  */
 async function selfHeal(
   clients: ReturnType<typeof makeClients>,
@@ -469,38 +406,18 @@ async function selfHeal(
   const { namespace } = desired;
 
   for (const [name, instance] of desired.instances) {
-    // Check pod exists and is healthy
+    // Check Deployment exists
     try {
-      const existing = await clients.core.readNamespacedPod({
-        name: instance.pod.metadata!.name!,
+      await clients.apps.readNamespacedDeployment({
+        name: instance.deployment.metadata!.name!,
         namespace,
       });
-      // Delete unhealthy pods (Unknown/Failed) so they get recreated
-      const phase = existing.status?.phase;
-      if (phase === "Unknown" || phase === "Failed") {
-        log("controller", `self-heal: deleting unhealthy pod (phase=${phase})`, name);
-        await clients.core.deleteNamespacedPod({
-          name: instance.pod.metadata!.name!,
-          namespace,
-          gracePeriodSeconds: 0,
-        });
-        await sleep(2000);
-        await clients.core.createNamespacedPod({
-          namespace,
-          body: instance.pod,
-        });
-        log("controller", `self-heal: recreated pod`, name);
-      }
     } catch {
-      // Pod missing — recreate
-      log("controller", `self-heal: recreating missing pod`, name);
+      log("controller", `self-heal: recreating missing deployment`, name);
       try {
-        await clients.core.createNamespacedPod({
-          namespace,
-          body: instance.pod,
-        });
+        await applyDeployment(clients.apps, namespace, instance.deployment);
       } catch (err) {
-        log("controller", `self-heal: failed to recreate pod: ${err}`, name);
+        log("controller", `self-heal: failed to recreate deployment: ${err}`, name);
       }
     }
 
@@ -517,6 +434,32 @@ async function selfHeal(
           await clients.core.createNamespacedService({ namespace, body: svc });
         } catch (err) {
           log("controller", `self-heal: failed to recreate service: ${err}`, name);
+        }
+      }
+    }
+
+    // Check SeedHostTask exists
+    if (instance.hostTask) {
+      try {
+        await clients.custom.getNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seedhosttasks",
+          name: instance.hostTask.metadata!.name!,
+        });
+      } catch {
+        log("controller", `self-heal: recreating missing SeedHostTask swtpm-${name}`, name);
+        try {
+          await clients.custom.createNamespacedCustomObject({
+            group: "seed.loom.farm",
+            version: "v1alpha1",
+            namespace,
+            plural: "seedhosttasks",
+            body: instance.hostTask,
+          });
+        } catch (err) {
+          log("controller", `self-heal: failed to recreate SeedHostTask: ${err}`, name);
         }
       }
     }
@@ -594,160 +537,168 @@ async function main(): Promise<void> {
     log("controller", `MetalLB configuration failed: ${err}`);
   }
 
-  // Webhook: trigger refresh flag
-  let refreshRequested = false;
+  // Webhook: resolves a Promise so the main loop wakes immediately
+  let webhookResolve: (() => void) | null = null;
   if (config.webhookSecretFile || process.env["SEED_WEBHOOK_PORT"]) {
     const port = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
     startWebhookServer(port, config.webhookSecretFile, () => {
-      refreshRequested = true;
+      if (webhookResolve) {
+        webhookResolve();
+        webhookResolve = null;
+      }
+    });
+  }
+
+  /** Wait for a webhook event. Returns a Promise that resolves on webhook fire. */
+  function waitForWebhook(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      webhookResolve = resolve;
     });
   }
 
   // State
   let currentDesired: DesiredState | null = null;
-  let selfHealCounter = 0;
 
-  // Main reconciliation loop
-  while (true) {
+  /** Run a full reconciliation cycle. */
+  async function reconcile(useRefresh: boolean): Promise<void> {
+    log("controller", `reconciliation starting...${useRefresh ? " (--refresh)" : ""}`);
+
+    // List instances from flake
+    let instanceNames: string[];
     try {
-      const useRefresh = refreshRequested;
-      if (refreshRequested) {
-        log("controller", "refresh trigger detected, bypassing nix cache");
-        refreshRequested = false;
-      }
+      instanceNames = await listInstances(config.flakePath, useRefresh);
+    } catch (err) {
+      log("controller", `failed to list instances: ${err}`);
+      return;
+    }
 
-      log("controller", "reconciliation starting...");
+    // Build all instances
+    let buildResults: Map<string, BuildResult>;
 
-      // List instances from flake
-      let instanceNames: string[];
+    if (config.builderImage) {
+      // Use builder Jobs
+      const currentGen = await deployedGeneration(clients, config.namespace);
       try {
-        instanceNames = await listInstances(config.flakePath, useRefresh);
+        buildResults = await runBuilders(
+          clients,
+          config.flakePath,
+          instanceNames,
+          config.namespace,
+          config.builderImage,
+          currentGen || "initial",
+          useRefresh,
+        );
       } catch (err) {
-        log("controller", `failed to list instances: ${err}`);
-        await sleep(config.interval * 1000);
-        continue;
+        log("controller", `builder failed: ${err}`);
+        return;
       }
-
-      // Build all instances
-      let buildResults: Map<string, BuildResult>;
-
-      if (config.builderImage) {
-        // Use builder Jobs
-        const currentGen = await deployedGeneration(clients, config.namespace);
+    } else {
+      // Direct nix build (when running on host with nix access)
+      buildResults = new Map();
+      let buildFailed = false;
+      for (const name of instanceNames) {
         try {
-          buildResults = await runBuilders(
-            clients,
-            config.flakePath,
-            instanceNames,
-            config.namespace,
-            config.builderImage,
-            currentGen || "initial",
+          log("controller", `building image...`, name);
+          const imagePath = await nixBuild(
+            `${config.flakePath}#seeds.${name}.image`,
             useRefresh,
           );
+          log("controller", `evaluating metadata...`, name);
+          const meta = await nixEvalJson(
+            `${config.flakePath}#seeds.${name}.meta`,
+            useRefresh,
+          ) as BuildResult["meta"];
+          buildResults.set(name, { imagePath, meta });
         } catch (err) {
-          log("controller", `builder failed: ${err}`);
-          await sleep(config.interval * 1000);
-          continue;
-        }
-      } else {
-        // Direct nix build (when running on host with nix access)
-        buildResults = new Map();
-        let buildFailed = false;
-        for (const name of instanceNames) {
-          try {
-            log("controller", `building image...`, name);
-            const imagePath = await nixBuild(
-              `${config.flakePath}#seeds.${name}.image`,
-              useRefresh,
-            );
-            log("controller", `evaluating metadata...`, name);
-            const meta = await nixEvalJson(
-              `${config.flakePath}#seeds.${name}.meta`,
-              useRefresh,
-            ) as BuildResult["meta"];
-            buildResults.set(name, { imagePath, meta });
-          } catch (err) {
-            log("controller", `build failed: ${err}`, name);
-            buildFailed = true;
-          }
-        }
-        if (buildFailed) {
-          log("controller", "some builds failed, skipping reconciliation");
-          await sleep(config.interval * 1000);
-          continue;
+          log("controller", `build failed: ${err}`, name);
+          buildFailed = true;
         }
       }
-
-      // Compute generation
-      const generation = computeGeneration(
-        new Map([...buildResults].map(([name, r]) => [name, r.imagePath])),
-      );
-
-      // Read route configs from flake
-      let ipv4Config: IPv4Config | null = null;
-      let ipv6Config: IPv6Config | null = null;
-      try {
-        ipv4Config = (await nixEvalJson(
-          `${config.flakePath}#ipv4`,
-          useRefresh,
-        )) as IPv4Config;
-      } catch { /* no ipv4 output */ }
-      try {
-        ipv6Config = (await nixEvalJson(
-          `${config.flakePath}#ipv6`,
-          useRefresh,
-        )) as IPv6Config;
-      } catch { /* no ipv6 output */ }
-
-      // Check if generation already deployed
-      const deployed = await deployedGeneration(clients, config.namespace);
-      if (deployed === generation) {
-        log("controller", `generation ${generation} already deployed, nothing to do`);
-        // Still run self-heal check
-        await selfHeal(clients, currentDesired);
-        await sleep(config.interval * 1000);
-        continue;
+      if (buildFailed) {
+        log("controller", "some builds failed, skipping reconciliation");
+        return;
       }
+    }
 
-      log("controller", `deploying generation ${generation} (was: ${deployed || "none"})`);
+    // Compute generation
+    const generation = computeGeneration(
+      new Map([...buildResults].map(([name, r]) => [name, r.imagePath])),
+    );
 
-      // Read host task statuses
-      const hostTaskStatuses = await readHostTaskStatuses(clients, config.namespace);
+    // Read route configs from flake
+    let ipv4Config: IPv4Config | null = null;
+    let ipv6Config: IPv6Config | null = null;
+    try {
+      ipv4Config = (await nixEvalJson(
+        `${config.flakePath}#ipv4`,
+        useRefresh,
+      )) as IPv4Config;
+    } catch { /* no ipv4 output */ }
+    try {
+      ipv6Config = (await nixEvalJson(
+        `${config.flakePath}#ipv6`,
+        useRefresh,
+      )) as IPv6Config;
+    } catch { /* no ipv6 output */ }
 
-      // Render desired state
-      const desired = renderDesiredState(
-        config,
-        buildResults,
-        ipv4Config,
-        ipv6Config,
-        hostTaskStatuses,
-      );
+    // Check if generation already deployed
+    const deployed = await deployedGeneration(clients, config.namespace);
+    if (deployed === generation) {
+      log("controller", `generation ${generation} already deployed, nothing to do`);
+      return;
+    }
 
-      // Apply desired state
-      await applyDesiredState(clients, desired);
+    log("controller", `deploying generation ${generation} (was: ${deployed || "none"})`);
 
-      // Reap old resources
-      await reapOldResources(clients, config.namespace, generation);
+    // Read host task statuses
+    const hostTaskStatuses = await readHostTaskStatuses(clients, config.namespace);
 
-      currentDesired = desired;
+    // Render desired state
+    const desired = renderDesiredState(
+      config,
+      buildResults,
+      ipv4Config,
+      ipv6Config,
+      hostTaskStatuses,
+    );
 
-      log("controller", `reconciliation complete (generation=${generation})`);
+    // Apply desired state
+    await applyDesiredState(clients, desired);
+
+    // Reap old resources
+    await reapOldResources(clients, config.namespace, generation);
+
+    currentDesired = desired;
+
+    log("controller", `reconciliation complete (generation=${generation})`);
+  }
+
+  // Startup: one full reconciliation (fresh cache)
+  try {
+    await reconcile(false);
+  } catch (err) {
+    log("controller", `startup reconciliation error: ${err}`);
+  }
+
+  // Self-heal timer: every 60s, check cluster matches desired state
+  const SELF_HEAL_INTERVAL_MS = 60_000;
+  setInterval(async () => {
+    try {
+      await selfHeal(clients, currentDesired);
     } catch (err) {
-      log("controller", `reconciliation error: ${err}`);
+      log("controller", `self-heal error: ${err}`);
     }
+  }, SELF_HEAL_INTERVAL_MS);
 
-    // Self-heal every 3rd interval
-    selfHealCounter++;
-    if (selfHealCounter >= 3) {
-      selfHealCounter = 0;
-      try {
-        await selfHeal(clients, currentDesired);
-      } catch (err) {
-        log("controller", `self-heal error: ${err}`);
-      }
+  // Event-driven loop: wait for webhook, then reconcile with --refresh
+  while (true) {
+    await waitForWebhook();
+    log("controller", "webhook triggered, starting reconciliation");
+    try {
+      await reconcile(true);
+    } catch (err) {
+      log("controller", `webhook reconciliation error: ${err}`);
     }
-
-    await sleep(config.interval * 1000);
   }
 }
 

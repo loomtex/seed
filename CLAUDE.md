@@ -22,9 +22,9 @@ seed/
 │   │   ├── labels.ts      # Label constants, helpers
 │   │   └── kube.ts        # k8s client setup, helpers
 │   ├── controller/
-│   │   ├── index.ts       # Main reconciliation loop, informer setup
+│   │   ├── index.ts       # Event-driven reconciliation loop
 │   │   ├── builder.ts     # Builder Job creation/watching
-│   │   ├── manifests.ts   # Pod/Service/PVC generation
+│   │   ├── manifests.ts   # Deployment/Service/PVC generation
 │   │   ├── routes.ts      # IPv4/IPv6 LB services
 │   │   ├── metallb.ts     # MetalLB configuration
 │   │   └── webhook.ts     # HTTP webhook handler
@@ -205,9 +205,15 @@ seed.loom.farm/generation: <hash>
 
 **Stateless**: all state lives in k8s labels. The generation hash is content-addressed from image store paths.
 
-**Pod updates**: pods are immutable. If an instance's image ref changes, the controller deletes the old pod before applying the new one.
+**Deployments**: each instance is a Deployment(replicas=1, strategy=Recreate). The k8s Deployment controller handles pod replacement on image changes, restarts on failure, and rolling updates. The controller just applies the desired Deployment spec — no manual pod lifecycle management.
 
-**Reaping**: after applying all instances, resources with a non-matching generation hash are deleted. PVCs are exempt to protect persistent data.
+**Pod template labels**: pod templates only carry `managed-by` and `instance` labels (no generation). This ensures that when one instance's image changes, only that instance's pods are rolled — unchanged instances are left alone even though the generation hash changed.
+
+**Reaping**: after applying all instances, Deployments/Services/SeedHostTasks with a non-matching generation hash are deleted. PVCs are exempt to protect persistent data.
+
+**Event-driven reconciliation**: the controller does NOT poll. It runs one reconciliation on startup, then waits for webhook events. The webhook callback resolves a Promise that wakes the main loop immediately — zero latency between GitHub push and reconciliation start.
+
+**Self-heal**: runs on a 60s timer independent of reconciliation. Checks that expected Deployments, Services, and SeedHostTasks exist and recreates any missing ones.
 
 **Manifest generation**: done in TypeScript (replaces jq). Type-safe k8s manifests with `@kubernetes/client-node` types.
 

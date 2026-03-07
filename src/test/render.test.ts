@@ -9,7 +9,6 @@ function makeConfig(overrides?: Partial<ControllerConfig>): ControllerConfig {
   return {
     flakePath: "github:loomtex/seed",
     namespace: "s-gaydazldmnsg",
-    interval: 30,
     ipv4Address: "216.128.141.222",
     ipv6Block: "2001:19f0:6402:7eb::/64",
     webhookSecretFile: "",
@@ -90,7 +89,7 @@ describe("renderDesiredState", () => {
     assert.ok(state.instances.has("dns"));
   });
 
-  it("generates pod with nix:0 image ref", () => {
+  it("generates deployment with nix:0 image ref", () => {
     const config = makeConfig();
     const results = makeBuildResults({
       web: {
@@ -102,9 +101,29 @@ describe("renderDesiredState", () => {
     const state = renderDesiredState(config, results, null, null, new Map());
     const webInstance = state.instances.get("web")!;
     assert.equal(
-      webInstance.pod.spec?.containers[0].image,
+      webInstance.deployment.spec?.template?.spec?.containers[0].image,
       "nix:0/nix/store/abc-seed-web",
     );
+  });
+
+  it("generates Deployment with correct structure", () => {
+    const config = makeConfig();
+    const results = makeBuildResults({
+      web: {
+        imagePath: "/nix/store/abc-seed-web",
+        meta: makeMeta("web"),
+      },
+    });
+
+    const state = renderDesiredState(config, results, null, null, new Map());
+    const dep = state.instances.get("web")!.deployment;
+    assert.equal(dep.apiVersion, "apps/v1");
+    assert.equal(dep.kind, "Deployment");
+    assert.equal(dep.spec?.replicas, 1);
+    assert.equal(dep.spec?.strategy?.type, "Recreate");
+    assert.deepEqual(dep.spec?.selector?.matchLabels, {
+      "seed.loom.farm/instance": "web",
+    });
   });
 
   it("generates ClusterIP service when ports are exposed", () => {
@@ -215,9 +234,9 @@ describe("renderDesiredState", () => {
     ]);
 
     const state = renderDesiredState(config, results, null, null, hostTaskStatuses);
-    const pod = state.instances.get("dns")!.pod;
+    const dep = state.instances.get("dns")!.deployment;
     assert.equal(
-      pod.metadata?.annotations?.["io.katacontainers.config.hypervisor.tpm_socket"],
+      dep.spec?.template?.metadata?.annotations?.["io.katacontainers.config.hypervisor.tpm_socket"],
       "/run/swtpm/s-gaydazldmnsg-dns/swtpm-sock",
     );
   });
@@ -236,9 +255,9 @@ describe("renderDesiredState", () => {
     ]);
 
     const state = renderDesiredState(config, results, null, null, hostTaskStatuses);
-    const pod = state.instances.get("dns")!.pod;
+    const dep = state.instances.get("dns")!.deployment;
     assert.equal(
-      pod.metadata?.annotations?.["io.katacontainers.config.hypervisor.tpm_socket"],
+      dep.spec?.template?.metadata?.annotations?.["io.katacontainers.config.hypervisor.tpm_socket"],
       undefined,
     );
   });
@@ -299,6 +318,6 @@ describe("renderDesiredState", () => {
 
     const state = renderDesiredState(config, results, null, null, new Map());
     assert.equal(state.namespace, "s-custom");
-    assert.equal(state.instances.get("web")!.pod.metadata?.namespace, "s-custom");
+    assert.equal(state.instances.get("web")!.deployment.metadata?.namespace, "s-custom");
   });
 });

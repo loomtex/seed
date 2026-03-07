@@ -2,84 +2,43 @@
 // Pure functions: metadata in → k8s manifest objects out.
 
 import type * as k8s from "@kubernetes/client-node";
-import { seedLabels, ANNOTATIONS } from "../shared/labels.js";
+import { seedLabels, LABELS, ANNOTATIONS } from "../shared/labels.js";
 import type { SeedMeta, SeedHostTask, SeedHostTaskSpec } from "../shared/types.js";
 
-/** Generate a Pod manifest for a seed instance. */
-export function generatePod(
+/** Generate a Deployment manifest for a seed instance. */
+export function generateDeployment(
   name: string,
   imageRef: string,
   generation: string,
   namespace: string,
   meta: SeedMeta,
   tpmSocketPath?: string,
-): k8s.V1Pod {
-  const annotations: Record<string, string> = {
+): k8s.V1Deployment {
+  const podAnnotations: Record<string, string> = {
     [ANNOTATIONS.KATA_VCPUS]: String(meta.resources.vcpus),
     [ANNOTATIONS.KATA_MEMORY]: String(meta.resources.memory),
   };
   if (tpmSocketPath) {
-    annotations[ANNOTATIONS.KATA_TPM_SOCKET] = tpmSocketPath;
+    podAnnotations[ANNOTATIONS.KATA_TPM_SOCKET] = tpmSocketPath;
   }
 
-  const pod: k8s.V1Pod = {
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: {
-      name: `seed-${name}`,
-      namespace,
-      labels: seedLabels(name, generation),
-      annotations,
-    },
-    spec: {
-      runtimeClassName: "kata",
-      restartPolicy: "Always",
-      terminationGracePeriodSeconds: 10,
-      containers: [
-        {
-          name,
-          image: imageRef,
-          stdin: true,
-          tty: true,
-          securityContext: { privileged: true },
-          env: [
-            {
-              name: "SEED_NODE_IP",
-              valueFrom: { fieldRef: { fieldPath: "status.hostIP" } },
-            },
-          ],
-        },
-      ],
-    },
-  };
+  const volumes: k8s.V1Volume[] = [];
+  const mounts: k8s.V1VolumeMount[] = [];
 
-  // Add storage volume mounts
-  const storageKeys = Object.keys(meta.storage);
-  if (storageKeys.length > 0) {
-    const volumes: k8s.V1Volume[] = [];
-    const mounts: k8s.V1VolumeMount[] = [];
-
-    for (const key of storageKeys) {
-      const entry = meta.storage[key];
-      volumes.push({
-        name: key,
-        persistentVolumeClaim: { claimName: `seed-${name}-${key}` },
-      });
-      mounts.push({
-        name: key,
-        mountPath: entry.mountPoint,
-      });
-    }
-
-    pod.spec!.volumes = volumes;
-    pod.spec!.containers[0].volumeMounts = mounts;
+  // Storage volumes
+  for (const [key, entry] of Object.entries(meta.storage)) {
+    volumes.push({
+      name: key,
+      persistentVolumeClaim: { claimName: `seed-${name}-${key}` },
+    });
+    mounts.push({
+      name: key,
+      mountPath: entry.mountPoint,
+    });
   }
 
-  // Add TPM identity volume
+  // TPM identity volume
   if (tpmSocketPath) {
-    const volumes = pod.spec!.volumes || [];
-    const mounts = pod.spec!.containers[0].volumeMounts || [];
-
     volumes.push({
       name: "tpm-identity",
       persistentVolumeClaim: { claimName: `seed-${name}-tpm-identity` },
@@ -88,12 +47,54 @@ export function generatePod(
       name: "tpm-identity",
       mountPath: "/seed/tpm",
     });
-
-    pod.spec!.volumes = volumes;
-    pod.spec!.containers[0].volumeMounts = mounts;
   }
 
-  return pod;
+  return {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: {
+      name: `seed-${name}`,
+      namespace,
+      labels: seedLabels(name, generation),
+    },
+    spec: {
+      replicas: 1,
+      strategy: { type: "Recreate" },
+      selector: {
+        matchLabels: { [LABELS.INSTANCE]: name },
+      },
+      template: {
+        metadata: {
+          labels: {
+            [LABELS.MANAGED_BY]: "seed",
+            [LABELS.INSTANCE]: name,
+          },
+          annotations: podAnnotations,
+        },
+        spec: {
+          runtimeClassName: "kata",
+          terminationGracePeriodSeconds: 10,
+          containers: [
+            {
+              name,
+              image: imageRef,
+              stdin: true,
+              tty: true,
+              securityContext: { privileged: true },
+              env: [
+                {
+                  name: "SEED_NODE_IP",
+                  valueFrom: { fieldRef: { fieldPath: "status.hostIP" } },
+                },
+              ],
+              ...(mounts.length > 0 ? { volumeMounts: mounts } : {}),
+            },
+          ],
+          ...(volumes.length > 0 ? { volumes } : {}),
+        },
+      },
+    },
+  };
 }
 
 /** Generate a PVC manifest for instance storage. */

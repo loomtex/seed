@@ -1,9 +1,9 @@
-// Tests for controller/manifests.ts — pod, PVC, service, host task generation.
+// Tests for controller/manifests.ts — deployment, PVC, service, host task generation.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  generatePod,
+  generateDeployment,
   generatePVC,
   generateService,
   generateHostTask,
@@ -23,53 +23,77 @@ function makeMeta(overrides?: Partial<SeedMeta>): SeedMeta {
   };
 }
 
-describe("generatePod", () => {
+describe("generateDeployment", () => {
   const gen = "aabbccddee12";
   const ns = "s-gaydazldmnsg";
 
-  it("generates a valid Pod manifest", () => {
+  it("generates a valid Deployment manifest", () => {
     const meta = makeMeta();
-    const pod = generatePod("web", "nix:0/nix/store/abc-seed-web", gen, ns, meta);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc-seed-web", gen, ns, meta);
 
-    assert.equal(pod.apiVersion, "v1");
-    assert.equal(pod.kind, "Pod");
-    assert.equal(pod.metadata?.name, "seed-web");
-    assert.equal(pod.metadata?.namespace, ns);
-    assert.equal(pod.spec?.runtimeClassName, "kata");
-    assert.equal(pod.spec?.restartPolicy, "Always");
+    assert.equal(dep.apiVersion, "apps/v1");
+    assert.equal(dep.kind, "Deployment");
+    assert.equal(dep.metadata?.name, "seed-web");
+    assert.equal(dep.metadata?.namespace, ns);
+    assert.equal(dep.spec?.replicas, 1);
+    assert.equal(dep.spec?.strategy?.type, "Recreate");
   });
 
-  it("includes seed labels", () => {
+  it("includes seed labels on Deployment metadata", () => {
     const meta = makeMeta();
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
 
-    assert.equal(pod.metadata?.labels?.["seed.loom.farm/managed-by"], "seed");
-    assert.equal(pod.metadata?.labels?.["seed.loom.farm/instance"], "web");
-    assert.equal(pod.metadata?.labels?.["seed.loom.farm/generation"], gen);
+    assert.equal(dep.metadata?.labels?.["seed.loom.farm/managed-by"], "seed");
+    assert.equal(dep.metadata?.labels?.["seed.loom.farm/instance"], "web");
+    assert.equal(dep.metadata?.labels?.["seed.loom.farm/generation"], gen);
   });
 
-  it("includes Kata annotations for VM sizing", () => {
+  it("includes managed-by and instance labels on pod template (no generation)", () => {
+    const meta = makeMeta();
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+
+    const tmpl = dep.spec?.template;
+    assert.equal(tmpl?.metadata?.labels?.["seed.loom.farm/managed-by"], "seed");
+    assert.equal(tmpl?.metadata?.labels?.["seed.loom.farm/instance"], "web");
+    // Generation is NOT on pod template — avoids unnecessary pod restarts
+    assert.equal(tmpl?.metadata?.labels?.["seed.loom.farm/generation"], undefined);
+  });
+
+  it("selector matches on instance label only", () => {
+    const meta = makeMeta();
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+
+    assert.deepEqual(dep.spec?.selector?.matchLabels, {
+      "seed.loom.farm/instance": "web",
+    });
+  });
+
+  it("pod template uses kata runtime", () => {
+    const meta = makeMeta();
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+
+    assert.equal(dep.spec?.template?.spec?.runtimeClassName, "kata");
+  });
+
+  it("includes Kata annotations on pod template for VM sizing", () => {
     const meta = makeMeta({ resources: { vcpus: 4, memory: 4096 } });
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
 
+    const annotations = dep.spec?.template?.metadata?.annotations;
     assert.equal(
-      pod.metadata?.annotations?.[
-        "io.katacontainers.config.hypervisor.default_vcpus"
-      ],
+      annotations?.["io.katacontainers.config.hypervisor.default_vcpus"],
       "4",
     );
     assert.equal(
-      pod.metadata?.annotations?.[
-        "io.katacontainers.config.hypervisor.default_memory"
-      ],
+      annotations?.["io.katacontainers.config.hypervisor.default_memory"],
       "4096",
     );
   });
 
   it("sets SEED_NODE_IP env from downward API", () => {
     const meta = makeMeta();
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta);
-    const env = pod.spec?.containers[0]?.env;
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const env = dep.spec?.template?.spec?.containers[0]?.env;
     const nodeIpEnv = env?.find((e) => e.name === "SEED_NODE_IP");
 
     assert.ok(nodeIpEnv, "SEED_NODE_IP env should exist");
@@ -78,10 +102,10 @@ describe("generatePod", () => {
 
   it("has no volumes when no storage", () => {
     const meta = makeMeta({ storage: {} });
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
 
-    assert.equal(pod.spec?.volumes, undefined);
-    assert.equal(pod.spec?.containers[0].volumeMounts, undefined);
+    assert.equal(dep.spec?.template?.spec?.volumes, undefined);
+    assert.equal(dep.spec?.template?.spec?.containers[0].volumeMounts, undefined);
   });
 
   it("adds storage volumes and mounts", () => {
@@ -91,16 +115,17 @@ describe("generatePod", () => {
         logs: { size: "500Mi", mountPoint: "/seed/storage/logs" },
       },
     });
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
 
-    assert.equal(pod.spec?.volumes?.length, 2);
-    assert.equal(pod.spec?.containers[0].volumeMounts?.length, 2);
+    const tmpl = dep.spec?.template?.spec;
+    assert.equal(tmpl?.volumes?.length, 2);
+    assert.equal(tmpl?.containers[0].volumeMounts?.length, 2);
 
-    const dataVol = pod.spec?.volumes?.find((v) => v.name === "data");
+    const dataVol = tmpl?.volumes?.find((v) => v.name === "data");
     assert.ok(dataVol, "data volume should exist");
     assert.equal(dataVol?.persistentVolumeClaim?.claimName, "seed-web-data");
 
-    const dataMount = pod.spec?.containers[0].volumeMounts?.find(
+    const dataMount = tmpl?.containers[0].volumeMounts?.find(
       (m) => m.name === "data",
     );
     assert.ok(dataMount, "data mount should exist");
@@ -110,10 +135,10 @@ describe("generatePod", () => {
   it("adds TPM socket annotation when provided", () => {
     const meta = makeMeta();
     const socketPath = "/run/swtpm/s-gaydazldmnsg-web/swtpm-sock";
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
 
     assert.equal(
-      pod.metadata?.annotations?.[
+      dep.spec?.template?.metadata?.annotations?.[
         "io.katacontainers.config.hypervisor.tpm_socket"
       ],
       socketPath,
@@ -123,13 +148,14 @@ describe("generatePod", () => {
   it("adds TPM identity volume when TPM socket provided", () => {
     const meta = makeMeta();
     const socketPath = "/run/swtpm/s-gaydazldmnsg-web/swtpm-sock";
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
 
-    const tpmVol = pod.spec?.volumes?.find((v) => v.name === "tpm-identity");
+    const tmpl = dep.spec?.template?.spec;
+    const tpmVol = tmpl?.volumes?.find((v) => v.name === "tpm-identity");
     assert.ok(tpmVol, "tpm-identity volume should exist");
     assert.equal(tpmVol?.persistentVolumeClaim?.claimName, "seed-web-tpm-identity");
 
-    const tpmMount = pod.spec?.containers[0].volumeMounts?.find(
+    const tpmMount = tmpl?.containers[0].volumeMounts?.find(
       (m) => m.name === "tpm-identity",
     );
     assert.ok(tpmMount, "tpm-identity mount should exist");
@@ -141,12 +167,13 @@ describe("generatePod", () => {
       storage: { data: { size: "1Gi", mountPoint: "/seed/storage/data" } },
     });
     const socketPath = "/run/swtpm/ns-web/swtpm-sock";
-    const pod = generatePod("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
 
-    assert.equal(pod.spec?.volumes?.length, 2);
-    assert.equal(pod.spec?.containers[0].volumeMounts?.length, 2);
+    const tmpl = dep.spec?.template?.spec;
+    assert.equal(tmpl?.volumes?.length, 2);
+    assert.equal(tmpl?.containers[0].volumeMounts?.length, 2);
 
-    const volNames = pod.spec?.volumes?.map((v) => v.name).sort();
+    const volNames = tmpl?.volumes?.map((v) => v.name).sort();
     assert.deepEqual(volNames, ["data", "tpm-identity"]);
   });
 });

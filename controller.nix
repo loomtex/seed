@@ -92,6 +92,11 @@ let
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
       {
+        apiGroups = [ "apps" ];
+        resources = [ "deployments" ];
+        verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
+      }
+      {
         apiGroups = [ "batch" ];
         resources = [ "jobs" ];
         verbs = [ "get" "list" "watch" "create" "delete" ];
@@ -184,7 +189,6 @@ let
             command = [ "${pkgs.nodejs_22}/bin/node" "/app/controller.mjs" ];
             env = [
               { name = "SEED_FLAKE_PATH"; value = cfg.flakePath; }
-              { name = "SEED_INTERVAL"; value = toString cfg.interval; }
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
               { name = "SEED_BUILDER_IMAGE"; value = cfg.builderImage; }
@@ -304,12 +308,6 @@ in {
     flakePath = lib.mkOption {
       type = lib.types.str;
       description = "Path to the flake containing seeds.* outputs.";
-    };
-
-    interval = lib.mkOption {
-      type = lib.types.int;
-      default = 30;
-      description = "Reconciliation interval in seconds.";
     };
 
     namespace = lib.mkOption {

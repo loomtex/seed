@@ -89,7 +89,7 @@ export interface IPv6Config {
 export interface InstanceState {
   imagePath: string;
   meta: SeedMeta;
-  pod: k8s.V1Pod;
+  deployment: k8s.V1Deployment;
   services: k8s.V1Service[];
   pvcs: k8s.V1PersistentVolumeClaim[];
   hostTask: SeedHostTask | null;
@@ -117,7 +117,6 @@ export interface BuildResult {
 export interface ControllerConfig {
   flakePath: string;
   namespace: string;
-  interval: number;
   ipv4Address: string;
   ipv6Block: string;
   webhookSecretFile: string;
