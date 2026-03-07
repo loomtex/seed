@@ -74,6 +74,12 @@ in {
   # No polkit — headless instances don't need privilege negotiation
   security.polkit.enable = lib.mkDefault false;
 
+  # No nscd/nsncd — instances use /etc/resolv.conf + /etc/passwd directly.
+  # nsncd fails in Kata VMs and cascades to nss-lookup.target failure,
+  # breaking DNS resolution and user lookups for all services.
+  services.nscd.enable = lib.mkDefault false;
+  system.nssModules = lib.mkForce [];
+
   # Create TPM device nodes during NixOS activation, before sops-nix runs.
   # Kata VMs use tmpfs on /dev (not devtmpfs), so the kernel doesn't
   # auto-create device nodes. sops-nix's setupSecrets activation script runs

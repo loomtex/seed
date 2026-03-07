@@ -39,11 +39,15 @@
     '';
   };
 
-  # Persist ACME certs on PVC + create www dir
+  # Persist ACME certs on PVC + create www dir.
+  # /run/acme must exist before the ACME service starts — NixOS acme uses
+  # BindPaths=/run/acme in its systemd service, and mount namespace setup
+  # fails with ENOENT if the source path doesn't exist.
   systemd.tmpfiles.rules = [
     "d /seed/storage/data/www 0755 root root -"
     "d /seed/storage/data/acme 0750 acme caddy -"
     "L+ /var/lib/acme - - - - /seed/storage/data/acme"
+    "d /run/acme 0750 acme acme -"
   ];
 
   services.caddy = {
@@ -55,5 +59,12 @@
         file_server
       '';
     };
+  };
+
+  # Caddy needs certs to exist before starting (useACMEHost = no auto-fetch).
+  # On first boot, the ACME service must complete before Caddy can start.
+  systemd.services.caddy = {
+    after = [ "acme-finished-ns-wildcard.target" ];
+    wants = [ "acme-finished-ns-wildcard.target" ];
   };
 }
