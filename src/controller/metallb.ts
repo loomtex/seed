@@ -117,8 +117,12 @@ async function applyCustomResource(
   body: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await api.getNamespacedCustomObject({ group, version, namespace, plural, name });
-    // Exists — update it
+    const existing = await api.getNamespacedCustomObject({ group, version, namespace, plural, name }) as Record<string, unknown>;
+    // Exists — update it, preserving resourceVersion
+    const metadata = existing.metadata as Record<string, unknown> | undefined;
+    const bodyMeta = (body.metadata || {}) as Record<string, unknown>;
+    bodyMeta.resourceVersion = metadata?.resourceVersion;
+    body.metadata = bodyMeta;
     try {
       await api.replaceNamespacedCustomObject({ group, version, namespace, plural, name, body });
       log("metallb", `updated ${plural}/${name}`);

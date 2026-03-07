@@ -191,6 +191,10 @@ let
               # nix needs flakes + nix-command enabled, and daemon mode (store is read-only mount)
               { name = "NIX_CONFIG"; value = "experimental-features = nix-command flakes"; }
               { name = "NIX_REMOTE"; value = "daemon"; }
+              # CA certs for HTTPS (nix fetching from GitHub)
+              { name = "NIX_SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
+              { name = "SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
+              { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               # PATH: nix + git + coreutils (for nix eval/build)
               { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz ]; }
             ] ++ lib.optional (cfg.namespace != "") {
