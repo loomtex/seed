@@ -167,6 +167,10 @@
           name = "dns";
           module = ./instances/dns.nix;
         };
+        silo = mkInstance {
+          name = "silo";
+          module = ./instances/silo.nix;
+        };
       };
     in builtins.mapAttrs (name: instance:
       instance // {
@@ -277,6 +281,7 @@
         dns2 = { host = "2"; port = 53; protocol = "dns"; instance = "dns"; };
         http = { host = "3"; port = 80; protocol = "tcp"; instance = "web"; };
         https = { host = "3"; port = 443; protocol = "tcp"; instance = "web"; };
+        ssh = { host = "4"; port = 22; protocol = "tcp"; instance = "silo"; };
       };
     };
 

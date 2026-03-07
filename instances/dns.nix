@@ -13,7 +13,7 @@ let
 
   rrsets = [
     { name = zone; type = "SOA"; ttl = 3600;
-      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030703 10800 3600 604800 3600"; }]; }
+      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030704 10800 3600 604800 3600"; }]; }
     { name = zone; type = "NS"; ttl = 3600;
       records = [{ content = "ns1.loom.farm."; } { content = "ns2.loom.farm."; }]; }
     { name = "ns1.${zone}"; type = "A"; ttl = 3600;
@@ -30,6 +30,10 @@ let
       records = [{ content = "216.128.141.222"; }]; }
     { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 3600;
       records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
+
+    # Silo — SSH git server (IPv6 only)
+    { name = "silo.${zone}"; type = "AAAA"; ttl = 3600;
+      records = [{ content = "2001:19f0:6402:7eb::4"; }]; }
 
     # Zone apex — can't CNAME at apex, use A/AAAA
     { name = zone; type = "A"; ttl = 3600;
