@@ -101,7 +101,15 @@ generate_pod() {
           tty: true,
           securityContext: {
             privileged: true
-          }
+          },
+          env: [{
+            name: "SEED_NODE_IP",
+            valueFrom: {
+              fieldRef: {
+                fieldPath: "status.hostIP"
+              }
+            }
+          }]
         }]
       }
     }')

@@ -61,8 +61,13 @@
     virtualHosts."loom.farm" = {
       useACMEHost = "ns-wildcard";
       extraConfig = ''
-        root * ${../site}
-        file_server
+        handle_path /_hook/* {
+          reverse_proxy {env.SEED_NODE_IP}:9876
+        }
+        handle {
+          root * ${../site}
+          file_server
+        }
       '';
     };
   };

@@ -13,13 +13,22 @@ let
 
   webhookScript = pkgs.writeShellScript "seed-webhook" ''
     LISTEN="${cfg.webhook.address}:${toString cfg.webhook.port}"
-    SECRET="${cfg.webhook.secret}"
+    SECRET_FILE="${cfg.webhook.secretFile}"
     TRIGGER="${stateDir}/refresh"
 
     log() { echo "[seed-webhook] $(date -Iseconds) $*"; }
 
+    # Load HMAC secret from file (if configured)
+    HMAC_SECRET=""
+    if [ -n "$SECRET_FILE" ] && [ -f "$SECRET_FILE" ]; then
+      HMAC_SECRET=$(cat "$SECRET_FILE" | tr -d '\n')
+      log "HMAC-SHA256 verification enabled"
+    else
+      log "WARNING: no secret file — accepting all requests"
+    fi
+
     handle_request() {
-      local method path auth_ok
+      local method path content_length signature
 
       # Read request line
       read -r method path _
@@ -27,33 +36,50 @@ let
       path=$(echo "$path" | tr -d '\r')
 
       # Read headers
-      auth_ok=0
+      content_length=0
+      signature=""
       while IFS= read -r header; do
         header=$(echo "$header" | tr -d '\r')
         [ -z "$header" ] && break
-        if [ -n "$SECRET" ]; then
-          case "$header" in
-            Authorization:\ Bearer\ "$SECRET") auth_ok=1 ;;
-          esac
-        else
-          auth_ok=1
-        fi
+        case "$header" in
+          Content-Length:\ *|content-length:\ *)
+            content_length=''${header#*: }
+            ;;
+          X-Hub-Signature-256:\ *|x-hub-signature-256:\ *)
+            signature=''${header#*: }
+            ;;
+        esac
       done
 
-      # Drain body
-      cat >/dev/null &
-      DRAIN_PID=$!
-      sleep 0.1
-      kill $DRAIN_PID 2>/dev/null
-
       if [ "$method" != "POST" ] || [ "$path" != "/refresh" ]; then
+        # Drain body
+        [ "$content_length" -gt 0 ] 2>/dev/null && head -c "$content_length" >/dev/null
         printf "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         return
       fi
 
-      if [ "$auth_ok" -ne 1 ]; then
-        printf "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        return
+      # Read body
+      local body=""
+      if [ "$content_length" -gt 0 ] 2>/dev/null; then
+        body=$(head -c "$content_length")
+      fi
+
+      # Verify HMAC-SHA256 signature if secret is configured
+      if [ -n "$HMAC_SECRET" ]; then
+        if [ -z "$signature" ]; then
+          log "rejected: missing X-Hub-Signature-256 header"
+          printf "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+          return
+        fi
+
+        local expected
+        expected="sha256=$(echo -n "$body" | ${pkgs.openssl}/bin/openssl dgst -sha256 -hmac "$HMAC_SECRET" -hex 2>/dev/null | sed 's/^.* //')"
+
+        if [ "$expected" != "$signature" ]; then
+          log "rejected: invalid signature"
+          printf "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+          return
+        fi
       fi
 
       touch "$TRIGGER"
@@ -117,12 +143,12 @@ in {
         description = "Address to bind the webhook listener.";
       };
 
-      secret = lib.mkOption {
+      secretFile = lib.mkOption {
         type = lib.types.str;
         default = "";
         description = ''
-          Bearer token for webhook authentication.
-          Empty = no authentication (use only behind a firewall).
+          Path to file containing the HMAC-SHA256 secret for GitHub webhook verification.
+          Empty = no authentication (accept all requests).
         '';
       };
     };
