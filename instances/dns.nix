@@ -130,6 +130,9 @@ in
           "DELETE FROM domainmetadata WHERE kind IN ('SOA-EDIT-API','SOA-EDIT') AND content='INCEPTION-INCREMENT';"
       fi
 
+      # Ensure pdns user owns the database and WAL files
+      chown pdns:pdns /seed/storage/data/pdns.db*
+
       # Inject sops-decrypted API key into pdns config
       mkdir -p /run/pdns/conf.d
       echo "api-key=$(cat ${config.sops.secrets.pdns-api-key.path})" > /run/pdns/conf.d/secrets.conf
