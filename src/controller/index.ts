@@ -164,6 +164,94 @@ export function renderDesiredState(
 }
 
 /**
+ * Apply SeedHostTasks for all instances.
+ * Called before rendering deployments so the host-agent can start swtpm processes.
+ */
+async function applySeedHostTasks(
+  clients: ReturnType<typeof makeClients>,
+  namespace: string,
+  buildResults: Map<string, BuildResult>,
+  generation: string,
+): Promise<void> {
+  for (const [name] of buildResults) {
+    const hostTask = generateHostTask(name, namespace, generation);
+    try {
+      const existing = await clients.custom.getNamespacedCustomObject({
+        group: "seed.loom.farm",
+        version: "v1alpha1",
+        namespace,
+        plural: "seedhosttasks",
+        name: hostTask.metadata!.name!,
+      }) as SeedHostTask;
+      const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
+      if (existingGen !== generation) {
+        existing.metadata = existing.metadata || {};
+        existing.metadata.labels = {
+          ...existing.metadata.labels,
+          [LABELS.GENERATION]: generation,
+        };
+        await clients.custom.replaceNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seedhosttasks",
+          name: hostTask.metadata!.name!,
+          body: existing,
+        });
+        log("controller", `updated SeedHostTask swtpm-${name} generation`, name);
+      } else {
+        log("controller", `SeedHostTask swtpm-${name} up to date`, name);
+      }
+    } catch {
+      await clients.custom.createNamespacedCustomObject({
+        group: "seed.loom.farm",
+        version: "v1alpha1",
+        namespace,
+        plural: "seedhosttasks",
+        body: hostTask,
+      });
+      log("controller", `created SeedHostTask swtpm-${name}`, name);
+    }
+  }
+}
+
+/**
+ * Wait for all SeedHostTasks to become ready.
+ * Polls every 2s, up to 60s total. Logs progress.
+ */
+async function waitForHostTasks(
+  clients: ReturnType<typeof makeClients>,
+  namespace: string,
+  buildResults: Map<string, BuildResult>,
+  generation: string,
+): Promise<void> {
+  const expectedTasks = new Set([...buildResults.keys()].map((n) => `swtpm-${n}`));
+  const maxWait = 60_000;
+  const pollInterval = 2_000;
+  const start = Date.now();
+
+  while (Date.now() - start < maxWait) {
+    const statuses = await readHostTaskStatuses(clients, namespace);
+    let allReady = true;
+    for (const name of buildResults.keys()) {
+      const status = statuses.get(name);
+      if (!status?.ready) {
+        allReady = false;
+        break;
+      }
+    }
+    if (allReady) {
+      log("controller", "all SeedHostTasks ready");
+      return;
+    }
+    await sleep(pollInterval);
+  }
+
+  // Not all ready after timeout — proceed anyway (deployments will lack TPM)
+  log("controller", "warning: some SeedHostTasks not ready after 60s, proceeding without TPM");
+}
+
+/**
  * Apply the desired state to the cluster.
  * Creates missing resources, updates existing ones.
  */
@@ -755,7 +843,13 @@ async function main(): Promise<void> {
       log("controller", `deploying generation ${generation} (was: ${deployed || "none"})`);
     }
 
-    // Read host task statuses
+    // Apply SeedHostTasks first and wait for readiness
+    if (config.swtpmEnabled) {
+      await applySeedHostTasks(clients, config.namespace, buildResults, generation);
+      await waitForHostTasks(clients, config.namespace, buildResults, generation);
+    }
+
+    // Read host task statuses (now includes newly-ready tasks)
     const hostTaskStatuses = await readHostTaskStatuses(clients, config.namespace);
 
     // Render desired state
@@ -767,7 +861,7 @@ async function main(): Promise<void> {
       hostTaskStatuses,
     );
 
-    // Apply desired state
+    // Apply desired state (SeedHostTasks already applied, skipped inside)
     await applyDesiredState(clients, desired);
 
     // Reap old resources

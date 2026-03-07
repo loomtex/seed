@@ -2,16 +2,10 @@ keys:
   - &admin_josh 2EE325D71601671696EBF687E45953D34C8829ED
   - &dns_tpm age1tpm1q0y0c4utw22tunzeuyu2vzerq7ehfn2qtr977z2xc97h35dd4d08jk26v8j
   - &web_tpm age1tpm1q08cny6t7h03cc9pau8pqlfgu5r4ekf7054dy35ed99rrhuvddykx34qzyx
+  - &silo_tpm age1tpm1qwdwnhpj7cdlknmz930tunmru8sfz7e2qgjdvf29d34x5yh9njm8j3yg3fc
 
 creation_rules:
   - path_regex: secrets/dns\.yaml$
-    key_groups:
-      - pgp:
-          - *admin_josh
-        age:
-          - *dns_tpm
-
-  - path_regex: secrets/silo\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
@@ -24,3 +18,10 @@ creation_rules:
           - *admin_josh
         age:
           - *web_tpm
+
+  - path_regex: secrets/silo\.yaml$
+    key_groups:
+      - pgp:
+          - *admin_josh
+        age:
+          - *silo_tpm

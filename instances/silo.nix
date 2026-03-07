@@ -164,9 +164,8 @@ in {
   seed.storage.repos = "10Gi";
 
   # sops-nix: pdns API key for SSHFP publishing
-  # Uncomment after first boot when TPM identity is available and secrets/silo.yaml is created
-  # sops.defaultSopsFile = ../secrets/silo.yaml;
-  # sops.secrets.pdns-api-key = {};
+  sops.defaultSopsFile = ../secrets/silo.yaml;
+  sops.secrets.pdns-api-key = {};
 
   # git user — all SSH connections land here
   users.users.git = {
@@ -205,18 +204,17 @@ in {
   environment.systemPackages = [ pkgs.git siloShell ];
 
   # Publish SSHFP DNS record after openssh generates host keys
-  # Uncomment after secrets are configured (requires pdns-api-key)
-  # systemd.services.silo-publish-sshfp = {
-  #   description = "Publish SSH host key fingerprint as SSHFP DNS record";
-  #   wantedBy = [ "multi-user.target" ];
-  #   after = [ "sshd.service" "network-online.target" ];
-  #   wants = [ "network-online.target" ];
-  #   path = [ pkgs.curl pkgs.openssl pkgs.gawk pkgs.coreutils ];
-  #   serviceConfig = {
-  #     Type = "oneshot";
-  #     ExecStart = publishSshfp;
-  #     Restart = "on-failure";
-  #     RestartSec = "10s";
-  #   };
-  # };
+  systemd.services.silo-publish-sshfp = {
+    description = "Publish SSH host key fingerprint as SSHFP DNS record";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "sshd.service" "network-online.target" ];
+    wants = [ "network-online.target" ];
+    path = [ pkgs.curl pkgs.openssl pkgs.gawk pkgs.coreutils ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = publishSshfp;
+      Restart = "on-failure";
+      RestartSec = "10s";
+    };
+  };
 }
