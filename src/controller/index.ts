@@ -666,15 +666,12 @@ async function main(): Promise<void> {
     }
   }, SELF_HEAL_INTERVAL_MS);
 
-  // Event-driven loop: wait for webhook, then reconcile with --refresh
+  // Event-driven loop: wait for webhook, then reconcile with --refresh.
+  // Crashes on failure — k8s restart gives free backoff and retry.
   while (true) {
     await waitForWebhook();
     log("controller", "webhook triggered, starting reconciliation");
-    try {
-      await reconcile(true);
-    } catch (err) {
-      log("controller", `webhook reconciliation error: ${err}`);
-    }
+    await reconcile(true);
   }
 }
 
