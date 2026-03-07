@@ -27,6 +27,7 @@ function makeMeta(name: string, overrides?: Partial<SeedMeta>): SeedMeta {
     expose: {},
     storage: {},
     connect: {},
+    rollout: "recreate",
     ...overrides,
   };
 }

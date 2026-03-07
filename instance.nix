@@ -110,6 +110,16 @@ in {
       description = "Service connections available inside the instance.";
     };
 
+    rollout = lib.mkOption {
+      type = lib.types.enum [ "recreate" "rolling" ];
+      default = "recreate";
+      description = ''
+        Deployment rollout strategy.
+        "recreate" stops the old pod before starting the new one (safe for stateful).
+        "rolling" starts the new pod before stopping the old (zero-downtime for stateless).
+      '';
+    };
+
     meta = lib.mkOption {
       type = lib.types.attrs;
       readOnly = true;
@@ -133,6 +143,7 @@ in {
         inherit (c) service;
         port = c.port;
       }) cfg.connect;
+      rollout = cfg.rollout;
     };
 
     # Create mount point directories for storage volumes

@@ -19,6 +19,7 @@ function makeMeta(overrides?: Partial<SeedMeta>): SeedMeta {
     expose: {},
     storage: {},
     connect: {},
+    rollout: "recreate",
     ...overrides,
   };
 }
@@ -130,6 +131,15 @@ describe("generateDeployment", () => {
     );
     assert.ok(dataMount, "data mount should exist");
     assert.equal(dataMount?.mountPath, "/seed/storage/data");
+  });
+
+  it("uses RollingUpdate strategy when rollout is rolling", () => {
+    const meta = makeMeta({ rollout: "rolling" });
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+
+    assert.equal(dep.spec?.strategy?.type, "RollingUpdate");
+    assert.equal(dep.spec?.strategy?.rollingUpdate?.maxSurge, 1);
+    assert.equal(dep.spec?.strategy?.rollingUpdate?.maxUnavailable, 0);
   });
 
   it("adds TPM socket annotation when provided", () => {

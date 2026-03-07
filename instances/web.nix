@@ -6,6 +6,7 @@
 
 {
   seed.size = "s";
+  seed.rollout = "rolling";
   seed.expose.http = { port = 80; protocol = "tcp"; };
   seed.expose.https = { port = 443; protocol = "tcp"; };
   seed.storage.data = "1Gi";

@@ -54,6 +54,7 @@ export interface SeedMeta {
   expose: Record<string, SeedExposeEntry>;
   storage: Record<string, SeedStorageEntry>;
   connect: Record<string, SeedConnectEntry>;
+  rollout?: "recreate" | "rolling";
 }
 
 // --- Route blocks (from nix eval of flake outputs) ---

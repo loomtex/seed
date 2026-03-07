@@ -59,7 +59,9 @@ export function generateDeployment(
     },
     spec: {
       replicas: 1,
-      strategy: { type: "Recreate" },
+      strategy: meta.rollout === "rolling"
+        ? { type: "RollingUpdate", rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
+        : { type: "Recreate" },
       selector: {
         matchLabels: { [LABELS.INSTANCE]: name },
       },
