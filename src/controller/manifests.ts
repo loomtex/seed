@@ -22,6 +22,11 @@ export function generateDeployment(
     podAnnotations[ANNOTATIONS.KATA_TPM_SOCKET] = tpmSocketPath;
   }
 
+  // Readiness probe: TCP check on first exposed port for rolling rollouts
+  const probePort = meta.rollout === "rolling"
+    ? findProbePort(meta.expose)
+    : undefined;
+
   const volumes: k8s.V1Volume[] = [];
   const mounts: k8s.V1VolumeMount[] = [];
 
@@ -89,6 +94,14 @@ export function generateDeployment(
                   valueFrom: { fieldRef: { fieldPath: "status.hostIP" } },
                 },
               ],
+              ...(probePort ? {
+                readinessProbe: {
+                  tcpSocket: { port: probePort },
+                  initialDelaySeconds: 1,
+                  periodSeconds: 1,
+                  failureThreshold: 30,
+                },
+              } : {}),
               ...(mounts.length > 0 ? { volumeMounts: mounts } : {}),
             },
           ],
@@ -171,6 +184,17 @@ export function generateHostTask(
       namespace,
     } satisfies SeedHostTaskSpec,
   };
+}
+
+/** Find the first TCP-capable exposed port for readiness probing. */
+export function findProbePort(
+  expose: Record<string, { port: number; protocol: string }>,
+): number | undefined {
+  for (const entry of Object.values(expose)) {
+    // tcp, http, grpc, dns all listen on TCP; skip udp-only
+    if (entry.protocol !== "udp") return entry.port;
+  }
+  return undefined;
 }
 
 /** Build k8s service port entries from expose metadata. */

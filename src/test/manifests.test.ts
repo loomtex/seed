@@ -7,6 +7,7 @@ import {
   generatePVC,
   generateService,
   generateHostTask,
+  findProbePort,
 } from "../controller/manifests.js";
 import type { SeedMeta } from "../shared/types.js";
 
@@ -170,6 +171,51 @@ describe("generateDeployment", () => {
     );
     assert.ok(tpmMount, "tpm-identity mount should exist");
     assert.equal(tpmMount?.mountPath, "/seed/tpm");
+  });
+
+  it("adds readiness probe for rolling rollout with TCP-capable port", () => {
+    const meta = makeMeta({
+      rollout: "rolling",
+      expose: { http: { port: 8080, protocol: "http" } },
+    });
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const probe = dep.spec?.template?.spec?.containers[0].readinessProbe;
+
+    assert.ok(probe, "readiness probe should exist");
+    assert.equal(probe?.tcpSocket?.port, 8080);
+    assert.equal(probe?.initialDelaySeconds, 1);
+    assert.equal(probe?.periodSeconds, 1);
+    assert.equal(probe?.failureThreshold, 30);
+  });
+
+  it("no readiness probe for rolling rollout with no exposed ports", () => {
+    const meta = makeMeta({ rollout: "rolling", expose: {} });
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const probe = dep.spec?.template?.spec?.containers[0].readinessProbe;
+
+    assert.equal(probe, undefined);
+  });
+
+  it("no readiness probe for rolling rollout with UDP-only port", () => {
+    const meta = makeMeta({
+      rollout: "rolling",
+      expose: { game: { port: 27015, protocol: "udp" } },
+    });
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const probe = dep.spec?.template?.spec?.containers[0].readinessProbe;
+
+    assert.equal(probe, undefined);
+  });
+
+  it("no readiness probe for recreate strategy even with exposed port", () => {
+    const meta = makeMeta({
+      rollout: "recreate",
+      expose: { http: { port: 8080, protocol: "tcp" } },
+    });
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
+    const probe = dep.spec?.template?.spec?.containers[0].readinessProbe;
+
+    assert.equal(probe, undefined);
   });
 
   it("combines storage and TPM volumes", () => {
