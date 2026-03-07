@@ -559,18 +559,12 @@ async function main(): Promise<void> {
   // State
   let currentDesired: DesiredState | null = null;
 
-  /** Run a full reconciliation cycle. */
+  /** Run a full reconciliation cycle. Throws on failure. */
   async function reconcile(useRefresh: boolean): Promise<void> {
     log("controller", `reconciliation starting...${useRefresh ? " (--refresh)" : ""}`);
 
     // List instances from flake
-    let instanceNames: string[];
-    try {
-      instanceNames = await listInstances(config.flakePath, useRefresh);
-    } catch (err) {
-      log("controller", `failed to list instances: ${err}`);
-      return;
-    }
+    const instanceNames = await listInstances(config.flakePath, useRefresh);
 
     // Build all instances
     let buildResults: Map<string, BuildResult>;
@@ -578,45 +572,30 @@ async function main(): Promise<void> {
     if (config.builderImage) {
       // Use builder Jobs
       const currentGen = await deployedGeneration(clients, config.namespace);
-      try {
-        buildResults = await runBuilders(
-          clients,
-          config.flakePath,
-          instanceNames,
-          config.namespace,
-          config.builderImage,
-          currentGen || "initial",
-          useRefresh,
-        );
-      } catch (err) {
-        log("controller", `builder failed: ${err}`);
-        return;
-      }
+      buildResults = await runBuilders(
+        clients,
+        config.flakePath,
+        instanceNames,
+        config.namespace,
+        config.builderImage,
+        currentGen || "initial",
+        useRefresh,
+      );
     } else {
       // Direct nix build (when running on host with nix access)
       buildResults = new Map();
-      let buildFailed = false;
       for (const name of instanceNames) {
-        try {
-          log("controller", `building image...`, name);
-          const imagePath = await nixBuild(
-            `${config.flakePath}#seeds.${name}.image`,
-            useRefresh,
-          );
-          log("controller", `evaluating metadata...`, name);
-          const meta = await nixEvalJson(
-            `${config.flakePath}#seeds.${name}.meta`,
-            useRefresh,
-          ) as BuildResult["meta"];
-          buildResults.set(name, { imagePath, meta });
-        } catch (err) {
-          log("controller", `build failed: ${err}`, name);
-          buildFailed = true;
-        }
-      }
-      if (buildFailed) {
-        log("controller", "some builds failed, skipping reconciliation");
-        return;
+        log("controller", `building image...`, name);
+        const imagePath = await nixBuild(
+          `${config.flakePath}#seeds.${name}.image`,
+          useRefresh,
+        );
+        log("controller", `evaluating metadata...`, name);
+        const meta = await nixEvalJson(
+          `${config.flakePath}#seeds.${name}.meta`,
+          useRefresh,
+        ) as BuildResult["meta"];
+        buildResults.set(name, { imagePath, meta });
       }
     }
 
@@ -673,12 +652,9 @@ async function main(): Promise<void> {
     log("controller", `reconciliation complete (generation=${generation})`);
   }
 
-  // Startup: one full reconciliation (fresh cache)
-  try {
-    await reconcile(false);
-  } catch (err) {
-    log("controller", `startup reconciliation error: ${err}`);
-  }
+  // Startup: one full reconciliation (fresh cache).
+  // Crashes on failure so k8s restarts us (e.g. DNS not ready yet).
+  await reconcile(false);
 
   // Self-heal timer: every 60s, check cluster matches desired state
   const SELF_HEAL_INTERVAL_MS = 60_000;
