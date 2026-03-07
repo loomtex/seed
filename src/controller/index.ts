@@ -3,7 +3,7 @@
 // Event-driven reconciliation:
 // - On startup: run one full reconciliation
 // - On webhook: run reconciliation with --refresh
-// - Self-heal: periodic check that cluster matches desired state
+// - Watch-based drift correction: k8s API watches detect changes and re-apply desired state
 //
 // Instances are managed as Deployments (replicas=1, strategy=Recreate).
 // k8s handles pod replacement, restart, and health.
@@ -391,96 +391,197 @@ async function deployedGeneration(
   return "";
 }
 
-// --- Self-healing reconciliation ---
+// --- Watch-based drift correction ---
+
+/** Debounce window: skip watch-triggered corrections for resources we just applied. */
+const DEBOUNCE_MS = 5_000;
 
 /**
- * Check for and fix drift between desired and actual state.
- * Recreates missing Deployments, Services, and SeedHostTasks.
+ * Start k8s API watches on managed Deployments and Services.
+ * On any change or deletion, compare against desired state and re-apply if drifted.
+ *
+ * Uses `makeInformer` which handles automatic reconnection on watch errors.
  */
-async function selfHeal(
+function startWatches(
+  kc: k8s.KubeConfig,
   clients: ReturnType<typeof makeClients>,
-  desired: DesiredState | null,
-): Promise<void> {
-  if (!desired) return;
+  namespace: string,
+  getDesired: () => DesiredState | null,
+): void {
+  // Track recently-applied resources to avoid self-triggered corrections
+  const recentlyApplied = new Set<string>();
+  function markApplied(key: string): void {
+    recentlyApplied.add(key);
+    setTimeout(() => recentlyApplied.delete(key), DEBOUNCE_MS);
+  }
 
-  const { namespace } = desired;
+  // --- Deployment watch ---
 
-  for (const [name, instance] of desired.instances) {
-    // Check Deployment exists
+  const deploymentInformer = k8s.makeInformer<k8s.V1Deployment>(
+    kc,
+    `/apis/apps/v1/namespaces/${namespace}/deployments`,
+    () => clients.apps.listNamespacedDeployment({
+      namespace,
+      labelSelector: MANAGED_SELECTOR,
+    }) as Promise<k8s.KubernetesListObject<k8s.V1Deployment>>,
+    MANAGED_SELECTOR,
+  );
+
+  async function handleDeploymentChange(obj: k8s.V1Deployment): Promise<void> {
+    const name = obj.metadata?.name;
+    if (!name) return;
+    const key = `deployment/${name}`;
+    if (recentlyApplied.has(key)) return;
+
+    const desired = getDesired();
+    if (!desired) return;
+
+    // Find the desired deployment by name
+    const desiredDep = findDesiredDeployment(desired, name);
+    if (!desiredDep) return; // Not ours or removed
+
     try {
-      await clients.apps.readNamespacedDeployment({
-        name: instance.deployment.metadata!.name!,
-        namespace,
-      });
-    } catch {
-      log("controller", `self-heal: recreating missing deployment`, name);
-      try {
-        await applyDeployment(clients.apps, namespace, instance.deployment);
-      } catch (err) {
-        log("controller", `self-heal: failed to recreate deployment: ${err}`, name);
-      }
+      markApplied(key);
+      await applyDeployment(clients.apps, namespace, desiredDep);
+      log("controller", `watch: re-applied drifted deployment ${name}`);
+    } catch (err) {
+      log("controller", `watch: failed to correct deployment ${name}: ${err}`);
     }
+  }
 
-    // Check services exist
+  async function handleDeploymentDelete(obj: k8s.V1Deployment): Promise<void> {
+    const name = obj.metadata?.name;
+    if (!name) return;
+    const key = `deployment/${name}`;
+    if (recentlyApplied.has(key)) return;
+
+    const desired = getDesired();
+    if (!desired) return;
+
+    const desiredDep = findDesiredDeployment(desired, name);
+    if (!desiredDep) return;
+
+    log("controller", `watch: recreating deleted deployment ${name}`);
+    try {
+      markApplied(key);
+      await applyDeployment(clients.apps, namespace, desiredDep);
+    } catch (err) {
+      log("controller", `watch: failed to recreate deployment ${name}: ${err}`);
+    }
+  }
+
+  deploymentInformer.on("update", (obj) => { handleDeploymentChange(obj); });
+  deploymentInformer.on("delete", (obj) => { handleDeploymentDelete(obj); });
+  deploymentInformer.on("error", (err) => {
+    log("controller", `watch: deployment informer error: ${err}`);
+  });
+  deploymentInformer.on("connect", () => {
+    log("controller", "watch: deployment informer connected");
+  });
+
+  // --- Service watch ---
+
+  const serviceInformer = k8s.makeInformer<k8s.V1Service>(
+    kc,
+    `/api/v1/namespaces/${namespace}/services`,
+    () => clients.core.listNamespacedService({
+      namespace,
+      labelSelector: MANAGED_SELECTOR,
+    }) as Promise<k8s.KubernetesListObject<k8s.V1Service>>,
+    MANAGED_SELECTOR,
+  );
+
+  async function handleServiceChange(obj: k8s.V1Service): Promise<void> {
+    const name = obj.metadata?.name;
+    if (!name) return;
+    const key = `service/${name}`;
+    if (recentlyApplied.has(key)) return;
+
+    const desired = getDesired();
+    if (!desired) return;
+
+    const desiredSvc = findDesiredService(desired, name);
+    if (!desiredSvc) return;
+
+    try {
+      markApplied(key);
+      await applyResource(clients.core, "Service", namespace, desiredSvc);
+      log("controller", `watch: re-applied drifted service ${name}`);
+    } catch (err) {
+      log("controller", `watch: failed to correct service ${name}: ${err}`);
+    }
+  }
+
+  async function handleServiceDelete(obj: k8s.V1Service): Promise<void> {
+    const name = obj.metadata?.name;
+    if (!name) return;
+    const key = `service/${name}`;
+    if (recentlyApplied.has(key)) return;
+
+    const desired = getDesired();
+    if (!desired) return;
+
+    const desiredSvc = findDesiredService(desired, name);
+    if (!desiredSvc) return;
+
+    log("controller", `watch: recreating deleted service ${name}`);
+    try {
+      markApplied(key);
+      await applyResource(clients.core, "Service", namespace, desiredSvc);
+    } catch (err) {
+      log("controller", `watch: failed to recreate service ${name}: ${err}`);
+    }
+  }
+
+  serviceInformer.on("update", (obj) => { handleServiceChange(obj); });
+  serviceInformer.on("delete", (obj) => { handleServiceDelete(obj); });
+  serviceInformer.on("error", (err) => {
+    log("controller", `watch: service informer error: ${err}`);
+  });
+  serviceInformer.on("connect", () => {
+    log("controller", "watch: service informer connected");
+  });
+
+  // Start both informers
+  deploymentInformer.start();
+  serviceInformer.start();
+
+  log("controller", "watch: started Deployment and Service informers");
+}
+
+/**
+ * Find a desired Deployment by its k8s name.
+ * Checks instance deployments first, then there's no other deployment type.
+ */
+function findDesiredDeployment(
+  desired: DesiredState,
+  name: string,
+): k8s.V1Deployment | null {
+  for (const [, instance] of desired.instances) {
+    if (instance.deployment.metadata?.name === name) {
+      return instance.deployment;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find a desired Service by its k8s name.
+ * Checks instance services and route services (IPv4/IPv6).
+ */
+function findDesiredService(
+  desired: DesiredState,
+  name: string,
+): k8s.V1Service | null {
+  for (const [, instance] of desired.instances) {
     for (const svc of instance.services) {
-      try {
-        await clients.core.readNamespacedService({
-          name: svc.metadata!.name!,
-          namespace,
-        });
-      } catch {
-        log("controller", `self-heal: recreating missing service ${svc.metadata!.name}`, name);
-        try {
-          await clients.core.createNamespacedService({ namespace, body: svc });
-        } catch (err) {
-          log("controller", `self-heal: failed to recreate service: ${err}`, name);
-        }
-      }
-    }
-
-    // Check SeedHostTask exists
-    if (instance.hostTask) {
-      try {
-        await clients.custom.getNamespacedCustomObject({
-          group: "seed.loom.farm",
-          version: "v1alpha1",
-          namespace,
-          plural: "seedhosttasks",
-          name: instance.hostTask.metadata!.name!,
-        });
-      } catch {
-        log("controller", `self-heal: recreating missing SeedHostTask swtpm-${name}`, name);
-        try {
-          await clients.custom.createNamespacedCustomObject({
-            group: "seed.loom.farm",
-            version: "v1alpha1",
-            namespace,
-            plural: "seedhosttasks",
-            body: instance.hostTask,
-          });
-        } catch (err) {
-          log("controller", `self-heal: failed to recreate SeedHostTask: ${err}`, name);
-        }
-      }
+      if (svc.metadata?.name === name) return svc;
     }
   }
-
-  // Check route services
   for (const svc of [...desired.routes.ipv4, ...desired.routes.ipv6]) {
-    try {
-      await clients.core.readNamespacedService({
-        name: svc.metadata!.name!,
-        namespace,
-      });
-    } catch {
-      log("controller", `self-heal: recreating missing route service ${svc.metadata!.name}`);
-      try {
-        await clients.core.createNamespacedService({ namespace, body: svc });
-      } catch (err) {
-        log("controller", `self-heal: failed to recreate route service: ${err}`);
-      }
-    }
+    if (svc.metadata?.name === name) return svc;
   }
+  return null;
 }
 
 // --- Main ---
@@ -620,14 +721,15 @@ async function main(): Promise<void> {
       )) as IPv6Config;
     } catch { /* no ipv6 output */ }
 
-    // Check if generation already deployed
+    // Always render + apply + reap, even if generation matches.
+    // This ensures controller code changes (e.g. new readiness probes) take
+    // effect without waiting for an image change.
     const deployed = await deployedGeneration(clients, config.namespace);
     if (deployed === generation) {
-      log("controller", `generation ${generation} already deployed, nothing to do`);
-      return;
+      log("controller", `generation ${generation} unchanged, re-applying desired state`);
+    } else {
+      log("controller", `deploying generation ${generation} (was: ${deployed || "none"})`);
     }
-
-    log("controller", `deploying generation ${generation} (was: ${deployed || "none"})`);
 
     // Read host task statuses
     const hostTaskStatuses = await readHostTaskStatuses(clients, config.namespace);
@@ -656,15 +758,9 @@ async function main(): Promise<void> {
   // Crashes on failure so k8s restarts us (e.g. DNS not ready yet).
   await reconcile(false);
 
-  // Self-heal timer: every 60s, check cluster matches desired state
-  const SELF_HEAL_INTERVAL_MS = 60_000;
-  setInterval(async () => {
-    try {
-      await selfHeal(clients, currentDesired);
-    } catch (err) {
-      log("controller", `self-heal error: ${err}`);
-    }
-  }, SELF_HEAL_INTERVAL_MS);
+  // Start k8s API watches for drift correction.
+  // Watches react to external changes (edits, deletions) and re-apply desired state.
+  startWatches(kc, clients, config.namespace, () => currentDesired);
 
   // Event-driven loop: wait for webhook, then reconcile with --refresh.
   // Crashes on failure — k8s restart gives free backoff and retry.
