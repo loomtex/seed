@@ -174,14 +174,33 @@ async function applyDesiredState(
   for (const [name, instance] of desired.instances) {
     if (instance.hostTask) {
       try {
-        await clients.custom.getNamespacedCustomObject({
+        const existing = await clients.custom.getNamespacedCustomObject({
           group: "seed.loom.farm",
           version: "v1alpha1",
           namespace,
           plural: "seedhosttasks",
           name: instance.hostTask.metadata!.name!,
-        });
-        log("controller", `SeedHostTask swtpm-${name} already exists`, name);
+        }) as SeedHostTask;
+        // Update generation label if changed
+        const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
+        if (existingGen !== desired.generation) {
+          existing.metadata = existing.metadata || {};
+          existing.metadata.labels = {
+            ...existing.metadata.labels,
+            [LABELS.GENERATION]: desired.generation,
+          };
+          await clients.custom.replaceNamespacedCustomObject({
+            group: "seed.loom.farm",
+            version: "v1alpha1",
+            namespace,
+            plural: "seedhosttasks",
+            name: instance.hostTask.metadata!.name!,
+            body: existing,
+          });
+          log("controller", `updated SeedHostTask swtpm-${name} generation`, name);
+        } else {
+          log("controller", `SeedHostTask swtpm-${name} up to date`, name);
+        }
       } catch {
         await clients.custom.createNamespacedCustomObject({
           group: "seed.loom.farm",
@@ -225,15 +244,43 @@ async function applyDesiredState(
             namespace,
             gracePeriodSeconds: 10,
           });
-          // Wait for deletion
-          await sleep(2000);
+          // Wait for pod to actually be gone
+          for (let i = 0; i < 30; i++) {
+            await sleep(1000);
+            try {
+              await clients.core.readNamespacedPod({
+                name: instance.pod.metadata!.name!,
+                namespace,
+              });
+            } catch {
+              break; // Pod is gone
+            }
+          }
           await clients.core.createNamespacedPod({
             namespace,
             body: instance.pod,
           });
           log("controller", `pod replaced`, name);
         } else {
-          log("controller", `pod unchanged`, name);
+          // Pod image unchanged — update generation label
+          const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
+          if (existingGen !== desired.generation) {
+            existing.metadata = existing.metadata || {};
+            existing.metadata.labels = {
+              ...existing.metadata.labels,
+              [LABELS.GENERATION]: desired.generation,
+            };
+            // Can't replace pod spec, but we can replace metadata
+            // Use a targeted label replace via read-modify-replace on the pod
+            await clients.core.replaceNamespacedPod({
+              name: instance.pod.metadata!.name!,
+              namespace,
+              body: existing,
+            });
+            log("controller", `pod generation label updated`, name);
+          } else {
+            log("controller", `pod unchanged`, name);
+          }
         }
       } catch {
         // Pod doesn't exist — create it
