@@ -74,8 +74,11 @@
 
   # Caddy needs certs to exist before starting (useACMEHost = no auto-fetch).
   # On first boot, the ACME service must complete before Caddy can start.
+  # PassEnvironment: SEED_NODE_IP is set by k8s downward API on PID 1 (systemd),
+  # but systemd doesn't propagate it to services automatically.
   systemd.services.caddy = {
     after = [ "acme-finished-ns-wildcard.target" ];
     wants = [ "acme-finished-ns-wildcard.target" ];
+    serviceConfig.PassEnvironment = "SEED_NODE_IP";
   };
 }
