@@ -496,9 +496,18 @@ async function main(): Promise<void> {
   }
   log("controller", "k8s API ready");
 
-  // Ensure namespace
+  // Ensure namespace with labels/annotations
   try {
-    await clients.core.readNamespace({ name: config.namespace });
+    const existing = await clients.core.readNamespace({ name: config.namespace });
+    // Update labels/annotations if missing
+    const labels = existing.metadata?.labels || {};
+    const annotations = existing.metadata?.annotations || {};
+    if (labels[LABELS.MANAGED_BY] !== MANAGED_BY_VALUE || annotations[ANNOTATIONS.FLAKE_URI] !== config.flakePath) {
+      existing.metadata = existing.metadata || {};
+      existing.metadata.labels = { ...labels, [LABELS.MANAGED_BY]: MANAGED_BY_VALUE };
+      existing.metadata.annotations = { ...annotations, [ANNOTATIONS.FLAKE_URI]: config.flakePath };
+      await clients.core.replaceNamespace({ name: config.namespace, body: existing });
+    }
   } catch {
     await clients.core.createNamespace({
       body: {
@@ -512,16 +521,6 @@ async function main(): Promise<void> {
       },
     });
   }
-  // Label/annotate namespace
-  await clients.core.patchNamespace({
-    name: config.namespace,
-    body: {
-      metadata: {
-        labels: { [LABELS.MANAGED_BY]: MANAGED_BY_VALUE },
-        annotations: { [ANNOTATIONS.FLAKE_URI]: config.flakePath },
-      },
-    },
-  });
 
   // Configure MetalLB pools (once at startup)
   try {
