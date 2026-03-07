@@ -62,6 +62,12 @@ let
         "$API/zones"
     fi
 
+    # Clear stale SOA-EDIT-API metadata — 'INCEPTION-INCREMENT' was removed in
+    # recent pdns versions and causes 500 errors on all record updates.
+    curl -sf -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+      -d '{"soa_edit_api":"DEFAULT","soa_edit":"INCEPTION-INCREMENT"}' \
+      "$API/zones/${zone}" || true
+
     # Build REPLACE patch for all desired rrsets
     REPLACE=$(jq '{rrsets: [.rrsets[] | . + {changetype: "REPLACE", records: [.records[] | . + {disabled: false}]}]}' "$DESIRED")
 
