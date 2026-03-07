@@ -62,7 +62,7 @@
       useACMEHost = "ns-wildcard";
       extraConfig = ''
         handle_path /_hook/* {
-          reverse_proxy {env.SEED_NODE_IP}:9876
+          reverse_proxy {$SEED_NODE_IP}:9876
         }
         handle {
           root * ${../site}
