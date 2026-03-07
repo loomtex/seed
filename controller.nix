@@ -188,6 +188,10 @@ let
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
               { name = "SEED_BUILDER_IMAGE"; value = cfg.builderImage; }
+              # nix needs flakes + nix-command enabled
+              { name = "NIX_CONFIG"; value = "experimental-features = nix-command flakes"; }
+              # PATH: nix + git + coreutils (for nix eval/build)
+              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz ]; }
             ] ++ lib.optional (cfg.namespace != "") {
               name = "SEED_NAMESPACE"; value = cfg.namespace;
             } ++ lib.optional (cfg.ipv4Address != "") {
@@ -205,12 +209,22 @@ let
             volumeMounts = [
               { name = "nix-daemon"; mountPath = "/nix/var/nix/daemon-socket"; }
               { name = "nix-store"; mountPath = "/nix/store"; readOnly = true; }
-            ];
+            ] ++ lib.optional (cfg.webhook.secretFile != "") {
+              name = "webhook-secret";
+              mountPath = builtins.dirOf cfg.webhook.secretFile;
+              readOnly = true;
+            };
           }];
           volumes = [
             { name = "nix-daemon"; hostPath.path = "/nix/var/nix/daemon-socket"; }
             { name = "nix-store"; hostPath.path = "/nix/store"; }
-          ];
+          ] ++ lib.optional (cfg.webhook.secretFile != "") {
+            name = "webhook-secret";
+            hostPath = {
+              path = builtins.dirOf cfg.webhook.secretFile;
+              type = "Directory";
+            };
+          };
         };
       };
     };

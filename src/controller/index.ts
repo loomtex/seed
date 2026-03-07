@@ -484,11 +484,11 @@ async function main(): Promise<void> {
 
   log("controller", `starting (flake=${config.flakePath} namespace=${config.namespace})`);
 
-  // Wait for k8s API
+  // Wait for k8s API (use listNamespace — we have RBAC for namespaces, not nodes)
   log("controller", "waiting for k8s API...");
   while (true) {
     try {
-      await clients.core.listNode();
+      await clients.core.listNamespace();
       break;
     } catch {
       await sleep(5000);
