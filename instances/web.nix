@@ -40,7 +40,6 @@
   };
 
   systemd.tmpfiles.rules = [
-    "d /seed/storage/data/www 0755 root root -"
     "d /seed/storage/data/acme 0750 root root -"
   ];
 
@@ -62,7 +61,7 @@
     virtualHosts."loom.farm" = {
       useACMEHost = "ns-wildcard";
       extraConfig = ''
-        root * /seed/storage/data/www
+        root * ${../site}
         file_server
       '';
     };

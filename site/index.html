@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>loom.farm — Seed</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0a;
+      color: #c8c8c8;
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 15px;
+      line-height: 1.7;
+      padding: 2rem 1.5rem;
+      max-width: 680px;
+      margin: 0 auto;
+    }
+
+    header {
+      border-bottom: 1px solid #222;
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: #e0e0e0;
+      letter-spacing: -0.02em;
+    }
+
+    h1 span { color: #555; }
+
+    .tagline {
+      color: #666;
+      font-size: 0.85rem;
+      margin-top: 0.3rem;
+    }
+
+    section {
+      margin-bottom: 2rem;
+    }
+
+    h2 {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.8rem;
+    }
+
+    p {
+      margin-bottom: 0.8rem;
+    }
+
+    .stack-list {
+      list-style: none;
+      padding: 0;
+    }
+
+    .stack-list li {
+      position: relative;
+      padding-left: 1.2rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .stack-list li::before {
+      content: '\2192';
+      position: absolute;
+      left: 0;
+      color: #444;
+    }
+
+    a {
+      color: #7aa2f7;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    footer {
+      border-top: 1px solid #222;
+      padding-top: 1.5rem;
+      margin-top: 3rem;
+      color: #444;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>loom.farm <span>/</span> Seed</h1>
+    <div class="tagline">NixOS instances in hardware-isolated microVMs</div>
+  </header>
+
+  <section>
+    <h2>What you're looking at</h2>
+    <p>This page is served by a NixOS system running inside a Kata Containers microVM with hardware isolation. The entire system &mdash; OS, services, configuration &mdash; is defined in a Nix flake and deployed as a single OCI image.</p>
+  </section>
+
+  <section>
+    <h2>The stack</h2>
+    <ul class="stack-list">
+      <li>NixOS instance definition (a standard NixOS module)</li>
+      <li>nix-snapshotter builds an OCI image from the Nix closure</li>
+      <li>Kata Containers runs it in a Cloud Hypervisor microVM</li>
+      <li>k3s schedules the pod on bare metal</li>
+      <li>Caddy terminates TLS with a Let's Encrypt certificate (DNS-01 via PowerDNS)</li>
+      <li>This page</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Secrets</h2>
+    <p>Each VM gets a virtual TPM backed by swtpm on the host. At first boot, an age identity is generated from the TPM. Secrets are encrypted with sops and decrypted at boot by sops-nix using the TPM-backed age key. No secret material touches disk unencrypted.</p>
+  </section>
+
+  <section>
+    <h2>Infrastructure</h2>
+    <p>Single bare-metal node. Dual-stack IPv4 + IPv6. MetalLB for LoadBalancer services. Every pod runs in its own hardware-isolated VM &mdash; there is no shared kernel between tenants.</p>
+  </section>
+
+  <section>
+    <h2>Learn more</h2>
+    <p><a href="https://github.com/loomtex/seed">github.com/loomtex/seed</a></p>
+  </section>
+
+  <footer>
+    Served from a Nix store path. No JavaScript. No tracking.
+  </footer>
+</body>
+</html>
