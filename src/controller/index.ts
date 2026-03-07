@@ -393,14 +393,17 @@ async function deployedGeneration(
 
 // --- Watch-based drift correction ---
 
-/** Debounce window: skip watch-triggered corrections for resources we just applied. */
-const DEBOUNCE_MS = 5_000;
-
 /**
  * Start k8s API watches on managed Deployments and Services.
  * On any change or deletion, compare against desired state and re-apply if drifted.
  *
  * Uses `makeInformer` which handles automatic reconnection on watch errors.
+ *
+ * Drift detection uses k8s `metadata.generation` — a counter incremented only
+ * on spec changes (not status updates). We track the last-seen generation per
+ * resource. When a watch event arrives with the same generation, it's a status
+ * update (or our own change) and can be skipped. When generation changes,
+ * someone edited the spec externally and we re-apply.
  */
 function startWatches(
   kc: k8s.KubeConfig,
@@ -409,12 +412,9 @@ function startWatches(
   getDesired: () => DesiredState | null,
   isReconciling: () => boolean,
 ): void {
-  // Track recently-applied resources to avoid self-triggered corrections
-  const recentlyApplied = new Set<string>();
-  function markApplied(key: string): void {
-    recentlyApplied.add(key);
-    setTimeout(() => recentlyApplied.delete(key), DEBOUNCE_MS);
-  }
+  // Track k8s metadata.generation per resource to detect spec-only changes.
+  // Status updates don't increment metadata.generation, so they're filtered out.
+  const knownGeneration = new Map<string, number>();
 
   // --- Deployment watch ---
 
@@ -432,20 +432,23 @@ function startWatches(
     const name = obj.metadata?.name;
     if (!name) return;
     if (isReconciling()) return;
+
     const key = `deployment/${name}`;
-    if (recentlyApplied.has(key)) return;
+    const gen = obj.metadata?.generation;
+
+    // Skip if spec generation hasn't changed (status-only update or our own apply)
+    if (gen !== undefined && knownGeneration.get(key) === gen) return;
+    if (gen !== undefined) knownGeneration.set(key, gen);
 
     const desired = getDesired();
     if (!desired) return;
 
-    // Find the desired deployment by name
     const desiredDep = findDesiredDeployment(desired, name);
-    if (!desiredDep) return; // Not ours or removed
+    if (!desiredDep) return;
 
     try {
-      markApplied(key);
       await applyDeployment(clients.apps, namespace, desiredDep);
-      log("controller", `watch: re-applied drifted deployment ${name}`);
+      log("controller", `watch: corrected spec drift on deployment ${name}`);
     } catch (err) {
       log("controller", `watch: failed to correct deployment ${name}: ${err}`);
     }
@@ -455,8 +458,7 @@ function startWatches(
     const name = obj.metadata?.name;
     if (!name) return;
     if (isReconciling()) return;
-    const key = `deployment/${name}`;
-    if (recentlyApplied.has(key)) return;
+    knownGeneration.delete(`deployment/${name}`);
 
     const desired = getDesired();
     if (!desired) return;
@@ -466,13 +468,18 @@ function startWatches(
 
     log("controller", `watch: recreating deleted deployment ${name}`);
     try {
-      markApplied(key);
       await applyDeployment(clients.apps, namespace, desiredDep);
     } catch (err) {
       log("controller", `watch: failed to recreate deployment ${name}: ${err}`);
     }
   }
 
+  // Seed the known generation on initial list to avoid false drift on startup
+  deploymentInformer.on("add", (obj) => {
+    const name = obj.metadata?.name;
+    const gen = obj.metadata?.generation;
+    if (name && gen !== undefined) knownGeneration.set(`deployment/${name}`, gen);
+  });
   deploymentInformer.on("update", (obj) => { handleDeploymentChange(obj); });
   deploymentInformer.on("delete", (obj) => { handleDeploymentDelete(obj); });
   deploymentInformer.on("error", (err) => {
@@ -498,8 +505,12 @@ function startWatches(
     const name = obj.metadata?.name;
     if (!name) return;
     if (isReconciling()) return;
+
     const key = `service/${name}`;
-    if (recentlyApplied.has(key)) return;
+    const gen = obj.metadata?.generation;
+
+    if (gen !== undefined && knownGeneration.get(key) === gen) return;
+    if (gen !== undefined) knownGeneration.set(key, gen);
 
     const desired = getDesired();
     if (!desired) return;
@@ -508,9 +519,8 @@ function startWatches(
     if (!desiredSvc) return;
 
     try {
-      markApplied(key);
       await applyResource(clients.core, "Service", namespace, desiredSvc);
-      log("controller", `watch: re-applied drifted service ${name}`);
+      log("controller", `watch: corrected spec drift on service ${name}`);
     } catch (err) {
       log("controller", `watch: failed to correct service ${name}: ${err}`);
     }
@@ -520,8 +530,7 @@ function startWatches(
     const name = obj.metadata?.name;
     if (!name) return;
     if (isReconciling()) return;
-    const key = `service/${name}`;
-    if (recentlyApplied.has(key)) return;
+    knownGeneration.delete(`service/${name}`);
 
     const desired = getDesired();
     if (!desired) return;
@@ -531,13 +540,17 @@ function startWatches(
 
     log("controller", `watch: recreating deleted service ${name}`);
     try {
-      markApplied(key);
       await applyResource(clients.core, "Service", namespace, desiredSvc);
     } catch (err) {
       log("controller", `watch: failed to recreate service ${name}: ${err}`);
     }
   }
 
+  serviceInformer.on("add", (obj) => {
+    const name = obj.metadata?.name;
+    const gen = obj.metadata?.generation;
+    if (name && gen !== undefined) knownGeneration.set(`service/${name}`, gen);
+  });
   serviceInformer.on("update", (obj) => { handleServiceChange(obj); });
   serviceInformer.on("delete", (obj) => { handleServiceDelete(obj); });
   serviceInformer.on("error", (err) => {
@@ -775,13 +788,15 @@ async function main(): Promise<void> {
   startWatches(kc, clients, config.namespace, () => currentDesired, () => reconciling);
 
   // Event-driven loop: wait for webhook, then reconcile with --refresh.
-  // If a webhook fires during reconciliation, we re-reconcile immediately after.
   // Crashes on failure — k8s restart gives free backoff and retry.
   while (true) {
     await waitForWebhook();
     refreshRequested = false;
     log("controller", "webhook triggered, starting reconciliation");
     await reconcile(true);
+    // Clear any webhooks that arrived during the run — we already used --refresh,
+    // so the latest commit was captured. Avoids a redundant re-reconciliation.
+    refreshRequested = false;
   }
 }
 
