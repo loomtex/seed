@@ -11,6 +11,13 @@ creation_rules:
         age:
           - *dns_tpm
 
+  - path_regex: secrets/silo\.yaml$
+    key_groups:
+      - pgp:
+          - *admin_josh
+        age:
+          - *dns_tpm
+
   - path_regex: secrets/web\.yaml$
     key_groups:
       - pgp:
