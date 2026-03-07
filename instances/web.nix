@@ -39,16 +39,23 @@
     '';
   };
 
-  # Persist ACME certs on PVC + create www dir.
-  # /run/acme must exist before the ACME service starts — NixOS acme uses
-  # BindPaths=/run/acme in its systemd service, and mount namespace setup
-  # fails with ENOENT if the source path doesn't exist.
   systemd.tmpfiles.rules = [
     "d /seed/storage/data/www 0755 root root -"
-    "d /seed/storage/data/acme 0750 acme caddy -"
-    "L+ /var/lib/acme - - - - /seed/storage/data/acme"
-    "d /run/acme 0750 acme acme -"
+    "d /seed/storage/data/acme 0750 root root -"
   ];
+
+  # Bind-mount PVC acme dir to /var/lib/acme so certs persist across restarts.
+  # Can't use a symlink — NixOS acme-setup uses StateDirectory which rejects symlinks.
+  # Must run before systemd-tmpfiles-setup (which acme-setup depends on).
+  system.activationScripts.acmeMount = {
+    deps = [];
+    text = ''
+      mkdir -p /var/lib/acme
+      if ! mountpoint -q /var/lib/acme; then
+        mount --bind /seed/storage/data/acme /var/lib/acme
+      fi
+    '';
+  };
 
   services.caddy = {
     enable = true;
