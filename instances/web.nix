@@ -62,7 +62,7 @@
       useACMEHost = "ns-wildcard";
       extraConfig = ''
         handle_path /_hook/* {
-          reverse_proxy {$SEED_NODE_IP}:9876
+          reverse_proxy seed-controller.seed-system.svc.cluster.local:9876
         }
         handle {
           root * ${../site}
@@ -72,23 +72,10 @@
     };
   };
 
-  # Extract SEED_NODE_IP from PID 1's environment for Caddy.
-  # Kata agent sets env vars on the init process (systemd), but systemd
-  # doesn't propagate them to activation scripts or services.
-  # Read from /proc/1/environ (null-delimited) instead.
-  system.activationScripts.seedNodeEnv = {
-    deps = [];
-    text = ''
-      mkdir -p /run/seed
-      tr '\0' '\n' < /proc/1/environ | grep '^SEED_NODE_IP=' > /run/seed/env || echo "SEED_NODE_IP=" > /run/seed/env
-    '';
-  };
-
   # Caddy needs certs to exist before starting (useACMEHost = no auto-fetch).
   # On first boot, the ACME service must complete before Caddy can start.
   systemd.services.caddy = {
     after = [ "acme-finished-ns-wildcard.target" ];
     wants = [ "acme-finished-ns-wildcard.target" ];
-    serviceConfig.EnvironmentFile = "/run/seed/env";
   };
 }
