@@ -13,7 +13,7 @@ let
 
   rrsets = [
     { name = zone; type = "SOA"; ttl = 300;
-      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030705 10800 3600 604800 300"; }]; }
+      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030706 10800 3600 604800 300"; }]; }
     { name = zone; type = "NS"; ttl = 300;
       records = [{ content = "ns1.loom.farm."; } { content = "ns2.loom.farm."; }]; }
     { name = "ns1.${zone}"; type = "A"; ttl = 300;
@@ -30,6 +30,10 @@ let
       records = [{ content = "216.128.141.222"; }]; }
     { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
+
+    # seed-demo namespace wildcard — IPv6 only
+    { name = "*.s-mezggnjsgq4t.${zone}"; type = "AAAA"; ttl = 300;
+      records = [{ content = "2001:19f0:6402:7eb::4"; }]; }
 
     # Silo — routed through web pod (Caddy for HTTPS, socat for SSH), IPv6 only
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
