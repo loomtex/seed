@@ -1,8 +1,6 @@
 # Seed
 
-Run NixOS systems in VM-isolated pods. No images to build. No registry to push to. Write a NixOS module, `git push`, and it boots in a hardware-isolated microVM via [Kata Containers](https://katacontainers.io/).
-
-There's no `docker build`, no Dockerfile, no image registry. Your flake *is* the deployment artifact — the platform evaluates it directly and resolves nix store paths on the node. The entire Docker image lifecycle (build, tag, push, pull, layer caching) simply doesn't exist.
+No Dockerfiles. No image registries. No Terraform. No Helm charts. No YAML. Write a NixOS module, `git push`, and it boots in a hardware-isolated microVM via [Kata Containers](https://katacontainers.io/).
 
 Each instance is a full NixOS system — use `services.nginx`, `services.postgresql`, `services.openssh`, whatever you'd put in a NixOS config. Seed adds a thin `seed.*` module for platform glue: sizing, ports, storage, secrets.
 
