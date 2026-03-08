@@ -183,16 +183,29 @@ export class VmInstance {
 
   /**
    * Snapshot the VM to a directory.
+   * Retries on 400 errors — CLH may still be completing a previous request
+   * (e.g. pause) even after the VM state has changed.
    */
   async snapshot(destDir: string): Promise<void> {
     await mkdir(destDir, { recursive: true });
-    const resp = await clhRequest(this.clhApiSocket, "PUT", "/api/v1/vm.snapshot", {
-      destination_url: `file://${destDir}`,
-    });
-    if (resp.status !== 204 && resp.status !== 200) {
+
+    const maxRetries = 5;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const resp = await clhRequest(this.clhApiSocket, "PUT", "/api/v1/vm.snapshot", {
+        destination_url: `file://${destDir}`,
+      });
+      if (resp.status === 204 || resp.status === 200) {
+        log(COMPONENT, `VM snapshot saved to ${destDir}`, this.slotId);
+        return;
+      }
+      if (resp.status === 400 && attempt < maxRetries - 1) {
+        const delay = 200 * (attempt + 1);
+        log(COMPONENT, `snapshot attempt ${attempt + 1} got 400, retrying in ${delay}ms`, this.slotId);
+        await sleep(delay);
+        continue;
+      }
       throw new Error(`snapshot failed: ${resp.status} ${resp.body}`);
     }
-    log(COMPONENT, `VM snapshot saved to ${destDir}`, this.slotId);
   }
 
   /**
