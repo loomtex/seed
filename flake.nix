@@ -258,7 +258,7 @@
 
         # Full static busybox for pre-virtiofs phase (needs mount, sleep, etc.)
         cp ${pkgs.pkgsStatic.busybox}/bin/busybox rootfs/bin/busybox
-        for cmd in sh mount umount mkdir sleep cat echo ls ln chmod; do
+        for cmd in sh mount umount mkdir sleep cat echo ls ln chmod cp; do
           ln -s busybox rootfs/bin/$cmd
         done
 
