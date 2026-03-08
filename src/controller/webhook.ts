@@ -1,17 +1,32 @@
 // HTTP webhook handler with HMAC-SHA256 verification.
 // Accepts POST /refresh to trigger cache-busting reconciliation.
+// Parses GitHub push payload to identify which flake changed.
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { log } from "../shared/kube.js";
 
-export type RefreshCallback = () => void;
+export type RefreshCallback = (flakePath: string) => void;
+
+/**
+ * Match a GitHub repository full_name (e.g. "loomtex/seed") against
+ * known flake paths (e.g. "github:loomtex/seed").
+ * Returns the matched flake path, or null if no match.
+ */
+function matchFlake(repoFullName: string, flakePaths: string[]): string | null {
+  for (const fp of flakePaths) {
+    const match = fp.match(/^github:([^#]+)/);
+    if (match && match[1] === repoFullName) return fp;
+  }
+  return null;
+}
 
 /** Start the webhook HTTP server. */
 export function startWebhookServer(
   port: number,
   secretFile: string,
+  flakePaths: string[],
   onRefresh: RefreshCallback,
 ): void {
   let hmacSecret = "";
@@ -64,8 +79,31 @@ export function startWebhookServer(
       }
     }
 
-    log("webhook", "refresh triggered");
-    onRefresh();
+    // Parse GitHub payload to identify which flake changed
+    let matchedFlake: string | null = null;
+    try {
+      const payload = JSON.parse(body.toString());
+      const repoFullName = payload?.repository?.full_name;
+      if (repoFullName) {
+        matchedFlake = matchFlake(repoFullName, flakePaths);
+        if (matchedFlake) {
+          log("webhook", `matched repo ${repoFullName} → ${matchedFlake}`);
+        } else {
+          log("webhook", `no matching flake for repo ${repoFullName}`);
+        }
+      }
+    } catch {
+      log("webhook", "failed to parse webhook payload, triggering all flakes");
+    }
+
+    if (matchedFlake) {
+      onRefresh(matchedFlake);
+    } else {
+      // No match or parse failure — trigger all flakes
+      for (const fp of flakePaths) {
+        onRefresh(fp);
+      }
+    }
 
     const responseBody = JSON.stringify({ status: "ok" });
     res.writeHead(200, {

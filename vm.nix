@@ -10,7 +10,7 @@
   seed.enable = true;
   seed.controller = {
     enable = true;
-    flakePath = "github:loomtex/seed";
+    flakePaths = [ "github:loomtex/seed" ];
   };
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];

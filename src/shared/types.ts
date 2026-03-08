@@ -116,8 +116,7 @@ export interface BuildResult {
 // --- Controller configuration ---
 
 export interface ControllerConfig {
-  flakePath: string;
-  namespace: string;
+  flakePaths: string[];
   ipv4Address: string;
   ipv6Block: string;
   webhookSecretFile: string;

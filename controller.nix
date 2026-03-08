@@ -188,7 +188,7 @@ let
             image = "nix:0${cfg.controllerImage}";
             command = [ "${pkgs.nodejs_22}/bin/node" "/app/controller.mjs" ];
             env = [
-              { name = "SEED_FLAKE_PATH"; value = cfg.flakePath; }
+              { name = "SEED_FLAKE_PATHS"; value = builtins.concatStringsSep "," cfg.flakePaths; }
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
               { name = "SEED_BUILDER_IMAGE"; value = cfg.builderImage; }
@@ -201,9 +201,7 @@ let
               { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               # PATH: nix + git + coreutils (for nix eval/build)
               { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz ]; }
-            ] ++ lib.optional (cfg.namespace != "") {
-              name = "SEED_NAMESPACE"; value = cfg.namespace;
-            } ++ lib.optional (cfg.ipv4Address != "") {
+            ] ++ lib.optional (cfg.ipv4Address != "") {
               name = "SEED_IPV4_ADDRESS"; value = cfg.ipv4Address;
             } ++ lib.optional (cfg.ipv6Block != "") {
               name = "SEED_IPV6_BLOCK"; value = cfg.ipv6Block;
@@ -305,18 +303,9 @@ in {
   options.seed.controller = {
     enable = lib.mkEnableOption "Seed instance controller";
 
-    flakePath = lib.mkOption {
-      type = lib.types.str;
-      description = "Path to the flake containing seeds.* outputs.";
-    };
-
-    namespace = lib.mkOption {
-      type = lib.types.str;
-      default = "";
-      description = ''
-        Kubernetes namespace for seed resources.
-        Empty (default) = auto-derive from flake URI. Set to override for dev/testing.
-      '';
+    flakePaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      description = "Flake paths containing seeds.* outputs.";
     };
 
     ipv4Address = lib.mkOption {
