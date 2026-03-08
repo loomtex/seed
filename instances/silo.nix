@@ -142,30 +142,48 @@ let
     echo "silo-publish-sshfp: published SSHFP 4 2 $SHA256"
   '';
 
-  # Post-receive hook — fires webhook to seed-controller on push
+  # Post-receive hook — two jobs:
+  # 1. Bidirectional .authorized_keys sync (tree ↔ bare repo metadata)
+  # 2. Webhook to seed-controller for reconciliation
   #
-  # Sends a GitHub-compatible POST with HMAC-SHA256 signature so the
-  # controller's matchFlake() can identify which tarball flake changed
-  # and trigger reconciliation with --refresh.
+  # Installed at /etc/silo/hooks/ via core.hooksPath — users can't override.
   postReceiveHook = pkgs.writeShellScript "post-receive" ''
-    # Consume stdin (required by git post-receive protocol)
-    ${pkgs.coreutils}/bin/cat > /dev/null
+    REPO_DIR=$(${pkgs.coreutils}/bin/realpath "$GIT_DIR")
+    REPO_NAME=$(${pkgs.coreutils}/bin/basename "$REPO_DIR" .git)
+    DEFAULT_BRANCH=$(${pkgs.git}/bin/git -C "$REPO_DIR" symbolic-ref HEAD 2>/dev/null || echo "refs/heads/master")
 
-    # Extract repo name from GIT_DIR — may be "." when hook runs inside the repo
-    REPO_NAME=$(${pkgs.coreutils}/bin/basename "$(${pkgs.coreutils}/bin/realpath "$GIT_DIR")" .git)
+    # Parse ref updates from stdin — find the default branch push
+    HEAD_SHA=""
+    HEAD_OLD=""
+    while read OLD NEW REF; do
+      if [ "$REF" = "$DEFAULT_BRANCH" ]; then
+        HEAD_SHA="$NEW"
+        HEAD_OLD="$OLD"
+      fi
+    done
 
-    # Read HMAC secret
+    # --- Bidirectional .authorized_keys sync ---
+    if [ -n "$HEAD_SHA" ]; then
+      if ${pkgs.git}/bin/git -C "$REPO_DIR" cat-file -e "$HEAD_SHA:.authorized_keys" 2>/dev/null; then
+        # Tree has .authorized_keys — sync to bare repo metadata
+        ${pkgs.git}/bin/git -C "$REPO_DIR" show "$HEAD_SHA:.authorized_keys" > "$REPO_DIR/.authorized_keys"
+      elif [ "$HEAD_OLD" = "0000000000000000000000000000000000000000" ] && [ -f "$REPO_DIR/.authorized_keys" ]; then
+        # First push — inject owner key from metadata into tree
+        BLOB=$(${pkgs.git}/bin/git -C "$REPO_DIR" hash-object -w "$REPO_DIR/.authorized_keys")
+        NEW_TREE=$( (${pkgs.git}/bin/git -C "$REPO_DIR" ls-tree "$HEAD_SHA"; ${pkgs.coreutils}/bin/printf '100644 blob %s\t.authorized_keys\n' "$BLOB") | ${pkgs.git}/bin/git -C "$REPO_DIR" mktree)
+        NEW_COMMIT=$(${pkgs.git}/bin/git -C "$REPO_DIR" commit-tree "$NEW_TREE" -p "$HEAD_SHA" -m "silo: track .authorized_keys")
+        ${pkgs.git}/bin/git -C "$REPO_DIR" update-ref "$DEFAULT_BRANCH" "$NEW_COMMIT"
+      fi
+    fi
+
+    # --- Webhook to seed-controller ---
     SECRET_FILE="/run/secrets/silo-webhook-secret"
     [ ! -f "$SECRET_FILE" ] && exit 0
     SECRET=$(${pkgs.coreutils}/bin/cat "$SECRET_FILE")
 
-    # Build GitHub-compatible payload
     BODY="{\"repository\":{\"full_name\":\"$REPO_NAME\"}}"
-
-    # HMAC-SHA256 signature
     SIGNATURE="sha256=$(${pkgs.coreutils}/bin/printf '%s' "$BODY" | ${pkgs.openssl}/bin/openssl dgst -sha256 -hmac "$SECRET" -hex 2>/dev/null | ${pkgs.gawk}/bin/awk '{print $NF}')"
 
-    # Fire-and-forget — don't block the push
     ${pkgs.curl}/bin/curl -sf -X POST \
       -H "Content-Type: application/json" \
       -H "X-Hub-Signature-256: $SIGNATURE" \
