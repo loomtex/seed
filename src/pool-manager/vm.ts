@@ -313,45 +313,60 @@ export class VmInstance {
 
   /**
    * Execute a command in the guest via vsock command channel (port 6001).
-   * Sends a JSON request, reads a JSON response.
+   *
+   * CLH's hybrid vsock uses a CONNECT protocol for host→guest connections:
+   * 1. Connect to the main vsock unix socket
+   * 2. Send "CONNECT <port>\n"
+   * 3. Receive "OK <local_port>\n"
+   * 4. Connection is now bridged to the guest's vsock port
    */
   async exec(request: ExecRequest): Promise<ExecResult> {
-    // The guest listens on vsock port 6001.
-    // CLH exposes this as <vsock.sock>_6001 on host.
-    const commandSocket = `${this.vsockSocket}_6001`;
-
-    // Wait for the command socket to be available
+    // Wait for the main vsock socket to be available
     const socketReady = await waitFor(
       async () => {
         try {
-          await access(commandSocket, constants.F_OK);
+          await access(this.vsockSocket, constants.F_OK);
           return true;
         } catch { return false; }
       },
       200,
-      10_000,
+      5_000,
     );
     if (!socketReady) {
-      throw new Error(`vsock command socket not ready: ${commandSocket}`);
+      throw new Error(`vsock socket not ready: ${this.vsockSocket}`);
     }
+
+    // Retry CONNECT until the guest listener is ready
+    const connectWithRetry = async (): Promise<net.Socket> => {
+      const maxRetries = 50; // 50 * 200ms = 10s
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          return await this.vsockConnect(6001);
+        } catch (err) {
+          if (i === maxRetries - 1) throw err;
+          await sleep(200);
+        }
+      }
+      throw new Error("unreachable");
+    };
+
+    const conn = await connectWithRetry();
+    log(COMPONENT, "vsock CONNECT 6001 succeeded", this.slotId);
 
     return new Promise<ExecResult>((resolve, reject) => {
       const timeout = request.timeout ?? 120_000;
-      const conn = net.createConnection({ path: commandSocket });
       let data = "";
 
       const timer = setTimeout(() => {
         conn.destroy();
         reject(new Error(`exec timed out after ${timeout}ms`));
-      }, timeout + 5_000); // Extra 5s for VM-side timeout to fire first
+      }, timeout + 5_000);
 
-      conn.on("connect", () => {
-        conn.write(JSON.stringify(request) + "\n");
-      });
+      // Send the command
+      conn.write(JSON.stringify(request) + "\n");
 
       conn.on("data", (chunk) => {
         data += chunk.toString();
-        // Look for complete JSON line
         const newlineIdx = data.indexOf("\n");
         if (newlineIdx !== -1) {
           clearTimeout(timer);
@@ -373,7 +388,6 @@ export class VmInstance {
 
       conn.on("close", () => {
         clearTimeout(timer);
-        // If we got data but no newline, try to parse it
         if (data.trim()) {
           try {
             resolve(JSON.parse(data.trim()) as ExecResult);
@@ -381,6 +395,59 @@ export class VmInstance {
             reject(new Error(`incomplete response from guest: ${data}`));
           }
         }
+      });
+    });
+  }
+
+  /**
+   * Connect to a guest vsock port via CLH's hybrid vsock CONNECT protocol.
+   * Sends "CONNECT <port>\n" and waits for "OK <local_port>\n".
+   */
+  private vsockConnect(port: number): Promise<net.Socket> {
+    return new Promise((resolve, reject) => {
+      const conn = net.createConnection({ path: this.vsockSocket });
+      let response = "";
+
+      const timer = setTimeout(() => {
+        conn.destroy();
+        reject(new Error(`vsock CONNECT ${port} timed out`));
+      }, 5_000);
+
+      conn.on("connect", () => {
+        conn.write(`CONNECT ${port}\n`);
+      });
+
+      conn.on("data", (chunk) => {
+        response += chunk.toString();
+        const newlineIdx = response.indexOf("\n");
+        if (newlineIdx !== -1) {
+          clearTimeout(timer);
+          const line = response.slice(0, newlineIdx).trim();
+          if (line.startsWith("OK")) {
+            // Remove the data listener — caller will set up their own
+            conn.removeAllListeners("data");
+            // If there's data after the OK line, buffer it
+            const remaining = response.slice(newlineIdx + 1);
+            resolve(conn);
+            // Re-emit any remaining data after the OK line
+            if (remaining) {
+              conn.emit("data", Buffer.from(remaining));
+            }
+          } else {
+            conn.destroy();
+            reject(new Error(`vsock CONNECT ${port} rejected: ${line}`));
+          }
+        }
+      });
+
+      conn.on("error", (err) => {
+        clearTimeout(timer);
+        reject(new Error(`vsock CONNECT ${port} error: ${err.message}`));
+      });
+
+      conn.on("close", () => {
+        clearTimeout(timer);
+        reject(new Error(`vsock CONNECT ${port} closed before OK`));
       });
     });
   }
@@ -437,8 +504,6 @@ export class VmInstance {
   private async cleanSockets(): Promise<void> {
     try { await rm(this.clhApiSocket, { force: true }); } catch {}
     try { await rm(this.vsockSocket, { force: true }); } catch {}
-    // Clean vsock port socket (command channel)
-    try { await rm(`${this.vsockSocket}_6001`, { force: true }); } catch {}
   }
 
   /** Spawn a child process and track it for cleanup. */
