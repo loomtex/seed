@@ -337,6 +337,8 @@ for d in /nix/store/*-bash-*/bin; do
   [ -x "$d/bash" ] && export PATH="$d:$PATH" && break
 done
 
+export HOME=/tmp
+export USER=root
 export NIX_REMOTE=daemon
 export NIX_CONFIG="experimental-features = nix-command flakes"
 
