@@ -14,6 +14,12 @@ let
   # Always allows login — any valid SSH key is accepted. The key identity
   # is passed to silo-shell via environment variables. silo-shell handles
   # per-repo access control (existing repos) and auto-creation (first push).
+  #
+  # NOTE: The script content lives in the nix store, but sshd requires the
+  # AuthorizedKeysCommand path and all parent directories to be owned by root
+  # with no group/world-write. Inside Kata VMs, /nix/store is a virtiofs mount
+  # whose ownership doesn't satisfy this check. We install a copy at /etc/ssh/
+  # via environment.etc, which sshd trusts.
   siloAuthKeys = pkgs.writeShellScript "silo-auth-keys" ''
     # Args: %u %t %k (username, key-type, key-blob-base64)
     KEY_TYPE="$2"
@@ -168,7 +174,7 @@ in {
       KbdInteractiveAuthentication = false;
       PermitRootLogin = "no";
       AuthorizedKeysFile = "none";
-      AuthorizedKeysCommand = "${siloAuthKeys} %u %t %k";
+      AuthorizedKeysCommand = "/etc/ssh/silo-auth-keys %u %t %k";
       AuthorizedKeysCommandUser = "root";
     };
     # Persist host keys in PVC
@@ -176,6 +182,12 @@ in {
       { path = "${hostKeyDir}/ssh_host_ed25519_key"; type = "ed25519"; }
       { path = "${hostKeyDir}/ssh_host_rsa_key"; type = "rsa"; bits = 4096; }
     ];
+  };
+
+  # Install auth script at /etc/ssh/ where sshd trusts the directory ownership
+  environment.etc."ssh/silo-auth-keys" = {
+    source = siloAuthKeys;
+    mode = "0755";
   };
 
   environment.systemPackages = [ pkgs.git siloShell ];
