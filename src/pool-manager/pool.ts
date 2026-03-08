@@ -122,10 +122,11 @@ export class Pool {
       // Also share nix-daemon socket directory via virtiofs
       const nixDaemonFsSocket = await vm.startVirtiofsd("nixdaemon", NIX_DAEMON_DIR);
 
-      // 2. Restore CLH from slot's snapshot copy
+      // 2. Restore CLH from slot's snapshot copy (VM starts paused)
       await vm.restoreFromSnapshot(slot.dir);
 
-      // 3. Hotplug virtiofs devices
+      // 3. Hotplug vsock + virtiofs devices (not in snapshot — per-slot paths)
+      await vm.addVsock();
       await vm.addFs("nixstore", nixStoreSocket);
       await vm.addFs("nixdaemon", nixDaemonFsSocket);
 

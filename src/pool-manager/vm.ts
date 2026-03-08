@@ -120,10 +120,10 @@ export class VmInstance {
   }
 
   /**
-   * Boot a template VM (no virtiofs). Used once to create the golden snapshot.
-   * Waits for CLH API to be ready + brief delay for guest init.
-   * Guest init mounts proc/sys/dev and then sleeps — no vsock listener
-   * at this stage (socat is in /nix/store which isn't mounted yet).
+   * Boot a template VM (no virtiofs, no vsock). Used once to create the
+   * golden snapshot. Guest init mounts proc/sys/dev and then sleeps.
+   * vsock is hotplugged per-slot after restore (snapshot can't contain
+   * vsock because the socket path is baked in and must differ per slot).
    */
   async bootTemplate(): Promise<void> {
     const slotDir = `${this.config.workDir}/${this.slotId}`;
@@ -132,13 +132,14 @@ export class VmInstance {
     // Clean stale sockets
     await this.cleanSockets();
 
-    // Start CLH with kernel + initramfs + vsock, NO --fs
+    // Start CLH with kernel + initramfs only — NO --fs, NO --vsock.
+    // vsock is hotplugged per-slot after restore because the socket path
+    // is embedded in the snapshot and must be unique per concurrent VM.
     this.spawnProcess(this.config.clhBinary, [
       "--kernel", this.config.kernelPath,
       "--initramfs", this.config.initramfsPath,
       "--cpus", `boot=${this.config.vcpus}`,
       "--memory", `size=${this.config.memory}`,
-      "--vsock", `cid=${this.cid},socket=${this.vsockSocket}`,
       "--console", "null",
       "--serial", "tty",
       "--api-socket", this.clhApiSocket,
@@ -191,29 +192,16 @@ export class VmInstance {
 
   /**
    * Snapshot the VM to a directory.
-   * Retries on 400 errors — CLH may still be completing a previous request
-   * (e.g. pause) even after the VM state has changed.
    */
   async snapshot(destDir: string): Promise<void> {
     await mkdir(destDir, { recursive: true });
-
-    const maxRetries = 5;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const resp = await clhRequest(this.clhApiSocket, "PUT", "/api/v1/vm.snapshot", {
-        destination_url: `file://${destDir}`,
-      });
-      if (resp.status === 204 || resp.status === 200) {
-        log(COMPONENT, `VM snapshot saved to ${destDir}`, this.slotId);
-        return;
-      }
-      if (resp.status === 400 && attempt < maxRetries - 1) {
-        const delay = 200 * (attempt + 1);
-        log(COMPONENT, `snapshot attempt ${attempt + 1} got 400, retrying in ${delay}ms`, this.slotId);
-        await sleep(delay);
-        continue;
-      }
+    const resp = await clhRequest(this.clhApiSocket, "PUT", "/api/v1/vm.snapshot", {
+      destination_url: `file://${destDir}`,
+    });
+    if (resp.status !== 204 && resp.status !== 200) {
       throw new Error(`snapshot failed: ${resp.status} ${resp.body}`);
     }
+    log(COMPONENT, `VM snapshot saved to ${destDir}`, this.slotId);
   }
 
   /**
@@ -294,6 +282,21 @@ export class VmInstance {
       throw new Error(`add-fs failed: ${resp.status} ${resp.body}`);
     }
     log(COMPONENT, `virtiofs hotplugged (tag=${tag})`, this.slotId);
+  }
+
+  /**
+   * Hotplug a vsock device into the running/paused VM.
+   * Must be called after restore — vsock is not part of the template snapshot.
+   */
+  async addVsock(): Promise<void> {
+    const resp = await clhRequest(this.clhApiSocket, "PUT", "/api/v1/vm.add-vsock", {
+      cid: this.cid,
+      socket: this.vsockSocket,
+    });
+    if (resp.status !== 204 && resp.status !== 200) {
+      throw new Error(`add-vsock failed: ${resp.status} ${resp.body}`);
+    }
+    log(COMPONENT, `vsock hotplugged (cid=${this.cid})`, this.slotId);
   }
 
   /**
