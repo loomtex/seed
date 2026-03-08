@@ -120,5 +120,17 @@ in {
   sops.age.keyFile = lib.mkDefault "/seed/tpm/age-identity";
   sops.age.plugins = lib.mkDefault [ pkgs.age-plugin-tpm ];
 
+  # Capture k8s-injected SEED_* environment variables for use by services.
+  # Kata VMs: systemd strips the inherited environment on startup, so
+  # PassEnvironment doesn't work. This activation script reads PID 1's
+  # original environment (preserved in /proc/1/environ) and writes SEED_*
+  # vars to /run/seed/env. Services use EnvironmentFile=/run/seed/env.
+  system.activationScripts.seedEnv = {
+    text = ''
+      mkdir -p /run/seed
+      ${pkgs.coreutils}/bin/tr '\0' '\n' < /proc/1/environ | ${pkgs.gnugrep}/bin/grep '^SEED_' > /run/seed/env || true
+    '';
+  };
+
   system.stateVersion = lib.mkDefault "25.11";
 }

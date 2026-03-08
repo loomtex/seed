@@ -165,6 +165,9 @@ in {
         # seed-shoot — fork an ephemeral VM via the pool manager
         # Usage: seed-shoot [--timeout MS] command [args...]
 
+        # Source SEED_* env vars (systemd strips them in Kata VMs)
+        [ -f /run/seed/env ] && . /run/seed/env
+
         timeout=""
         while [ $# -gt 0 ]; do
           case "$1" in

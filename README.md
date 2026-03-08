@@ -173,6 +173,12 @@ systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 myapp myapp -" ];
 
 **No kubectl exec**: Kata VMs don't support `kubectl exec`. Debug via service APIs, port-forward, or write diagnostics to a PVC mount.
 
+**Environment variables**: k8s-injected env vars (like `SEED_SHOOT_URL`) are captured at `/run/seed/env` during activation. Use `EnvironmentFile` to access them in systemd services — `PassEnvironment` doesn't work in Kata VMs because systemd strips inherited environment on startup:
+
+```nix
+systemd.services.myapp.serviceConfig.EnvironmentFile = "/run/seed/env";
+```
+
 **Firewall**: The NixOS firewall is active inside the VM. `seed.expose` automatically opens declared ports. If you expose additional ports outside of `seed.expose`, open them manually:
 
 ```nix
