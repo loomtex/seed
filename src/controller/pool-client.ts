@@ -133,35 +133,39 @@ export async function runViaPoolManager(
   // Pre-fetch flake and resolve all inputs to store paths
   const { sourcePath, inputs } = await prefetchFlake(flakePath, useRefresh);
 
-  const results = new Map<string, BuildResult>();
+  // Eval + build all instances in parallel. The pool manager's slot
+  // acquisition blocks when all slots are busy, so pool size is the
+  // natural concurrency limit for eval. Builds go to nix-daemon which
+  // handles its own scheduling.
+  const entries = await Promise.all(
+    instanceNames.map(async (name): Promise<[string, BuildResult]> => {
+      // Eval metadata in pool VM (sandboxed)
+      log("pool-client", `evaluating metadata...`, name);
+      const metaJson = await poolFlakeEval(
+        poolUrl,
+        sourcePath,
+        inputs,
+        `seeds.${name}.meta`,
+        [],
+      );
+      const meta = JSON.parse(metaJson) as SeedMeta;
 
-  for (const name of instanceNames) {
-    // Eval metadata in pool VM (sandboxed)
-    log("pool-client", `evaluating metadata...`, name);
-    const metaJson = await poolFlakeEval(
-      poolUrl,
-      sourcePath,
-      inputs,
-      `seeds.${name}.meta`,
-      [],
-    );
-    const meta = JSON.parse(metaJson) as SeedMeta;
+      // Build image directly via controller's nix-daemon (not sandboxed — daemon handles it)
+      log("pool-client", `building image...`, name);
+      const buildArgs = [
+        "build",
+        `${flakePath}#seeds.${name}.image`,
+        "--no-link",
+        "--print-out-paths",
+      ];
+      if (useRefresh) buildArgs.push("--refresh");
+      const { stdout: buildOut } = await execFileAsync("nix", buildArgs, { timeout: 600_000 });
+      const imagePath = buildOut.trim();
 
-    // Build image directly via controller's nix-daemon (not sandboxed — daemon handles it)
-    log("pool-client", `building image...`, name);
-    const buildArgs = [
-      "build",
-      `${flakePath}#seeds.${name}.image`,
-      "--no-link",
-      "--print-out-paths",
-    ];
-    if (useRefresh) buildArgs.push("--refresh");
-    const { stdout: buildOut } = await execFileAsync("nix", buildArgs, { timeout: 600_000 });
-    const imagePath = buildOut.trim();
+      log("pool-client", `image: ${imagePath}`, name);
+      return [name, { imagePath, meta }];
+    }),
+  );
 
-    log("pool-client", `image: ${imagePath}`, name);
-    results.set(name, { imagePath, meta });
-  }
-
-  return results;
+  return new Map(entries);
 }
