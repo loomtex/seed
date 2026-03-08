@@ -121,5 +121,6 @@ export interface ControllerConfig {
   ipv6Block: string;
   webhookSecretFile: string;
   builderImage: string;
+  poolManagerUrl: string;
   swtpmEnabled: boolean;
 }

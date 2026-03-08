@@ -17,6 +17,7 @@ import { generateDeployment, generatePVC, generateService, generateHostTask } fr
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB } from "./metallb.js";
 import { runBuilders } from "./builder.js";
+import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -47,6 +48,7 @@ function loadConfig(): ControllerConfig {
     ipv6Block: process.env["SEED_IPV6_BLOCK"] || "",
     webhookSecretFile: process.env["SEED_WEBHOOK_SECRET_FILE"] || "",
     builderImage: process.env["SEED_BUILDER_IMAGE"] || "",
+    poolManagerUrl: process.env["SEED_POOL_MANAGER_URL"] || "",
     swtpmEnabled: !!process.env["SEED_SWTPM_ENABLED"],
   };
 }
@@ -960,7 +962,15 @@ async function main(): Promise<void> {
       // Build all instances
       let buildResults: Map<string, BuildResult>;
 
-      if (config.builderImage) {
+      if (config.poolManagerUrl) {
+        // Use pool manager VMs (hardware-isolated nix eval/build)
+        buildResults = await runViaPoolManager(
+          config.poolManagerUrl,
+          flakePath,
+          instanceNames,
+          useRefresh,
+        );
+      } else if (config.builderImage) {
         // Use builder Jobs
         const currentGen = await deployedGeneration(clients, namespace);
         buildResults = await runBuilders(

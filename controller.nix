@@ -207,6 +207,8 @@ let
               name = "SEED_IPV6_BLOCK"; value = cfg.ipv6Block;
             } ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
+            } ++ lib.optional cfg.poolManager.enable {
+              name = "SEED_POOL_MANAGER_URL"; value = "http://seed-pool-manager.${seedSystemNS}.svc.cluster.local:${toString cfg.poolManager.port}";
             };
             ports = [{
               containerPort = cfg.webhook.port;
@@ -293,6 +295,86 @@ let
     };
   });
 
+  # Pool manager DaemonSet (privileged — manages CLH VMs on host)
+  poolManagerDaemonSet = pkgs.writeText "seed-pool-manager-daemonset.yaml" (builtins.toJSON {
+    apiVersion = "apps/v1";
+    kind = "DaemonSet";
+    metadata = {
+      name = "seed-pool-manager";
+      namespace = seedSystemNS;
+      labels."app.kubernetes.io/name" = "seed-pool-manager";
+    };
+    spec = {
+      selector.matchLabels."app.kubernetes.io/name" = "seed-pool-manager";
+      template = {
+        metadata.labels."app.kubernetes.io/name" = "seed-pool-manager";
+        spec = {
+          serviceAccountName = "seed-controller";
+          hostPID = false;
+          hostNetwork = true;
+          containers = [{
+            name = "pool-manager";
+            image = "nix:0${cfg.poolManager.image}";
+            command = [ "${pkgs.nodejs_22}/bin/node" "/app/pool-manager.mjs" ];
+            securityContext.privileged = true;
+            env = [
+              { name = "SEED_POOL_SIZE"; value = toString cfg.poolManager.poolSize; }
+              { name = "SEED_POOL_PORT"; value = toString cfg.poolManager.port; }
+              { name = "SEED_POOL_KERNEL"; value = "${pkgs.kata-guest-kernel-tpm}/vmlinux"; }
+              { name = "SEED_POOL_INITRAMFS"; value = cfg.poolManager.initramfs; }
+              { name = "SEED_CLH_BINARY"; value = "${pkgs.cloud-hypervisor}/bin/cloud-hypervisor"; }
+              { name = "SEED_VIRTIOFSD_BINARY"; value = "${pkgs.virtiofsd}/bin/virtiofsd"; }
+              { name = "NIX_REMOTE"; value = "daemon"; }
+              { name = "NIX_CONFIG"; value = "experimental-features = nix-command flakes"; }
+              { name = "NIX_SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
+              { name = "SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
+              { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
+              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz pkgs.socat pkgs.cloud-hypervisor pkgs.virtiofsd ]; }
+            ];
+            ports = [{
+              containerPort = cfg.poolManager.port;
+              name = "api";
+              protocol = "TCP";
+            }];
+            volumeMounts = [
+              { name = "nix-store"; mountPath = "/nix/store"; readOnly = true; }
+              { name = "nix-daemon"; mountPath = "/nix/var/nix/daemon-socket"; }
+              { name = "dev-kvm"; mountPath = "/dev/kvm"; }
+              { name = "dev-vhost-vsock"; mountPath = "/dev/vhost-vsock"; }
+              { name = "pool-state"; mountPath = "/run/seed-pool"; }
+            ];
+          }];
+          volumes = [
+            { name = "nix-store"; hostPath.path = "/nix/store"; }
+            { name = "nix-daemon"; hostPath = { path = "/nix/var/nix/daemon-socket"; type = "Directory"; }; }
+            { name = "dev-kvm"; hostPath = { path = "/dev/kvm"; type = "CharDevice"; }; }
+            { name = "dev-vhost-vsock"; hostPath = { path = "/dev/vhost-vsock"; type = "CharDevice"; }; }
+            { name = "pool-state"; hostPath = { path = "/run/seed-pool"; type = "DirectoryOrCreate"; }; }
+          ];
+        };
+      };
+    };
+  });
+
+  # Pool manager Service
+  poolManagerService = pkgs.writeText "seed-pool-manager-service.yaml" (builtins.toJSON {
+    apiVersion = "v1";
+    kind = "Service";
+    metadata = {
+      name = "seed-pool-manager";
+      namespace = seedSystemNS;
+    };
+    spec = {
+      selector."app.kubernetes.io/name" = "seed-pool-manager";
+      ports = [{
+        port = cfg.poolManager.port;
+        targetPort = cfg.poolManager.port;
+        protocol = "TCP";
+        name = "api";
+      }];
+    };
+  });
+
   # Namespace manifest
   seedSystemNamespace = pkgs.writeText "seed-system-namespace.yaml" (builtins.toJSON {
     apiVersion = "v1";
@@ -360,6 +442,34 @@ in {
         '';
       };
     };
+
+    poolManager = {
+      enable = lib.mkEnableOption "Pool manager for hardware-isolated nix eval/build";
+
+      poolSize = lib.mkOption {
+        type = lib.types.int;
+        default = 2;
+        description = "Number of warm VM slots per node.";
+      };
+
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 9877;
+        description = "Port for the pool manager HTTP API.";
+      };
+
+      image = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Nix store path to the pool manager OCI image.";
+      };
+
+      initramfs = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Nix store path to the pool VM initramfs (cpio.gz).";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -380,6 +490,10 @@ in {
         ln -sf ${controllerService} "$dir/seed-controller-service.yaml"
         ${lib.optionalString cfg.swtpmEnabled ''
           ln -sf ${hostAgentDaemonSet} "$dir/seed-host-agent-daemonset.yaml"
+        ''}
+        ${lib.optionalString cfg.poolManager.enable ''
+          ln -sf ${poolManagerDaemonSet} "$dir/seed-pool-manager-daemonset.yaml"
+          ln -sf ${poolManagerService} "$dir/seed-pool-manager-service.yaml"
         ''}
       ''}"
     ];

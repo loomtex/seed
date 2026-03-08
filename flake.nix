@@ -176,7 +176,7 @@
           filter = path: type:
             let base = builtins.baseNameOf path; in
             (type == "directory" && builtins.elem base [ "src" ]) ||
-            (type == "directory" && builtins.elem base [ "shared" "controller" "host-agent" ]) ||
+            (type == "directory" && builtins.elem base [ "shared" "controller" "host-agent" "pool-manager" ]) ||
             builtins.match ".*\\.ts$" path != null ||
             builtins.match ".*\\.mjs$" path != null ||
             builtins.elem base [ "package.json" "package-lock.json" "tsconfig.json" "build.mjs" ];
@@ -192,6 +192,7 @@
           mkdir -p $out/app
           cp dist/controller.mjs $out/app/
           cp dist/host-agent.mjs $out/app/
+          cp dist/pool-manager.mjs $out/app/
           # Copy k8s client (external in esbuild)
           cp -r node_modules $out/app/
           runHook postInstall
@@ -246,6 +247,158 @@
           mkdir -p $out/{tmp,nix/store,run}
         '';
         config.entrypoint = [ "${pkgs.swtpm}/bin/swtpm" ];
+      };
+
+      # Pool VM initramfs: cpio+gzip initramfs for snapshot-based nix eval/build VMs
+      poolVmInitramfs = pkgs.runCommand "pool-vm-initramfs" {
+        nativeBuildInputs = [ pkgs.cpio ];
+      } ''
+        # Create initramfs layout
+        mkdir -p rootfs/{bin,proc,sys,dev,tmp,run,nix/store,nix/var/nix/daemon-socket}
+
+        # Static busybox for pre-virtiofs phase
+        cp ${pkgs.busybox-sandbox-shell}/bin/busybox rootfs/bin/busybox
+        for cmd in sh mount umount mkdir sleep cat echo ls ln chmod; do
+          ln -s busybox rootfs/bin/$cmd
+        done
+
+        # Init script (two-phase: template boot + post-restore)
+        #
+        # Phase 1 (template boot): mount basics, then sleep forever.
+        #   The pool manager pauses the VM via CLH API after boot.
+        #
+        # Phase 2 (after snapshot restore + virtiofs hotplug + resume):
+        #   VM wakes from sleep. virtiofs has been hotplugged but not yet
+        #   mounted. Mount it, set up PATH from nix store, listen on vsock
+        #   for a command, execute it, write result.
+        cat > rootfs/init << 'INITEOF'
+#!/bin/sh
+# Phase 1: basic mounts (runs on template boot)
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /run
+mkdir -p /run/nix
+
+# Write "ready" marker so pool manager can detect boot completion
+echo ready > /tmp/.pool-ready
+
+# Sleep forever — pool manager will pause this VM via CLH API,
+# snapshot it, then restore + resume later. After resume, execution
+# continues right here at the sleep, which exits because the process
+# receives no signal — it just keeps sleeping. The virtiofs hotplug
+# happens while we're sleeping, so we loop checking for it.
+
+# Wait for virtiofs to become available (hotplugged after restore)
+while true; do
+  mount -t virtiofs nixstore /nix/store 2>/dev/null && break
+  sleep 0.1
+done
+
+# Mount nix-daemon socket directory via virtiofs
+mount -t virtiofs nixdaemon /nix/var/nix/daemon-socket 2>/dev/null
+
+# Now we have /nix/store — find tools
+for d in /nix/store/*-socat-*/bin; do
+  [ -x "$d/socat" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-nix-2.*/bin; do
+  [ -x "$d/nix" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-git-2.*/bin; do
+  [ -x "$d/git" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-coreutils-*/bin; do
+  [ -x "$d/env" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-gnutar-*/bin; do
+  [ -x "$d/tar" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-gzip-*/bin; do
+  [ -x "$d/gzip" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-xz-*/bin; do
+  [ -x "$d/xz" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-jq-*/bin; do
+  [ -x "$d/jq" ] && export PATH="$d:$PATH" && break
+done
+for d in /nix/store/*-bash-*/bin; do
+  [ -x "$d/bash" ] && export PATH="$d:$PATH" && break
+done
+
+export NIX_REMOTE=daemon
+export NIX_CONFIG="experimental-features = nix-command flakes"
+
+# Find CA certs
+for d in /nix/store/*-nss-cacert*/etc/ssl/certs; do
+  if [ -f "$d/ca-bundle.crt" ]; then
+    export NIX_SSL_CERT_FILE="$d/ca-bundle.crt"
+    export SSL_CERT_FILE="$d/ca-bundle.crt"
+    export GIT_SSL_CAINFO="$d/ca-bundle.crt"
+    break
+  fi
+done
+
+# Command agent: listen on vsock port 6001 for one command.
+# socat accepts one connection, reads a JSON line, we parse and exec it.
+socat VSOCK-LISTEN:6001,reuseaddr EXEC:'/bin/sh /run/cmd-agent.sh' &
+
+# Write the command agent script
+cat > /run/cmd-agent.sh << 'AGENT'
+#!/bin/sh
+read -r request_json
+
+# Parse command as array
+cmd=$(echo "$request_json" | jq -r '.command | join(" ")')
+timeout_ms=$(echo "$request_json" | jq -r '.timeout // 120000')
+timeout_s=$((timeout_ms / 1000))
+
+# Set env vars from request
+eval $(echo "$request_json" | jq -r '.env // {} | to_entries[] | "export \(.key)=\(.value|@sh)"' 2>/dev/null)
+
+# Execute command, capture output
+stdout_file=$(mktemp)
+stderr_file=$(mktemp)
+set +e
+eval timeout "$timeout_s" $cmd > "$stdout_file" 2> "$stderr_file"
+exit_code=$?
+set -e
+
+stdout=$(cat "$stdout_file")
+stderr=$(cat "$stderr_file")
+
+# Write JSON response
+jq -nc --argjson exitCode "$exit_code" \
+  --arg stdout "$stdout" \
+  --arg stderr "$stderr" \
+  '{exitCode: $exitCode, stdout: $stdout, stderr: $stderr}'
+AGENT
+
+# Wait for the socat command agent to finish
+wait
+
+# Halt — VM will be destroyed by pool manager
+poweroff -f 2>/dev/null || true
+INITEOF
+        chmod +x rootfs/init
+
+        # Create cpio archive
+        cd rootfs
+        find . | cpio -o -H newc | gzip > $out
+      '';
+
+      # Pool manager: maintains warm CLH VM pool for sandboxed nix eval/build
+      poolManagerImage = pkgs.nix-snapshotter.buildImage {
+        name = "seed-pool-manager";
+        resolvedByNix = true;
+        copyToRoot = pkgs.runCommand "pool-manager-rootfs" {} ''
+          mkdir -p $out/{app,tmp,nix/store,run/seed-pool}
+          cp ${seedController}/app/pool-manager.mjs $out/app/
+          cp -r ${seedController}/app/node_modules $out/app/
+        '';
+        config.entrypoint = [ "${pkgs.nodejs_22}/bin/node" "/app/pool-manager.mjs" ];
       };
     };
 
