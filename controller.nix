@@ -351,7 +351,7 @@ let
             { name = "nix-cache"; hostPath = { path = "/root/.cache/nix"; type = "DirectoryOrCreate"; }; }
             { name = "dev-kvm"; hostPath = { path = "/dev/kvm"; type = "CharDevice"; }; }
             { name = "dev-vhost-vsock"; hostPath = { path = "/dev/vhost-vsock"; type = "CharDevice"; }; }
-            { name = "pool-state"; hostPath = { path = "/run/seed-pool"; type = "DirectoryOrCreate"; }; }
+            { name = "pool-state"; hostPath = { path = "/var/lib/seed-pool"; type = "DirectoryOrCreate"; }; }
           ];
         };
       };
