@@ -1000,16 +1000,16 @@ async function main(): Promise<void> {
       let ipv6Config: IPv6Config | null = null;
       try {
         ipv4Config = (await nixEvalJson(
-          `${flakePath}#ipv4`,
+          `${flakePath}#seed.ipv4`,
           useRefresh,
         )) as IPv4Config;
-      } catch { /* no ipv4 output */ }
+      } catch { /* no seed.ipv4 output */ }
       try {
         ipv6Config = (await nixEvalJson(
-          `${flakePath}#ipv6`,
+          `${flakePath}#seed.ipv6`,
           useRefresh,
         )) as IPv6Config;
-      } catch { /* no ipv6 output */ }
+      } catch { /* no seed.ipv6 output */ }
 
       // Always render + apply + reap, even if generation matches.
       // This ensures controller code changes take effect without waiting for an image change.

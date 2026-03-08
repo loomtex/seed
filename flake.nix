@@ -249,26 +249,27 @@
       };
     };
 
-    # IPv4 route block — maps external ports on a shared reserved IP to instances
-    ipv4 = {
-      enable = true;
-      routes = {
-        dns = { port = 53; protocol = "dns"; instance = "dns"; };
-        http = { port = 80; protocol = "tcp"; instance = "web"; };
-        https = { port = 443; protocol = "tcp"; instance = "web"; };
+    # Platform config — routing, networking, etc.
+    seed = {
+      ipv4 = {
+        enable = true;
+        routes = {
+          dns = { port = 53; protocol = "dns"; instance = "dns"; };
+          http = { port = 80; protocol = "tcp"; instance = "web"; };
+          https = { port = 443; protocol = "tcp"; instance = "web"; };
+        };
       };
-    };
 
-    # IPv6 route block — maps external ports on addresses from a reserved /64 to instances
-    ipv6 = {
-      enable = true;
-      block = "2001:19f0:6402:7eb::/64";
-      routes = {
-        dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
-        dns2 = { host = "2"; port = 53; protocol = "dns"; instance = "dns"; };
-        http = { host = "3"; port = 80; protocol = "tcp"; instance = "web"; };
-        https = { host = "3"; port = 443; protocol = "tcp"; instance = "web"; };
-        ssh = { host = "3"; port = 22; protocol = "tcp"; instance = "web"; };
+      ipv6 = {
+        enable = true;
+        block = "2001:19f0:6402:7eb::/64";
+        routes = {
+          dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
+          dns2 = { host = "2"; port = 53; protocol = "dns"; instance = "dns"; };
+          http = { host = "3"; port = 80; protocol = "tcp"; instance = "web"; };
+          https = { host = "3"; port = 443; protocol = "tcp"; instance = "web"; };
+          ssh = { host = "3"; port = 22; protocol = "tcp"; instance = "web"; };
+        };
       };
     };
 
