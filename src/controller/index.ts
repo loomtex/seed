@@ -104,7 +104,7 @@ async function getFlakeRevision(flakePath: string): Promise<string | null> {
       { timeout: 30_000 },
     );
     const meta = JSON.parse(stdout);
-    return meta.revision || null;
+    return meta.revision || meta.locked?.narHash || null;
   } catch {
     return null;
   }

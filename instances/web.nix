@@ -9,6 +9,7 @@
   seed.rollout = "rolling";
   seed.expose.http = { port = 80; protocol = "tcp"; };
   seed.expose.https = { port = 443; protocol = "tcp"; };
+  seed.expose.ssh = { port = 22; protocol = "tcp"; };
   seed.storage.data = "1Gi";
 
   # sops-nix: decrypt pdns API key using the instance's TPM-backed age identity
@@ -21,7 +22,7 @@
     defaults.email = "hostmaster@loom.farm";
     certs."ns-wildcard" = {
       domain = "*.s-gaydazldmnsg.loom.farm";
-      extraDomainNames = [ "loom.farm" ];
+      extraDomainNames = [ "loom.farm" "silo.loom.farm" ];
       dnsProvider = "pdns";
       credentialsFile = "/run/acme-env/pdns";
       group = "caddy";
@@ -71,7 +72,27 @@
         }
       '';
     };
+    virtualHosts."silo.loom.farm" = {
+      useACMEHost = "ns-wildcard";
+      extraConfig = ''
+        reverse_proxy seed-silo.s-gaydazldmnsg.svc.cluster.local:8080
+      '';
+    };
   };
+
+  # socat TCP proxy: forward port 22 to silo pod SSH
+  systemd.services.silo-ssh-proxy = {
+    description = "TCP proxy for silo SSH";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.socat}/bin/socat TCP-LISTEN:22,fork,reuseaddr TCP:seed-silo.s-gaydazldmnsg.svc.cluster.local:22";
+      Restart = "always";
+      RestartSec = "5s";
+    };
+  };
+
+  networking.firewall.allowedTCPPorts = [ 80 443 22 ];
 
   # Caddy needs certs to exist before starting (useACMEHost = no auto-fetch).
   # On first boot, the ACME service must complete before Caddy can start.

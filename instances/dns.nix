@@ -31,9 +31,9 @@ let
     { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 3600;
       records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
 
-    # Silo — SSH git server (IPv6 only)
+    # Silo — routed through web pod (Caddy for HTTPS, socat for SSH), IPv6 only
     { name = "silo.${zone}"; type = "AAAA"; ttl = 3600;
-      records = [{ content = "2001:19f0:6402:7eb::4"; }]; }
+      records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
 
     # Zone apex — can't CNAME at apex, use A/AAAA
     { name = zone; type = "A"; ttl = 3600;
