@@ -9,39 +9,16 @@ let
   reposDir = "/seed/storage/repos";
   hostKeyDir = "${reposDir}/ssh-host-keys";
 
-  # AuthorizedKeysCommand — called by sshd to check if a key is known
+  # AuthorizedKeysCommand — called by sshd for every connection
   #
-  # Two-stage auth:
-  # 1. sshd: "is this key known in any repo?" (this script)
-  # 2. silo-shell: "does this key have access to the requested repo?"
-  #
-  # If the key matches any repo's .authorized_keys, output a forced-command
-  # entry that runs silo-shell with the key fingerprint in the environment.
+  # Always allows login — any valid SSH key is accepted. The key identity
+  # is passed to silo-shell via environment variables. silo-shell handles
+  # per-repo access control (existing repos) and auto-creation (first push).
   siloAuthKeys = pkgs.writeShellScript "silo-auth-keys" ''
     # Args: %u %t %k (username, key-type, key-blob-base64)
     KEY_TYPE="$2"
     KEY_BLOB="$3"
-
-    found=0
-    for repo in ${reposDir}/*.git; do
-      [ -d "$repo" ] || continue
-      [ -f "$repo/.authorized_keys" ] || continue
-      while IFS= read -r line; do
-        case "$line" in \#*|"") continue ;; esac
-        line_type=$(echo "$line" | ${pkgs.gawk}/bin/awk '{print $1}')
-        line_blob=$(echo "$line" | ${pkgs.gawk}/bin/awk '{print $2}')
-        if [ "$line_type" = "$KEY_TYPE" ] && [ "$line_blob" = "$KEY_BLOB" ]; then
-          found=1
-          break 2
-        fi
-      done < "$repo/.authorized_keys"
-    done
-
-    if [ "$found" = 1 ]; then
-      # Allow login — force silo-shell, pass key type+blob via environment
-      echo "restrict,command=\"silo-shell\",environment=\"SILO_KEY_TYPE=$KEY_TYPE\",environment=\"SILO_KEY_BLOB=$KEY_BLOB\" $KEY_TYPE $KEY_BLOB silo-user"
-    fi
-    # If no match, output nothing — sshd rejects the key
+    echo "restrict,command=\"silo-shell\",environment=\"SILO_KEY_TYPE=$KEY_TYPE\",environment=\"SILO_KEY_BLOB=$KEY_BLOB\" $KEY_TYPE $KEY_BLOB silo-user"
   '';
 
   # silo-shell — forced command for git operations
