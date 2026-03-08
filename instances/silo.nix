@@ -151,11 +151,13 @@ in {
   sops.secrets.pdns-api-key = {};
 
   # git user — all SSH connections land here
+  # isNormalUser so PAM account checks pass (isSystemUser lacks /etc/shadow entry)
   users.users.git = {
-    isSystemUser = true;
+    isNormalUser = true;
     group = "git";
     home = reposDir;
     shell = "${siloShell}/bin/silo-shell";
+    createHome = false;
   };
   users.groups.git = {};
 
