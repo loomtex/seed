@@ -191,6 +191,32 @@ But the learning curve matters less than it used to. NixOS is declarative, typed
 
 And the decades of human effort in nixpkgs and NixOS modules may be the single most important enabler. 100,000+ packages and thousands of service modules — each encoding real operational knowledge about how software is built, configured, and supervised — give agents a foundation they couldn't build from scratch. The humans wrote the hard parts. The agents compose them.
 
+## For agents
+
+### Validate before pushing
+
+`nix eval .#seeds.<name>.meta --json` type-checks the full instance config and returns the controller metadata without building anything. Option type mismatches, missing required values, and module conflicts all surface here — not at deploy time. Use this as a fast feedback loop before committing.
+
+### Errors surface at three stages
+
+1. **Eval** — nix language errors and NixOS option type violations. These fail `nix eval` immediately with a traceback pointing to the offending module.
+2. **Build** — derivation build failures (missing dependencies, broken patches, compile errors). These fail during the controller's build phase after eval succeeds.
+3. **Runtime** — systemd service failures inside the VM. These don't appear in `kubectl logs` after stage 2 boot. Expose a health endpoint, write diagnostics to a `seed.storage` volume, or query service APIs directly via port-forward.
+
+Most errors are caught at stage 1. This is the key advantage of a typed, declarative system — the feedback is immediate and precise.
+
+### Content-addressed deployments
+
+Same nix config produces the same store paths, which produces the same generation hash. The controller skips reconciliation entirely when nothing changed. You can reason about whether a change will cause a rollout without deploying — if the store path didn't change, the pod won't restart.
+
+### Introspection
+
+The NixOS module system is programmatically queryable. Option types, defaults, the full dependency graph, and every service's systemd unit are all available via `nix eval` before anything runs. You don't need to read documentation to discover what a module provides — evaluate it and inspect the result.
+
+### Deploy loop
+
+Push to the flake's git remote. The controller receives a webhook, evaluates the flake, builds any changed closures, and reconciles. There's no polling delay — reconciliation starts immediately on push.
+
 ## Hosting
 
 To run your own Seed node, see [HOSTING.md](HOSTING.md).
