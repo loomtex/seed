@@ -15,8 +15,10 @@ const COMPONENT = "pool-manager";
 
 /** Path to the host nix store. */
 const NIX_STORE_PATH = "/nix/store";
-/** Path to the host nix-daemon socket directory. */
-const NIX_DAEMON_DIR = "/nix/var/nix/daemon-socket";
+/** Path to the host nix var directory (contains store DB + daemon socket). */
+const NIX_VAR_DIR = "/nix/var/nix";
+/** Path to the host nix cache directory (fetcher cache, tarball cache). */
+const NIX_CACHE_DIR = "/root/.cache/nix";
 
 type SlotState = "idle" | "busy" | "restoring";
 
@@ -119,8 +121,11 @@ export class Pool {
 
       const nixStoreSocket = await vm.startVirtiofsd("nixstore", NIX_STORE_PATH);
 
-      // Also share nix-daemon socket directory via virtiofs
-      const nixDaemonFsSocket = await vm.startVirtiofsd("nixdaemon", NIX_DAEMON_DIR);
+      // Share nix var directory (store DB for path validation + daemon socket)
+      const nixVarSocket = await vm.startVirtiofsd("nixvar", NIX_VAR_DIR);
+
+      // Share nix cache directory (fetcher cache for flake input resolution)
+      const nixCacheSocket = await vm.startVirtiofsd("nixcache", NIX_CACHE_DIR);
 
       // 2. Restore CLH from slot's snapshot copy (VM starts paused)
       await vm.restoreFromSnapshot(slot.dir);
@@ -128,7 +133,8 @@ export class Pool {
       // 3. Hotplug vsock + virtiofs devices (not in snapshot — per-slot paths)
       await vm.addVsock();
       await vm.addFs("nixstore", nixStoreSocket);
-      await vm.addFs("nixdaemon", nixDaemonFsSocket);
+      await vm.addFs("nixvar", nixVarSocket);
+      await vm.addFs("nixcache", nixCacheSocket);
 
       // 4. Resume VM — guest phase 2 will mount virtiofs
       await vm.resume();

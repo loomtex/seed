@@ -338,7 +338,8 @@ let
             }];
             volumeMounts = [
               { name = "nix-store"; mountPath = "/nix/store"; readOnly = true; }
-              { name = "nix-daemon"; mountPath = "/nix/var/nix/daemon-socket"; }
+              { name = "nix-var"; mountPath = "/nix/var/nix"; }
+              { name = "nix-cache"; mountPath = "/root/.cache/nix"; }
               { name = "dev-kvm"; mountPath = "/dev/kvm"; }
               { name = "dev-vhost-vsock"; mountPath = "/dev/vhost-vsock"; }
               { name = "pool-state"; mountPath = "/run/seed-pool"; }
@@ -346,7 +347,8 @@ let
           }];
           volumes = [
             { name = "nix-store"; hostPath.path = "/nix/store"; }
-            { name = "nix-daemon"; hostPath = { path = "/nix/var/nix/daemon-socket"; type = "Directory"; }; }
+            { name = "nix-var"; hostPath = { path = "/nix/var/nix"; type = "Directory"; }; }
+            { name = "nix-cache"; hostPath = { path = "/root/.cache/nix"; type = "DirectoryOrCreate"; }; }
             { name = "dev-kvm"; hostPath = { path = "/dev/kvm"; type = "CharDevice"; }; }
             { name = "dev-vhost-vsock"; hostPath = { path = "/dev/vhost-vsock"; type = "CharDevice"; }; }
             { name = "pool-state"; hostPath = { path = "/run/seed-pool"; type = "DirectoryOrCreate"; }; }

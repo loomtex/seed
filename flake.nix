@@ -283,22 +283,37 @@ mkdir -p /run/nix
 
 echo ready > /tmp/.pool-ready
 
-# Sleep forever — pool manager will pause this VM via CLH API,
-# snapshot it, then restore + resume later. After resume, execution
-# continues right here at the sleep, which exits because the process
-# receives no signal — it just keeps sleeping. The virtiofs hotplug
-# happens while we're sleeping, so we loop checking for it.
+# Phase 2 (after snapshot restore + virtiofs hotplug + resume):
+# Set up nix store as overlay for write access (lock files),
+# mount nix state/cache for flake input resolution, then serve commands.
 
-# Wait for virtiofs to become available (hotplugged after restore)
+# Wait for nixstore virtiofs (hotplugged after restore)
+mkdir -p /tmp/nix-lower /tmp/store-upper /tmp/store-work
 while true; do
-  mount -t virtiofs nixstore /nix/store 2>/dev/null && break
+  mount -t virtiofs nixstore /tmp/nix-lower 2>/dev/null && break
   sleep 0.1
 done
 
-# Mount nix-daemon socket directory via virtiofs
-mount -t virtiofs nixdaemon /nix/var/nix/daemon-socket 2>/dev/null
+# Overlay: writable nix store (tmpfs upper for lock files + new paths,
+# virtiofs lower for existing store paths). Required because nix creates
+# .lock files in /nix/store/ during flake input resolution.
+mount -t overlay overlay \
+  -o lowerdir=/tmp/nix-lower,upperdir=/tmp/store-upper,workdir=/tmp/store-work \
+  /nix/store
 
-# Now we have /nix/store — find tools
+# Mount nix var directory (contains store DB + daemon socket)
+mkdir -p /tmp/nix-var
+mount -t virtiofs nixvar /tmp/nix-var 2>/dev/null
+
+# Copy store DB to writable tmpfs (sqlite needs write access for journal)
+mkdir -p /tmp/nix-state/db
+cp /tmp/nix-var/db/db.sqlite /tmp/nix-state/db/ 2>/dev/null
+
+# Mount nix user cache (fetcher cache maps flake URIs to store paths)
+mkdir -p /tmp/.cache/nix
+mount -t virtiofs nixcache /tmp/.cache/nix 2>/dev/null
+
+# Find tools in nix store
 for d in /nix/store/*-socat-*/bin; do
   [ -x "$d/socat" ] && export PATH="$d:$PATH" && break
 done
@@ -329,7 +344,8 @@ done
 
 export HOME=/tmp
 export USER=root
-export NIX_REMOTE=daemon
+export NIX_REMOTE=""
+export NIX_STATE_DIR=/tmp/nix-state
 export NIX_CONFIG="experimental-features = nix-command flakes"
 
 # Find CA certs
@@ -343,7 +359,6 @@ for d in /nix/store/*-nss-cacert*/etc/ssl/certs; do
 done
 
 # Command agent: listen on vsock port 6001 for one command.
-# socat accepts one connection, reads a JSON line, we parse and exec it.
 socat VSOCK-LISTEN:6001,reuseaddr EXEC:'/bin/sh /run/cmd-agent.sh' &
 
 # Write the command agent script
