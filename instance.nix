@@ -120,6 +120,18 @@ in {
       '';
     };
 
+    shoot = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Enable fork-style ephemeral VM execution via the pool manager.
+          When enabled, the instance gets a seed-shoot command and SEED_SHOOT_URL
+          env var pointing to the node-local pool manager.
+        '';
+      };
+    };
+
     meta = lib.mkOption {
       type = lib.types.attrs;
       readOnly = true;
@@ -144,7 +156,65 @@ in {
         port = c.port;
       }) cfg.connect;
       rollout = cfg.rollout;
+      shoot = lib.optionalAttrs cfg.shoot.enable { enable = true; };
     };
+
+    # seed-shoot wrapper script
+    environment.systemPackages = lib.optionals cfg.shoot.enable [
+      (pkgs.writeShellScriptBin "seed-shoot" ''
+        # seed-shoot — fork an ephemeral VM via the pool manager
+        # Usage: seed-shoot [--timeout MS] command [args...]
+
+        timeout=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --timeout) timeout="$2"; shift 2 ;;
+            *) break ;;
+          esac
+        done
+
+        if [ $# -eq 0 ]; then
+          echo "Usage: seed-shoot [--timeout MS] command [args...]" >&2
+          exit 1
+        fi
+
+        url="''${SEED_SHOOT_URL:-}"
+        if [ -z "$url" ]; then
+          echo "error: SEED_SHOOT_URL not set" >&2
+          exit 1
+        fi
+
+        # Build JSON command array
+        cmd_json=$(printf '%s\n' "$@" | ${pkgs.jq}/bin/jq -R . | ${pkgs.jq}/bin/jq -s .)
+
+        # Build request
+        request=$(${pkgs.jq}/bin/jq -nc \
+          --argjson command "$cmd_json" \
+          --argjson timeout "''${timeout:-120000}" \
+          '{command: $command, timeout: $timeout}')
+
+        # POST to pool manager
+        response=$(${pkgs.curl}/bin/curl -s -X POST \
+          -H "Content-Type: application/json" \
+          -d "$request" \
+          "$url/shoot" 2>/dev/null)
+
+        # Parse response
+        exit_code=$(echo "$response" | ${pkgs.jq}/bin/jq -r '.exitCode // 1')
+        stdout=$(echo "$response" | ${pkgs.jq}/bin/jq -r '.stdout // ""')
+        stderr=$(echo "$response" | ${pkgs.jq}/bin/jq -r '.stderr // ""')
+        error=$(echo "$response" | ${pkgs.jq}/bin/jq -r '.error // ""')
+
+        if [ -n "$error" ]; then
+          echo "shoot error: $error" >&2
+          exit 1
+        fi
+
+        [ -n "$stdout" ] && printf '%s\n' "$stdout"
+        [ -n "$stderr" ] && printf '%s\n' "$stderr" >&2
+        exit "$exit_code"
+      '')
+    ];
 
     # Create mount point directories for storage volumes
     systemd.tmpfiles.rules = lib.mapAttrsToList

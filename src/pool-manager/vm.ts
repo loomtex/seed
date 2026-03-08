@@ -32,11 +32,19 @@ export interface ExecResult {
   stderr: string;
 }
 
+/** Specification for a virtiofs mount in a pool VM. */
+export interface MountSpec {
+  tag: string;        // virtiofs tag
+  hostPath: string;   // path on host
+  mountPoint: string; // path inside VM
+}
+
 /** Request sent to the guest command agent via vsock. */
 export interface ExecRequest {
   command: string[];
   env?: Record<string, string>;
   timeout?: number;
+  mounts?: Record<string, string>; // tag → mountPoint (for guest-side mounting)
 }
 
 /**

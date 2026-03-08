@@ -46,6 +46,10 @@ export interface SeedConnectEntry {
   port: number | null;
 }
 
+export interface SeedShootConfig {
+  enable: boolean;
+}
+
 export interface SeedMeta {
   name: string;
   system: string;
@@ -55,6 +59,7 @@ export interface SeedMeta {
   storage: Record<string, SeedStorageEntry>;
   connect: Record<string, SeedConnectEntry>;
   rollout?: "recreate" | "rolling";
+  shoot?: SeedShootConfig;
 }
 
 // --- Route blocks (from nix eval of flake outputs) ---

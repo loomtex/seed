@@ -93,6 +93,10 @@ export function generateDeployment(
                   name: "SEED_NODE_IP",
                   valueFrom: { fieldRef: { fieldPath: "status.hostIP" } },
                 },
+                ...(meta.shoot?.enable ? [{
+                  name: "SEED_SHOOT_URL",
+                  value: "http://$(SEED_NODE_IP):9877",
+                }] : []),
               ],
               ...(probePort ? {
                 readinessProbe: {

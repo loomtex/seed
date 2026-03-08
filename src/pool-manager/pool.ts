@@ -9,16 +9,9 @@
 
 import { mkdir, rm, cp } from "node:fs/promises";
 import { log } from "../shared/kube.js";
-import { VmInstance, type VmConfig, type ExecRequest, type ExecResult } from "./vm.js";
+import { VmInstance, type VmConfig, type MountSpec, type ExecRequest, type ExecResult } from "./vm.js";
 
 const COMPONENT = "pool-manager";
-
-/** Path to the host nix store. */
-const NIX_STORE_PATH = "/nix/store";
-/** Path to the host nix var directory (contains store DB + daemon socket). */
-const NIX_VAR_DIR = "/nix/var/nix";
-/** Path to the host nix cache directory (fetcher cache, tarball cache). */
-const NIX_CACHE_DIR = "/root/.cache/nix";
 
 type SlotState = "idle" | "busy" | "restoring";
 
@@ -107,50 +100,63 @@ export class Pool {
   }
 
   /**
-   * Execute a command in a pool VM.
-   * Picks an idle slot, restores, runs command, destroys, refills.
+   * Execute a command in a pool VM with the specified mounts.
+   * Picks an idle slot, restores, starts virtiofsd per mount,
+   * hotplugs, runs command, destroys, refills.
    */
-  async exec(request: ExecRequest): Promise<ExecResult> {
+  async exec(request: ExecRequest, mounts: MountSpec[]): Promise<ExecResult> {
     // Wait for an idle slot
     const slot = await this.acquireSlot();
 
     try {
-      // 1. Start virtiofsd for nix store
       const vm = new VmInstance(this.config, slot.id);
       slot.vm = vm;
 
-      const nixStoreSocket = await vm.startVirtiofsd("nixstore", NIX_STORE_PATH);
-
-      // Share nix var directory (store DB for path validation + daemon socket)
-      const nixVarSocket = await vm.startVirtiofsd("nixvar", NIX_VAR_DIR);
-
-      // Share nix cache directory (fetcher cache for flake input resolution)
-      const nixCacheSocket = await vm.startVirtiofsd("nixcache", NIX_CACHE_DIR);
+      // 1. Start virtiofsd for each mount
+      const fsSockets: { tag: string; socket: string }[] = [];
+      for (const mount of mounts) {
+        const socket = await vm.startVirtiofsd(mount.tag, mount.hostPath);
+        fsSockets.push({ tag: mount.tag, socket });
+      }
 
       // 2. Restore CLH from slot's snapshot copy (VM starts paused)
       await vm.restoreFromSnapshot(slot.dir);
 
       // 3. Hotplug vsock + virtiofs devices (not in snapshot — per-slot paths)
       await vm.addVsock();
-      await vm.addFs("nixstore", nixStoreSocket);
-      await vm.addFs("nixvar", nixVarSocket);
-      await vm.addFs("nixcache", nixCacheSocket);
+      for (const { tag, socket } of fsSockets) {
+        await vm.addFs(tag, socket);
+      }
 
-      // 4. Resume VM — guest phase 2 will mount virtiofs
+      // 4. Resume VM — guest phase 2 will mount nixstore,
+      //    command agent mounts the rest from request.mounts
       await vm.resume();
 
-      // 5. Execute command via vsock
-      const result = await vm.exec(request);
+      // 5. Build mount map for the guest command agent (excludes nixstore,
+      //    which is mounted automatically by the init script)
+      const guestMounts: Record<string, string> = {};
+      for (const mount of mounts) {
+        if (mount.tag !== "nixstore") {
+          guestMounts[mount.tag] = mount.mountPoint;
+        }
+      }
+      const execRequest: ExecRequest = {
+        ...request,
+        mounts: Object.keys(guestMounts).length > 0 ? guestMounts : undefined,
+      };
+
+      // 6. Execute command via vsock
+      const result = await vm.exec(execRequest);
 
       return result;
     } finally {
-      // 6. Destroy VM
+      // 7. Destroy VM
       if (slot.vm) {
         slot.vm.destroy();
         slot.vm = null;
       }
 
-      // 7. Refill slot from golden snapshot (async, don't block response)
+      // 8. Refill slot from golden snapshot (async, don't block response)
       this.refillSlotAsync(slot);
     }
   }

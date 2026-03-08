@@ -284,8 +284,9 @@ mkdir -p /run/nix
 echo ready > /tmp/.pool-ready
 
 # Phase 2 (after snapshot restore + virtiofs hotplug + resume):
-# Set up nix store as overlay for write access (lock files),
-# mount nix state/cache for flake input resolution, then serve commands.
+# Mount nixstore (always present), then serve commands.
+# Additional mounts (nixvar, nixcache, PVC storage, etc.) are
+# specified per-request in the JSON command and mounted by the agent.
 
 # Wait for nixstore virtiofs (hotplugged after restore)
 mkdir -p /tmp/nix-lower /tmp/store-upper /tmp/store-work
@@ -300,24 +301,6 @@ done
 mount -t overlay overlay \
   -o lowerdir=/tmp/nix-lower,upperdir=/tmp/store-upper,workdir=/tmp/store-work \
   /nix/store
-
-# Wait for nixvar virtiofs (hotplugged after restore, same as nixstore)
-mkdir -p /tmp/nix-var
-while true; do
-  mount -t virtiofs nixvar /tmp/nix-var 2>/dev/null && break
-  sleep 0.1
-done
-
-# Copy store DB to writable tmpfs (sqlite needs write access for journal)
-mkdir -p /tmp/nix-state/db
-cp /tmp/nix-var/db/db.sqlite /tmp/nix-state/db/
-
-# Wait for nixcache virtiofs (hotplugged after restore)
-mkdir -p /tmp/.cache/nix
-while true; do
-  mount -t virtiofs nixcache /tmp/.cache/nix 2>/dev/null && break
-  sleep 0.1
-done
 
 # Find tools in nix store
 for d in /nix/store/*-socat-*/bin; do
@@ -350,9 +333,6 @@ done
 
 export HOME=/tmp
 export USER=root
-export NIX_REMOTE=""
-export NIX_STATE_DIR=/tmp/nix-state
-export NIX_CONFIG="experimental-features = nix-command flakes"
 
 # Find CA certs
 for d in /nix/store/*-nss-cacert*/etc/ssl/certs; do
@@ -371,6 +351,23 @@ socat VSOCK-LISTEN:6001,reuseaddr EXEC:'/bin/sh /run/cmd-agent.sh' &
 cat > /run/cmd-agent.sh << 'AGENT'
 #!/bin/sh
 read -r request_json
+
+# Mount additional virtiofs tags from request (nixvar, nixcache, PVC storage, etc.)
+echo "$request_json" | jq -r '.mounts // {} | to_entries[] | "\(.key) \(.value)"' | \
+while read -r tag mountpoint; do
+  [ -z "$tag" ] && continue
+  mkdir -p "$mountpoint"
+  mount -t virtiofs "$tag" "$mountpoint" 2>/dev/null || true
+done
+
+# If nixvar was mounted (nix eval/build workloads), set up nix state
+if [ -f /nix/var/nix/db/db.sqlite ]; then
+  mkdir -p /tmp/nix-state/db
+  cp /nix/var/nix/db/db.sqlite /tmp/nix-state/db/
+  export NIX_STATE_DIR=/tmp/nix-state
+  export NIX_REMOTE=""
+  export NIX_CONFIG="experimental-features = nix-command flakes"
+fi
 
 # Parse command as properly shell-quoted array
 cmd=$(echo "$request_json" | jq -r '.command | map(@sh) | join(" ")')

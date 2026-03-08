@@ -343,6 +343,7 @@ let
               { name = "dev-kvm"; mountPath = "/dev/kvm"; }
               { name = "dev-vhost-vsock"; mountPath = "/dev/vhost-vsock"; }
               { name = "pool-state"; mountPath = "/run/seed-pool"; }
+              { name = "k3s-storage"; mountPath = "/var/lib/rancher/k3s/storage"; readOnly = true; }
             ];
           }];
           volumes = [
@@ -352,6 +353,7 @@ let
             { name = "dev-kvm"; hostPath = { path = "/dev/kvm"; type = "CharDevice"; }; }
             { name = "dev-vhost-vsock"; hostPath = { path = "/dev/vhost-vsock"; type = "CharDevice"; }; }
             { name = "pool-state"; hostPath = { path = "/var/lib/seed-pool"; type = "DirectoryOrCreate"; }; }
+            { name = "k3s-storage"; hostPath = { path = "/var/lib/rancher/k3s/storage"; type = "DirectoryOrCreate"; }; }
           ];
         };
       };
