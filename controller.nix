@@ -343,7 +343,7 @@ let
               { name = "dev-kvm"; mountPath = "/dev/kvm"; }
               { name = "dev-vhost-vsock"; mountPath = "/dev/vhost-vsock"; }
               { name = "pool-state"; mountPath = "/run/seed-pool"; }
-              { name = "k3s-storage"; mountPath = "/var/lib/rancher/k3s/storage"; readOnly = true; }
+              { name = "k3s-storage"; mountPath = "/var/lib/rancher/k3s/storage"; }
             ];
           }];
           volumes = [

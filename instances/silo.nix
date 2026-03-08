@@ -246,6 +246,7 @@ in {
   seed.expose.ssh = { port = 22; protocol = "tcp"; };
   seed.expose.archive = { port = 8080; protocol = "tcp"; };
   seed.storage.repos = "10Gi";
+  seed.shoot.enable = true;
 
   # sops-nix secrets
   sops.defaultSopsFile = ../secrets/silo.yaml;
