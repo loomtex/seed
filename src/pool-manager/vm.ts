@@ -140,6 +140,7 @@ export class VmInstance {
       "--initramfs", this.config.initramfsPath,
       "--cpus", `boot=${this.config.vcpus}`,
       "--memory", `size=${this.config.memory},shared=on`,
+      "--cmdline", "console=ttyS0 quiet",
       "--console", "null",
       "--serial", "tty",
       "--api-socket", this.clhApiSocket,
