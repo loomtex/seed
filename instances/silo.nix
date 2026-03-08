@@ -178,6 +178,7 @@ in {
       PasswordAuthentication = false;
       KbdInteractiveAuthentication = false;
       UsePAM = false;
+      PermitUserEnvironment = true;
       PermitRootLogin = "no";
       AuthorizedKeysFile = "none";
       AuthorizedKeysCommand = "/etc/ssh/silo-auth-keys %u %t %k";
