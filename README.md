@@ -179,6 +179,16 @@ systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 myapp myapp -" ];
 networking.firewall.allowedTCPPorts = [ 9090 ];
 ```
 
+## Why NixOS
+
+Seed uses NixOS as the instance abstraction instead of containers or a custom runtime. Every instance is a real NixOS system evaluated from a nix flake.
+
+This means the full NixOS module ecosystem is available — `services.postgresql`, `security.acme`, `services.openssh`, `sops-nix` — with correct service dependencies, user management, and systemd lifecycle out of the box. Multi-service instances are just NixOS config, not docker-compose files or sidecar hacks.
+
+The tradeoff is boot time (systemd startup, not millisecond cold starts) and the learning curve of the Nix module system. Seed isn't a function runtime — it's infrastructure. If you want FaaS, run a FaaS framework in a seed.
+
+But the learning curve matters less than it used to. NixOS is declarative, typed, reproducible, and introspectable — properties that make it harder for humans to pick up but trivially machine-wielded. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human would face. Nix was perfectly positioned to never be typed by a human again. Seed leans into that.
+
 ## Hosting
 
 To run your own Seed node, see [HOSTING.md](HOSTING.md).
