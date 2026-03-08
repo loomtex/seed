@@ -182,8 +182,6 @@ let
         metadata.labels."app.kubernetes.io/name" = "seed-controller";
         spec = {
           serviceAccountName = "seed-controller";
-          # Pin to control-plane node (needs webhook secrets + nix-daemon)
-          nodeSelector."node-role.kubernetes.io/control-plane" = "true";
           # Default runtime — controller doesn't need Kata
           containers = [{
             name = "controller";
