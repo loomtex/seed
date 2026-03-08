@@ -262,6 +262,7 @@ in {
   systemd.services.sshd-keygen.wantedBy = [ "multi-user.target" ];
 
   # fcgiwrap — FastCGI wrapper for the archive CGI script
+  # Runs as git:nginx so nginx can connect to the socket
   systemd.services.fcgiwrap = {
     description = "FastCGI wrapper for git archive";
     wantedBy = [ "multi-user.target" ];
@@ -269,8 +270,10 @@ in {
     serviceConfig = {
       ExecStart = "${pkgs.fcgiwrap}/sbin/fcgiwrap -s unix:/run/fcgiwrap/fcgiwrap.sock";
       User = "git";
-      Group = "git";
+      Group = "nginx";
       RuntimeDirectory = "fcgiwrap";
+      RuntimeDirectoryMode = "0750";
+      UMask = "0007";
     };
   };
 
