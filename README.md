@@ -1,147 +1,25 @@
 # Seed
 
-The Vercel for Nix derivations.
+Run NixOS systems in VM-isolated pods. Write a NixOS module, push it, and it boots in a hardware-isolated microVM via [Kata Containers](https://katacontainers.io/).
 
-Push a nix flake, it runs in a VM-isolated pod. Every workload gets hardware-level isolation via [Kata Containers](https://katacontainers.io/) — this is multi-tenant by design.
-
-Built on k3s + containerd + Kata + Cloud Hypervisor (or QEMU), with [nix-snapshotter](https://github.com/pdtpartners/nix-snapshotter) for native nix store path resolution in container images.
-
-## Requirements
-
-- NixOS (flakes enabled)
-- KVM support (bare metal or nested virtualization)
+Each instance is a full NixOS system — use `services.nginx`, `services.postgresql`, `services.openssh`, whatever you'd put in a NixOS config. Seed adds a thin `seed.*` module for platform glue: sizing, ports, storage, secrets.
 
 ## Quick start
 
 ```bash
-nix flake init -t github:loomtex/seed
-# edit configuration.nix if needed
-nixos-rebuild switch --flake .
+nix flake init -t github:loomtex/seed#instance
 ```
 
-Or add to an existing flake:
+This creates a flake with a single web instance:
 
 ```nix
+# flake.nix
 {
   inputs.seed.url = "github:loomtex/seed";
   inputs.nixpkgs.follows = "seed/nixpkgs";
 
-  outputs = { seed, nixpkgs, ... }: {
-    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        seed.nixosModules.default
-        { seed.enable = true; }
-        ./configuration.nix
-      ];
-    };
-  };
-}
-```
-
-## Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `seed.enable` | bool | `false` | Enable Seed compute node |
-| `seed.hypervisor` | enum `[clh qemu]` | `"clh"` | Kata hypervisor backend |
-| `seed.role` | enum `[server agent]` | `"server"` | k3s role (server = control plane + workloads, agent = workloads only) |
-| `seed.serverAddr` | str | `""` | k3s server URL to join (required for agents) |
-| `seed.token` | str | `""` | Cluster join token |
-| `seed.tokenFile` | path \| null | `null` | File containing join token |
-| `seed.k3s.port` | port | `6443` | API server HTTPS port |
-| `seed.k3s.extraFlags` | list of str | `[]` | Additional k3s flags |
-| `seed.k3s.disableDefaults` | list of enum | `[traefik servicelb metrics-server]` | Components to disable |
-| `seed.k3s.kubeconfigMode` | str | `"644"` | kubeconfig file permissions |
-| `seed.nixSnapshotter.enable` | bool | `true` | nix-snapshotter integration |
-| `seed.persistence.enable` | bool | `false` | Persist /var/lib/rancher (impermanence) |
-| `seed.persistence.path` | str | `"/persist"` | Impermanence mount point |
-
-## Architecture
-
-```
-k3s → containerd → Kata runtime → Cloud Hypervisor → microVM
-                  ↕
-            nix-snapshotter (resolves nix store paths in images)
-```
-
-Every pod with `runtimeClassName: kata` runs inside a hardware-isolated VM. The hypervisor (CLH or QEMU) is configurable, but VM isolation is always on.
-
-## Test a VM-isolated pod
-
-```bash
-kubectl run test --image=busybox --rm -it --restart=Never \
-  --overrides='{"spec":{"runtimeClassName":"kata"}}' -- uname -a
-# Shows Kata guest kernel, not host kernel
-```
-
-## Per-pod VM sizing
-
-Kata annotations control vCPUs and memory per pod:
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: large-worker
-  annotations:
-    io.katacontainers.config.hypervisor.default_vcpus: "4"
-    io.katacontainers.config.hypervisor.default_memory: "4096"
-spec:
-  runtimeClassName: kata
-  containers:
-    - name: worker
-      image: busybox
-      command: ["sleep", "infinity"]
-```
-
-## Multi-node
-
-k3s natively supports server + agent topology:
-
-```nix
-# First node (server)
-{ seed.enable = true; }
-
-# Additional nodes (agents)
-{
-  seed.enable = true;
-  seed.role = "agent";
-  seed.serverAddr = "https://server:6443";
-  seed.tokenFile = "/run/secrets/k3s-token";
-}
-```
-
-## VM testing
-
-Build and run a NixOS VM with Seed pre-configured:
-
-```bash
-nix run github:loomtex/seed#vm
-```
-
-The VM boots with k3s + Kata ready. Requires KVM on the host.
-
-## Instances
-
-A Seed instance is a full NixOS configuration that runs inside a Kata VM on the cluster. Write standard NixOS modules and add seed-specific options for platform integration.
-
-### Quick start
-
-```bash
-nix flake init -t github:loomtex/seed#instance
-# edit web.nix
-nix build .#seeds.web.image
-```
-
-Or in an existing flake:
-
-```nix
-{
-  inputs.seed.url = "github:loomtex/seed";
-
   outputs = { seed, ... }: {
-    seeds.web = seed.lib.mkInstance {
+    seeds.web = seed.lib.mkSeed {
       name = "web";
       module = ./web.nix;
     };
@@ -149,16 +27,14 @@ Or in an existing flake:
 }
 ```
 
-### Instance module example
-
 ```nix
+# web.nix
 { pkgs, ... }:
 
 {
-  seed.size = "m";
+  seed.size = "s";
   seed.expose.http = 8080;
   seed.storage.data = "1Gi";
-  seed.connect.redis = "my-redis";
 
   services.nginx.enable = true;
   services.nginx.virtualHosts.default = {
@@ -168,16 +44,21 @@ Or in an existing flake:
 }
 ```
 
-### Instance options
+Build the image:
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `seed.size` | enum `[xs s m l xl]` | `"s"` | VM sizing tier (see table below) |
-| `seed.expose.<name>` | port or `{ port, protocol }` | `{}` | Ports to expose via k8s service |
-| `seed.storage.<name>` | size string or `{ size, mountPoint }` | `{}` | Persistent volumes |
-| `seed.connect.<name>` | service string or `{ service, port }` | `{}` | Service discovery for other instances |
+```bash
+nix build .#seeds.web.image
+```
 
-### Size tiers
+When deployed to a Seed node, this boots a VM running NixOS with nginx, a persistent volume at `/seed/storage/data`, and port 8080 exposed as a k8s Service.
+
+## Instance options
+
+These are the `seed.*` options available inside instance modules.
+
+### `seed.size`
+
+VM sizing tier. Defaults to `"s"`.
 
 | Tier | vCPUs | Memory |
 |------|-------|--------|
@@ -187,59 +68,126 @@ Or in an existing flake:
 | `l` | 4 | 4 GB |
 | `xl` | 8 | 8 GB |
 
-## Controller
+### `seed.expose`
 
-The controller is a systemd service that reconciles instance definitions into running Kata pods. It evaluates the flake, builds OCI images via nix-snapshotter, and applies k8s manifests.
+Ports to expose via k8s Service. Accepts a bare port number (defaults to `protocol = "http"`) or an attrset with `port` and `protocol`.
 
-### How it works
+Protocols: `tcp`, `udp`, `dns` (both TCP+UDP), `http`, `grpc`.
 
-1. Lists instance names from `seeds.<system>` in the flake
-2. Builds each instance's OCI image (`nix build ...#seeds.<system>.<name>.image`)
-3. Computes a generation hash from the set of image store paths
-4. Skips reconciliation if the deployed generation matches
-5. Applies pods, PVCs, and services with `seed.loom.farm/*` labels
-6. Reaps resources with non-matching generation (except PVCs)
+```nix
+seed.expose.http = 8080;                          # shorthand
+seed.expose.dns = { port = 53; protocol = "dns"; }; # explicit
+seed.expose.grpc = { port = 9090; protocol = "grpc"; };
+```
 
-Pods are immutable — if an instance's image changes, the controller deletes and recreates the pod.
+### `seed.storage`
 
-### Enable the controller
+Persistent volumes. Accepts a size string (mounted at `/seed/storage/<name>`) or an attrset with `size` and `mountPoint`.
+
+```nix
+seed.storage.data = "1Gi";                                      # → /seed/storage/data
+seed.storage.cache = { size = "500Mi"; mountPoint = "/tmp/cache"; }; # custom mount
+```
+
+Storage survives pod restarts and redeployments. The underlying PVCs are never garbage-collected.
+
+### `seed.connect`
+
+Service discovery for other instances in the same namespace. Populates environment variables and files:
+
+```nix
+seed.connect.redis = "my-redis";
+seed.connect.db = { service = "postgres"; port = 5432; };
+```
+
+This creates:
+- `$SEED_REDIS_HOST` → `my-redis`
+- `/etc/seed/connect/redis` → `my-redis`
+- `$SEED_DB_HOST` → `postgres`
+- `/etc/seed/connect/db` → `postgres:5432`
+
+### `seed.rollout`
+
+Deployment strategy. `"recreate"` (default) stops the old pod before starting the new one — safe for stateful services. `"rolling"` starts the new pod first for zero-downtime updates.
+
+## Secrets
+
+Instances get a virtual TPM device backed by [swtpm](https://github.com/stefanberger/swtpm) on the host. On first boot, a TPM-backed [age](https://github.com/FiloSottile/age) identity is generated at `/seed/tpm/age-identity`. Use this with [sops-nix](https://github.com/Mic92/sops-nix) for encrypted secrets:
+
+```nix
+{ config, ... }:
+
+{
+  sops.defaultSopsFile = ./secrets/myapp.yaml;
+  sops.secrets.api-key = {};
+
+  services.myapp.environmentFile = config.sops.secrets.api-key.path;
+}
+```
+
+The provisioning flow:
+
+1. Deploy the instance without secrets. It boots and generates a TPM identity.
+2. Read the public key (the `age1tpm1q...` recipient) from the instance's TPM identity PVC.
+3. Encrypt your secrets file with that recipient: `sops --age 'age1tpm1q...' secrets/myapp.yaml`
+4. Redeploy. sops-nix decrypts via the vTPM automatically.
+
+`sops.age.keyFile` defaults to `/seed/tpm/age-identity` — no extra configuration needed.
+
+## Multiple instances
+
+A flake can export any number of instances. They share a k8s namespace derived from the flake URI.
 
 ```nix
 {
-  imports = [
-    seed.nixosModules.default
-    seed.nixosModules.controller
-  ];
+  inputs.seed.url = "github:loomtex/seed";
+  inputs.nixpkgs.follows = "seed/nixpkgs";
 
-  seed.enable = true;
-  seed.controller = {
-    enable = true;
-    flakePath = "/path/to/your/flake";
+  outputs = { seed, ... }: {
+    seeds.web = seed.lib.mkSeed { name = "web"; module = ./web.nix; };
+    seeds.api = seed.lib.mkSeed { name = "api"; module = ./api.nix; };
+    seeds.db  = seed.lib.mkSeed { name = "db";  module = ./db.nix; };
   };
 }
 ```
 
-### Controller options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `seed.controller.enable` | bool | `false` | Enable the controller |
-| `seed.controller.flakePath` | str | required | Path to flake with `seeds.*` outputs |
-| `seed.controller.interval` | int | `30` | Reconciliation interval (seconds) |
-| `seed.controller.namespace` | str | `"default"` | Kubernetes namespace |
-
-## Home Manager modules
-
-For rootless k3s (per-user k3s instances), Seed re-exports nix-snapshotter's home-manager modules:
+Instances discover each other via `seed.connect`:
 
 ```nix
-home-manager.users.myuser = {
-  imports = [
-    seed.homeModules.default
-    seed.homeModules.k3s-rootless
-  ];
-};
+# api.nix
+{
+  seed.connect.db = "seed-db";  # k8s service name
+  # ...
+}
 ```
+
+## Instance authoring notes
+
+Instances run NixOS inside Kata VMs with `boot.isContainer = true`. This keeps closures small but has some side effects to be aware of.
+
+**RuntimeDirectory**: Some services expect `/run/<name>/` to exist. Since `boot.isContainer` skips some tmpfiles setup, add it explicitly:
+
+```nix
+systemd.services.myapp.serviceConfig.RuntimeDirectory = "myapp";
+```
+
+**Storage ownership**: PVC filesystems are root-owned. If your service runs as a non-root user, chown the mount point:
+
+```nix
+systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 myapp myapp -" ];
+```
+
+**No kubectl exec**: Kata VMs don't support `kubectl exec`. Debug via service APIs, port-forward, or write diagnostics to a PVC mount.
+
+**Firewall**: The NixOS firewall is active inside the VM. `seed.expose` automatically opens declared ports. If you expose additional ports outside of `seed.expose`, open them manually:
+
+```nix
+networking.firewall.allowedTCPPorts = [ 9090 ];
+```
+
+## Hosting
+
+To run your own Seed node, see [HOSTING.md](HOSTING.md).
 
 ## License
 
