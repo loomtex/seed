@@ -168,6 +168,16 @@ export class VmInstance {
     if (resp.status !== 204 && resp.status !== 200) {
       throw new Error(`pause failed: ${resp.status} ${resp.body}`);
     }
+
+    // Wait for VM to reach Paused state (CLH processes pause asynchronously)
+    const paused = await waitFor(
+      () => this.isVmInState("Paused"),
+      100,
+      10_000,
+    );
+    if (!paused) {
+      throw new Error("VM did not reach Paused state after 10s");
+    }
     log(COMPONENT, "VM paused", this.slotId);
   }
 
@@ -379,18 +389,23 @@ export class VmInstance {
     }
   }
 
-  /** Check if the VM is in Running state via CLH API. */
-  private async isVmRunning(): Promise<boolean> {
+  /** Check if the VM is in a specific state via CLH API. */
+  private async isVmInState(state: string): Promise<boolean> {
     try {
       const resp = await clhRequest(this.clhApiSocket, "GET", "/api/v1/vm.info");
       if (resp.status === 200) {
         const info = JSON.parse(resp.body);
-        return info.state === "Running";
+        return info.state === state;
       }
       return false;
     } catch {
       return false;
     }
+  }
+
+  /** Check if the VM is in Running state via CLH API. */
+  private async isVmRunning(): Promise<boolean> {
+    return this.isVmInState("Running");
   }
 
   /** Clean stale socket files. */
