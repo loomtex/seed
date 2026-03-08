@@ -301,17 +301,23 @@ mount -t overlay overlay \
   -o lowerdir=/tmp/nix-lower,upperdir=/tmp/store-upper,workdir=/tmp/store-work \
   /nix/store
 
-# Mount nix var directory (contains store DB + daemon socket)
+# Wait for nixvar virtiofs (hotplugged after restore, same as nixstore)
 mkdir -p /tmp/nix-var
-mount -t virtiofs nixvar /tmp/nix-var 2>/dev/null
+while true; do
+  mount -t virtiofs nixvar /tmp/nix-var 2>/dev/null && break
+  sleep 0.1
+done
 
 # Copy store DB to writable tmpfs (sqlite needs write access for journal)
 mkdir -p /tmp/nix-state/db
-cp /tmp/nix-var/db/db.sqlite /tmp/nix-state/db/ 2>/dev/null
+cp /tmp/nix-var/db/db.sqlite /tmp/nix-state/db/
 
-# Mount nix user cache (fetcher cache maps flake URIs to store paths)
+# Wait for nixcache virtiofs (hotplugged after restore)
 mkdir -p /tmp/.cache/nix
-mount -t virtiofs nixcache /tmp/.cache/nix 2>/dev/null
+while true; do
+  mount -t virtiofs nixcache /tmp/.cache/nix 2>/dev/null && break
+  sleep 0.1
+done
 
 # Find tools in nix store
 for d in /nix/store/*-socat-*/bin; do
