@@ -179,6 +179,75 @@ systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 myapp myapp -" ];
 networking.firewall.allowedTCPPorts = [ 9090 ];
 ```
 
+## Shoots
+
+Shoots are ephemeral VMs that share the parent instance's nix closure and persistent storage — like `fork()` for seed instances. Enable them with:
+
+```nix
+seed.shoot.enable = true;
+```
+
+This gives the instance a `seed-shoot` command and a `SEED_SHOOT_URL` env var pointing to the node-local pool manager.
+
+### Usage
+
+```bash
+# Run a command in an isolated VM with access to the parent's storage
+seed-shoot echo "hello from shoot"
+
+# Process a file from shared storage
+seed-shoot sha256sum /seed/storage/data/input.bin
+
+# Write results back to shared storage
+seed-shoot sh -c 'process < /seed/storage/data/input > /seed/storage/data/output'
+
+# Set a timeout (milliseconds)
+seed-shoot --timeout 60000 long-running-task
+```
+
+You can also call the shoot API directly over HTTP:
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"command":["echo","hello"],"timeout":30000}' \
+  "$SEED_SHOOT_URL/shoot"
+# → {"exitCode":0,"stdout":"hello","stderr":""}
+```
+
+### How it works
+
+1. Instance POSTs `{ command, timeout }` to the pool manager on the same node
+2. Pool manager identifies the caller by pod source IP — no auth tokens needed
+3. Pool manager resolves the caller's PVC volumes from the k8s pod spec
+4. An ephemeral CLH VM is restored from a snapshot, with the parent's nix store (read-only) and PVC storage (read-write) mounted via virtiofs
+5. The command runs, stdout/stderr/exitCode are returned, and the VM is destroyed
+6. A fresh VM is added back to the pool
+
+Each shoot runs in its own hardware-isolated microVM. There's no network interface — communication is via shared PVC storage and stdout/stderr only.
+
+### Use cases
+
+**Parallel computation**: Fan out work across multiple shoots. Each gets its own CPU and memory, reads from shared storage, writes results back.
+
+```bash
+# Split a large file and process chunks in parallel
+for chunk in /seed/storage/data/chunks/*; do
+  seed-shoot process-chunk "$chunk" &
+done
+wait
+```
+
+**Sandboxed execution**: Run untrusted code or user input in a shoot. If it crashes or misbehaves, only the ephemeral VM is affected — the parent instance is untouched.
+
+**Offline batch jobs**: Queue work into shared storage, let the parent instance fork shoots to process items. No network needed inside the shoot — everything flows through the filesystem.
+
+### Limitations
+
+- **No network**: Shoots have no network interface. Fetch data before forking, or use shared storage.
+- **No secrets**: Shoots don't get the parent's vTPM. Pass secrets via env vars or write them to shared storage before forking.
+- **No nix builds**: Shoots mount the nix store read-only. You can run any binary that's in the parent's closure, but you can't build new derivations inside a shoot.
+- **Same node only**: Shoots use node-local PVC storage (k3s local-path). The parent and its shoots always run on the same physical node.
+
 ## Why NixOS
 
 Seed uses NixOS as the instance abstraction instead of containers or a custom runtime. Every instance is a real NixOS system evaluated from a nix flake.
