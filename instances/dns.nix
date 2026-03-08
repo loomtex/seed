@@ -12,33 +12,33 @@ let
   zone = "loom.farm.";
 
   rrsets = [
-    { name = zone; type = "SOA"; ttl = 3600;
-      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030704 10800 3600 604800 3600"; }]; }
-    { name = zone; type = "NS"; ttl = 3600;
+    { name = zone; type = "SOA"; ttl = 300;
+      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030705 10800 3600 604800 300"; }]; }
+    { name = zone; type = "NS"; ttl = 300;
       records = [{ content = "ns1.loom.farm."; } { content = "ns2.loom.farm."; }]; }
-    { name = "ns1.${zone}"; type = "A"; ttl = 3600;
+    { name = "ns1.${zone}"; type = "A"; ttl = 300;
       records = [{ content = "216.128.141.222"; }]; }
-    { name = "ns1.${zone}"; type = "AAAA"; ttl = 3600;
+    { name = "ns1.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::1"; }]; }
-    { name = "ns2.${zone}"; type = "A"; ttl = 3600;
+    { name = "ns2.${zone}"; type = "A"; ttl = 300;
       records = [{ content = "216.128.141.222"; }]; }
-    { name = "ns2.${zone}"; type = "AAAA"; ttl = 3600;
+    { name = "ns2.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::2"; }]; }
 
     # Namespace wildcard — all instances in our namespace
-    { name = "*.s-gaydazldmnsg.${zone}"; type = "A"; ttl = 3600;
+    { name = "*.s-gaydazldmnsg.${zone}"; type = "A"; ttl = 300;
       records = [{ content = "216.128.141.222"; }]; }
-    { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 3600;
+    { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
 
     # Silo — routed through web pod (Caddy for HTTPS, socat for SSH), IPv6 only
-    { name = "silo.${zone}"; type = "AAAA"; ttl = 3600;
+    { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
 
     # Zone apex — can't CNAME at apex, use A/AAAA
-    { name = zone; type = "A"; ttl = 3600;
+    { name = zone; type = "A"; ttl = 300;
       records = [{ content = "216.128.141.222"; }]; }
-    { name = zone; type = "AAAA"; ttl = 3600;
+    { name = zone; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
   ];
 
