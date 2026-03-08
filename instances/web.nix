@@ -86,7 +86,7 @@
     wantedBy = [ "multi-user.target" ];
     after = [ "network.target" ];
     serviceConfig = {
-      ExecStart = "${pkgs.socat}/bin/socat TCP-LISTEN:22,fork,reuseaddr TCP:seed-silo.s-gaydazldmnsg.svc.cluster.local:22";
+      ExecStart = "${pkgs.socat}/bin/socat TCP6-LISTEN:22,fork,reuseaddr TCP:seed-silo.s-gaydazldmnsg.svc.cluster.local:22";
       Restart = "always";
       RestartSec = "5s";
     };
