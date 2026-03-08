@@ -158,6 +158,9 @@ in {
     home = reposDir;
     shell = "${siloShell}/bin/silo-shell";
     createHome = false;
+    # Unlock account — empty hash means no password, but account is not locked.
+    # PasswordAuthentication is disabled so this is safe.
+    initialHashedPassword = "";
   };
   users.groups.git = {};
 
