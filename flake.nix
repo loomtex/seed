@@ -364,8 +364,8 @@ cat > /run/cmd-agent.sh << 'AGENT'
 #!/bin/sh
 read -r request_json
 
-# Parse command as array
-cmd=$(echo "$request_json" | jq -r '.command | join(" ")')
+# Parse command as properly shell-quoted array
+cmd=$(echo "$request_json" | jq -r '.command | map(@sh) | join(" ")')
 timeout_ms=$(echo "$request_json" | jq -r '.timeout // 120000')
 timeout_s=$((timeout_ms / 1000))
 
