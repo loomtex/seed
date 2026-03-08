@@ -85,17 +85,20 @@ let
         exit 1
       fi
 
-      # Create bare repo + write owner key
+      # Create bare repo + store owner key (immutable, always grants push)
       ${pkgs.git}/bin/git init --bare "$FULL_PATH" > /dev/null
-      echo "$KEY_LINE" > "$FULL_PATH/.authorized_keys"
+      echo "$KEY_LINE" > "$FULL_PATH/.owner_key"
     elif [ "$CMD" = "git-receive-pack" ]; then
-      # Push requires authorization — check repo's .authorized_keys
-      if [ ! -f "$FULL_PATH/.authorized_keys" ]; then
-        echo "silo: access denied" >&2
-        exit 1
+      # Push requires authorization — owner key always works,
+      # then check .authorized_keys (synced from repo tree by post-receive)
+      AUTHORIZED=false
+      if [ -f "$FULL_PATH/.owner_key" ] && ${pkgs.gnugrep}/bin/grep -qF "$SILO_KEY_BLOB" "$FULL_PATH/.owner_key"; then
+        AUTHORIZED=true
+      elif [ -f "$FULL_PATH/.authorized_keys" ] && ${pkgs.gnugrep}/bin/grep -qF "$SILO_KEY_BLOB" "$FULL_PATH/.authorized_keys"; then
+        AUTHORIZED=true
       fi
 
-      if ! ${pkgs.gnugrep}/bin/grep -qF "$SILO_KEY_BLOB" "$FULL_PATH/.authorized_keys"; then
+      if [ "$AUTHORIZED" = "false" ]; then
         echo "silo: access denied" >&2
         exit 1
       fi
@@ -143,7 +146,7 @@ let
   '';
 
   # Post-receive hook — two jobs:
-  # 1. Bidirectional .authorized_keys sync (tree ↔ bare repo metadata)
+  # 1. Sync .authorized_keys from repo tree → bare repo metadata
   # 2. Webhook to seed-controller for reconciliation
   #
   # Installed at /etc/silo/hooks/ via core.hooksPath — users can't override.
@@ -154,26 +157,17 @@ let
 
     # Parse ref updates from stdin — find the default branch push
     HEAD_SHA=""
-    HEAD_OLD=""
     while read OLD NEW REF; do
       if [ "$REF" = "$DEFAULT_BRANCH" ]; then
         HEAD_SHA="$NEW"
-        HEAD_OLD="$OLD"
       fi
     done
 
-    # --- Bidirectional .authorized_keys sync ---
-    if [ -n "$HEAD_SHA" ]; then
-      if ${pkgs.git}/bin/git -C "$REPO_DIR" cat-file -e "$HEAD_SHA:.authorized_keys" 2>/dev/null; then
-        # Tree has .authorized_keys — sync to bare repo metadata
-        ${pkgs.git}/bin/git -C "$REPO_DIR" show "$HEAD_SHA:.authorized_keys" > "$REPO_DIR/.authorized_keys"
-      elif [ "$HEAD_OLD" = "0000000000000000000000000000000000000000" ] && [ -f "$REPO_DIR/.authorized_keys" ]; then
-        # First push — inject owner key from metadata into tree
-        BLOB=$(${pkgs.git}/bin/git -C "$REPO_DIR" hash-object -w "$REPO_DIR/.authorized_keys")
-        NEW_TREE=$( (${pkgs.git}/bin/git -C "$REPO_DIR" ls-tree "$HEAD_SHA"; ${pkgs.coreutils}/bin/printf '100644 blob %s\t.authorized_keys\n' "$BLOB") | ${pkgs.git}/bin/git -C "$REPO_DIR" mktree)
-        NEW_COMMIT=$(${pkgs.git}/bin/git -C "$REPO_DIR" commit-tree "$NEW_TREE" -p "$HEAD_SHA" -m "silo: track .authorized_keys")
-        ${pkgs.git}/bin/git -C "$REPO_DIR" update-ref "$DEFAULT_BRANCH" "$NEW_COMMIT"
-      fi
+    # --- Sync .authorized_keys from tree to bare repo metadata ---
+    # Owner key (.owner_key) always grants push regardless.
+    # .authorized_keys in the tree is for collaborators — additive only.
+    if [ -n "$HEAD_SHA" ] && ${pkgs.git}/bin/git -C "$REPO_DIR" cat-file -e "$HEAD_SHA:.authorized_keys" 2>/dev/null; then
+      ${pkgs.git}/bin/git -C "$REPO_DIR" show "$HEAD_SHA:.authorized_keys" > "$REPO_DIR/.authorized_keys"
     fi
 
     # --- Webhook to seed-controller ---
@@ -313,9 +307,6 @@ in {
   environment.etc."gitconfig".text = ''
     [core]
       hooksPath = /etc/silo/hooks
-    [user]
-      name = silo
-      email = silo@loom.farm
   '';
   environment.etc."silo/hooks/post-receive" = {
     source = postReceiveHook;
