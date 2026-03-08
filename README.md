@@ -187,9 +187,9 @@ This means the full NixOS module ecosystem is available — `services.postgresql
 
 The tradeoff is boot time (systemd startup, not millisecond cold starts) and the learning curve of the Nix module system. Seed isn't a function runtime — it's infrastructure. If you want FaaS, run a FaaS framework in a seed.
 
-But the learning curve matters less than it used to. NixOS is declarative, typed, reproducible, and introspectable — properties that make it harder for humans to pick up but trivially machine-wielded. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human would face. Nix was perfectly positioned to never be typed by a human again. Seed leans into that.
+But the learning curve matters less than it used to. Because of the decades of human labor put into nixpkgs and NixOS modules, and because NixOS is declarative, typed, reproducible, and introspectable — it is trivially wielded by modern LLMs. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human would face.
 
-And the decades of human effort in nixpkgs and NixOS modules may be the single most important enabler. 100,000+ packages and thousands of service modules — each encoding real operational knowledge about how software is built, configured, and supervised — give agents a foundation they couldn't build from scratch. The humans wrote the hard parts. The agents compose them.
+Nix is perfectly positioned to never be typed by a human again. Seed leans into that.
 
 ## For agents
 
