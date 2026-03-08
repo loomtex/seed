@@ -256,8 +256,8 @@
         # Create initramfs layout
         mkdir -p rootfs/{bin,proc,sys,dev,tmp,run,nix/store,nix/var/nix/daemon-socket}
 
-        # Static busybox for pre-virtiofs phase
-        cp ${pkgs.busybox-sandbox-shell}/bin/busybox rootfs/bin/busybox
+        # Full static busybox for pre-virtiofs phase (needs mount, sleep, etc.)
+        cp ${pkgs.pkgsStatic.busybox}/bin/busybox rootfs/bin/busybox
         for cmd in sh mount umount mkdir sleep cat echo ls ln chmod; do
           ln -s busybox rootfs/bin/$cmd
         done
