@@ -97,14 +97,14 @@ async function nixBuild(
   return stdout.trim();
 }
 
-/** Get the git revision of a flake (fast, no build). */
+/** Get the git revision of a flake (fast, no build).
+ *  Uses --refresh for tarball flakes since nix caches tarballs aggressively
+ *  and won't detect content changes at the same URL without it. */
 async function getFlakeRevision(flakePath: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(
-      "nix",
-      ["flake", "metadata", flakePath, "--json"],
-      { timeout: 30_000 },
-    );
+    const args = ["flake", "metadata", flakePath, "--json"];
+    if (flakePath.startsWith("tarball+")) args.push("--refresh");
+    const { stdout } = await execFileAsync("nix", args, { timeout: 60_000 });
     const meta = JSON.parse(stdout);
     return meta.revision || meta.locked?.narHash || null;
   } catch {
