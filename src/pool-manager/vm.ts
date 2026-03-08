@@ -54,6 +54,10 @@ function clhRequest(
       socketPath,
       method,
       path,
+      // Disable connection pooling — CLH uses micro-http (from Firecracker)
+      // which doesn't handle HTTP/1.1 keep-alive on unix sockets properly.
+      // Reused connections cause ParseError → "Invalid request."
+      agent: false,
       headers: body
         ? { "Content-Type": "application/json" }
         : undefined,
