@@ -10,14 +10,21 @@ import { log } from "../shared/kube.js";
 export type RefreshCallback = (flakePath: string) => void;
 
 /**
- * Match a GitHub repository full_name (e.g. "loomtex/seed") against
- * known flake paths (e.g. "github:loomtex/seed").
+ * Match a repository name against known flake paths.
+ * Supports GitHub flakes ("github:<owner>/<repo>") matched by full_name,
+ * and tarball flakes ("tarball+https://<host>/<repo>/archive/...") matched
+ * by repo name (the first path segment after the host).
  * Returns the matched flake path, or null if no match.
  */
 function matchFlake(repoFullName: string, flakePaths: string[]): string | null {
   for (const fp of flakePaths) {
-    const match = fp.match(/^github:([^#]+)/);
-    if (match && match[1] === repoFullName) return fp;
+    // GitHub: github:<owner>/<repo>
+    const ghMatch = fp.match(/^github:([^#]+)/);
+    if (ghMatch && ghMatch[1] === repoFullName) return fp;
+
+    // Tarball: tarball+https://<host>/<repo>/archive/...
+    const tbMatch = fp.match(/^tarball\+https?:\/\/[^/]+\/([^/]+)\//);
+    if (tbMatch && tbMatch[1] === repoFullName) return fp;
   }
   return null;
 }

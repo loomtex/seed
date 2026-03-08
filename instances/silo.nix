@@ -142,6 +142,38 @@ let
     echo "silo-publish-sshfp: published SSHFP 4 2 $SHA256"
   '';
 
+  # Post-receive hook — fires webhook to seed-controller on push
+  #
+  # Sends a GitHub-compatible POST with HMAC-SHA256 signature so the
+  # controller's matchFlake() can identify which tarball flake changed
+  # and trigger reconciliation with --refresh.
+  postReceiveHook = pkgs.writeShellScript "post-receive" ''
+    # Consume stdin (required by git post-receive protocol)
+    ${pkgs.coreutils}/bin/cat > /dev/null
+
+    # Extract repo name from GIT_DIR (e.g. /seed/storage/repos/seed-demo.git → seed-demo)
+    REPO_NAME=$(${pkgs.coreutils}/bin/basename "$GIT_DIR" .git)
+
+    # Read HMAC secret
+    SECRET_FILE="/run/secrets/silo-webhook-secret"
+    [ ! -f "$SECRET_FILE" ] && exit 0
+    SECRET=$(${pkgs.coreutils}/bin/cat "$SECRET_FILE")
+
+    # Build GitHub-compatible payload
+    BODY="{\"repository\":{\"full_name\":\"$REPO_NAME\"}}"
+
+    # HMAC-SHA256 signature
+    SIGNATURE="sha256=$(${pkgs.coreutils}/bin/printf '%s' "$BODY" | ${pkgs.openssl}/bin/openssl dgst -sha256 -hmac "$SECRET" -hex 2>/dev/null | ${pkgs.gawk}/bin/awk '{print $NF}')"
+
+    # Fire-and-forget — don't block the push
+    ${pkgs.curl}/bin/curl -sf -X POST \
+      -H "Content-Type: application/json" \
+      -H "X-Hub-Signature-256: $SIGNATURE" \
+      -d "$BODY" \
+      "http://seed-controller.seed-system.svc.cluster.local:9876/refresh" \
+      >/dev/null 2>&1 || true
+  '';
+
   # CGI script for git archive over HTTP
   #
   # Serves tarballs at /<repo>/archive/<ref>.tar.gz
@@ -203,9 +235,10 @@ in {
   seed.expose.archive = { port = 8080; protocol = "tcp"; };
   seed.storage.repos = "10Gi";
 
-  # sops-nix: pdns API key for SSHFP publishing
+  # sops-nix secrets
   sops.defaultSopsFile = ../secrets/silo.yaml;
   sops.secrets.pdns-api-key = {};
+  sops.secrets.silo-webhook-secret = { owner = "git"; };
 
   # git user — all SSH connections land here
   # isNormalUser so PAM account checks pass (isSystemUser lacks /etc/shadow entry)
@@ -256,7 +289,17 @@ in {
 
   networking.firewall.allowedTCPPorts = [ 22 8080 ];
 
-  environment.systemPackages = [ pkgs.git siloShell ];
+  environment.systemPackages = [ pkgs.git pkgs.openssl siloShell ];
+
+  # Global git hooks — all repos use the shared hooks directory
+  environment.etc."gitconfig".text = ''
+    [core]
+      hooksPath = /etc/silo/hooks
+  '';
+  environment.etc."silo/hooks/post-receive" = {
+    source = postReceiveHook;
+    mode = "0755";
+  };
 
   # Force host key generation on boot (startWhenNeeded=true defers it to first connection)
   systemd.services.sshd-keygen.wantedBy = [ "multi-user.target" ];
