@@ -447,6 +447,11 @@ export class VmInstance {
       detached: false,
     });
 
+    child.stdout?.on("data", (data: Buffer) => {
+      const msg = data.toString().trim();
+      if (msg) log(COMPONENT, `${label} stdout: ${msg}`, this.slotId);
+    });
+
     child.stderr?.on("data", (data: Buffer) => {
       const msg = data.toString().trim();
       if (msg) log(COMPONENT, `${label} stderr: ${msg}`, this.slotId);

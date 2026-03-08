@@ -274,6 +274,7 @@
         cat > rootfs/init << 'INITEOF'
 #!/bin/sh
 # Phase 1: basic mounts (runs on template boot)
+echo "[init] phase 1: mounting filesystems"
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
@@ -282,6 +283,7 @@ mount -t tmpfs tmpfs /run
 mkdir -p /run/nix
 
 # Write "ready" marker so pool manager can detect boot completion
+echo "[init] phase 1 complete"
 echo ready > /tmp/.pool-ready
 
 # Sleep forever — pool manager will pause this VM via CLH API,
@@ -291,15 +293,22 @@ echo ready > /tmp/.pool-ready
 # happens while we're sleeping, so we loop checking for it.
 
 # Wait for virtiofs to become available (hotplugged after restore)
+echo "[init] waiting for virtiofs nixstore..."
 while true; do
-  mount -t virtiofs nixstore /nix/store 2>/dev/null && break
+  if mount -t virtiofs nixstore /nix/store 2>/tmp/mount-err; then
+    echo "[init] virtiofs nixstore mounted"
+    break
+  fi
   sleep 0.1
 done
 
 # Mount nix-daemon socket directory via virtiofs
+echo "[init] mounting virtiofs nixdaemon..."
 mount -t virtiofs nixdaemon /nix/var/nix/daemon-socket 2>/dev/null
+echo "[init] nixdaemon mount result: $?"
 
 # Now we have /nix/store — find tools
+echo "[init] searching for tools in /nix/store..."
 for d in /nix/store/*-socat-*/bin; do
   [ -x "$d/socat" ] && export PATH="$d:$PATH" && break
 done
@@ -343,7 +352,10 @@ done
 
 # Command agent: listen on vsock port 6001 for one command.
 # socat accepts one connection, reads a JSON line, we parse and exec it.
+echo "[init] PATH=$PATH"
+echo "[init] starting socat vsock listener on port 6001..."
 socat VSOCK-LISTEN:6001,reuseaddr EXEC:'/bin/sh /run/cmd-agent.sh' &
+echo "[init] socat started (pid=$!)"
 
 # Write the command agent script
 cat > /run/cmd-agent.sh << 'AGENT'
