@@ -26,6 +26,7 @@
 
     mkInstance = import ./lib/mkInstance.nix { inherit nixpkgs self; };
     mkImage = import ./lib/mkImage.nix { inherit pkgs; };
+    mkSeed = import ./lib/mkSeed.nix { inherit mkInstance mkImage; };
   in {
     # Overlay: patch kata-runtime for nix-snapshotter + CLH paths + TPM kernel
     overlays.default = final: prev: {
@@ -135,6 +136,7 @@
     };
 
     # Helpers: build Seed instances and images
+    lib.mkSeed = mkSeed;
     lib.mkInstance = mkInstance;
     lib.mkImage = mkImage;
 
@@ -156,27 +158,12 @@
       program = "${self.nixosConfigurations.vm.config.system.build.vm}/bin/run-nixos-vm";
     };
 
-    # Dogfooding: seed's own instances (initially a web example for testing)
-    seeds = let
-      instances = {
-        web = mkInstance {
-          name = "web";
-          module = ./instances/web.nix;
-        };
-        dns = mkInstance {
-          name = "dns";
-          module = ./instances/dns.nix;
-        };
-        silo = mkInstance {
-          name = "silo";
-          module = ./instances/silo.nix;
-        };
-      };
-    in builtins.mapAttrs (name: instance:
-      instance // {
-        image = mkImage { inherit name; inherit (instance) toplevel; };
-      }
-    ) instances;
+    # Dogfooding: seed's own instances
+    seeds = {
+      web = mkSeed { name = "web"; module = ./instances/web.nix; };
+      dns = mkSeed { name = "dns"; module = ./instances/dns.nix; };
+      silo = mkSeed { name = "silo"; module = ./instances/silo.nix; };
+    };
 
     # Controller + host agent TypeScript packages
     packages.${system} = let

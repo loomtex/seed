@@ -7,7 +7,7 @@
   };
 
   outputs = { seed, ... }: {
-    seeds.web = seed.lib.mkInstance {
+    seeds.web = seed.lib.mkSeed {
       name = "web";
       module = ./web.nix;
     };
