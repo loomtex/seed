@@ -88,8 +88,8 @@ let
       # Create bare repo + write owner key
       ${pkgs.git}/bin/git init --bare "$FULL_PATH" > /dev/null
       echo "$KEY_LINE" > "$FULL_PATH/.authorized_keys"
-    else
-      # Verify access — check this repo's .authorized_keys
+    elif [ "$CMD" = "git-receive-pack" ]; then
+      # Push requires authorization — check repo's .authorized_keys
       if [ ! -f "$FULL_PATH/.authorized_keys" ]; then
         echo "silo: access denied" >&2
         exit 1
@@ -100,6 +100,7 @@ let
         exit 1
       fi
     fi
+    # git-upload-pack (clone/pull) is always allowed — global read
 
     exec ${pkgs.git}/bin/$CMD "$FULL_PATH"
   '';
