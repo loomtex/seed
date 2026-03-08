@@ -50,17 +50,21 @@ function clhRequest(
   body?: object,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
+    const encoded = body ? JSON.stringify(body) : undefined;
+    const headers: Record<string, string> = {};
+    if (encoded) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = Buffer.byteLength(encoded).toString();
+    }
+
     const opts: http.RequestOptions = {
       socketPath,
       method,
       path,
-      // Disable connection pooling — CLH uses micro-http (from Firecracker)
-      // which doesn't handle HTTP/1.1 keep-alive on unix sockets properly.
-      // Reused connections cause ParseError → "Invalid request."
+      // CLH uses micro-http (from Firecracker) which doesn't support
+      // chunked transfer encoding or HTTP/1.1 keep-alive.
       agent: false,
-      headers: body
-        ? { "Content-Type": "application/json" }
-        : undefined,
+      headers,
     };
 
     const req = http.request(opts, (res) => {
@@ -75,7 +79,7 @@ function clhRequest(
     });
 
     req.on("error", reject);
-    if (body) req.write(JSON.stringify(body));
+    if (encoded) req.write(encoded);
     req.end();
   });
 }
