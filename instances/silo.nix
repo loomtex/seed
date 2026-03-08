@@ -313,6 +313,9 @@ in {
   environment.etc."gitconfig".text = ''
     [core]
       hooksPath = /etc/silo/hooks
+    [user]
+      name = silo
+      email = silo@loom.farm
   '';
   environment.etc."silo/hooks/post-receive" = {
     source = postReceiveHook;
