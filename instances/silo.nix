@@ -151,8 +151,8 @@ let
     # Consume stdin (required by git post-receive protocol)
     ${pkgs.coreutils}/bin/cat > /dev/null
 
-    # Extract repo name from GIT_DIR (e.g. /seed/storage/repos/seed-demo.git → seed-demo)
-    REPO_NAME=$(${pkgs.coreutils}/bin/basename "$GIT_DIR" .git)
+    # Extract repo name from GIT_DIR — may be "." when hook runs inside the repo
+    REPO_NAME=$(${pkgs.coreutils}/bin/basename "$(${pkgs.coreutils}/bin/realpath "$GIT_DIR")" .git)
 
     # Read HMAC secret
     SECRET_FILE="/run/secrets/silo-webhook-secret"
