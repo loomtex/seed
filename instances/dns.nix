@@ -35,7 +35,9 @@ let
     { name = "*.s-mezggnjsgq4t.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::4"; }]; }
 
-    # Silo — routed through web pod (Caddy for HTTPS, socat for SSH), IPv6 only
+    # Silo — routed through web pod (Caddy for HTTPS, socat for SSH)
+    { name = "silo.${zone}"; type = "A"; ttl = 300;
+      records = [{ content = "216.128.141.222"; }]; }
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
 
