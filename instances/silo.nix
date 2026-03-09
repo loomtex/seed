@@ -455,6 +455,8 @@ in {
           include ${pkgs.nginx}/conf/fastcgi_params;
           fastcgi_param SCRIPT_FILENAME "${pkgs.cgit}/cgit/cgit.cgi";
           fastcgi_param CGIT_CONFIG "${cgitrc}";
+          fastcgi_param SCRIPT_NAME "";
+          fastcgi_param PATH_INFO $uri;
           fastcgi_param QUERY_STRING $query_string;
           fastcgi_param HTTP_HOST $server_name;
           fastcgi_pass unix:/run/fcgiwrap/fcgiwrap.sock;
