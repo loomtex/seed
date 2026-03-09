@@ -9,14 +9,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as pulumi from "@pulumi/pulumi";
-import type { NodeConfig } from "./types.js";
+import type { NodeConfig } from "./types.ts";
 import {
   sshToAge,
   addNodeToSops,
   encryptSecrets,
   updateLuksRecovery,
-} from "./sops.js";
-import { createClevisJWE, generateLuksPassphrase } from "./clevis.js";
+} from "./sops.ts";
+import { createClevisJWE, generateLuksPassphrase } from "./clevis.ts";
 
 interface SSHKeyPair {
   privateKey: string;

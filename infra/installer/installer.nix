@@ -3,7 +3,7 @@
 # This boots into a live NixOS environment with SSH enabled.
 # nixos-anywhere connects via SSH and handles disko + install.
 # No node identity needed — Pulumi knows which IP to connect to.
-{ modulesPath, ... }:
+{ modulesPath, lib, ... }:
 
 {
   imports = [
@@ -24,7 +24,7 @@
   boot.initrd.availableKernelModules = [ "ixgbe" ];
 
   # The iPXE environment has networking via DHCP
-  networking.useDHCP = true;
+  networking.useDHCP = lib.mkForce true;
 
   system.stateVersion = "25.11";
 }

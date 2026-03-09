@@ -12,3 +12,9 @@ config:
   seed-infra:sshPubKeys:
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICsPaFplk95wdbZnGF9q1LnQUKy36Lh+4dSHyFJwMeUK josh@6bit.com
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi
+  vultr:apiKey:
+    secure: v1:A1rCGuqUnPnabl7v:91mhegxfTRYxGBUUdd4o6eV8kojOAOf6TC7U4yEA+bSBg/I0bcswLdv5kUsIf4Bjgpfj5Q==
+  seed-infra:nodes:
+    - name: seed-atl-1
+      clusterInit: true
+encryptionsalt: v1:c0fFQkAJsIo=:v1:XN5gSWH+RRUSUAtO:GrQCFkY+T/pA/fet/+gL19vE2tMqJA==

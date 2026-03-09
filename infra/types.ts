@@ -81,7 +81,8 @@ export interface ReservedIPv6 {
 export interface StorageArgs {
   region: string;
   label: string;
-  tier?: string;
+  clusterId?: number;
+  tierId?: number;
 }
 
 export interface ObjectBucket {

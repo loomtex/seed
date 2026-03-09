@@ -17,7 +17,7 @@ import type {
   BootScriptArgs,
   BootScript,
   SSHKey,
-} from "../types.js";
+} from "../types.ts";
 
 // Map abstract plan names to Vultr plan IDs
 const PLAN_MAP: Record<string, string> = {
@@ -117,9 +117,9 @@ export class VultrProvider implements SeedProvider {
 
   createObjectStorage(name: string, args: StorageArgs): ObjectBucket {
     const storage = new vultr.ObjectStorage(name, {
-      clusterId: 1, // Vultr cluster IDs are region-dependent; 1 = default
+      clusterId: args.clusterId ?? 22, // ATL cluster (atl2.vultrobjects.com)
       label: args.label,
-      tierId: 4, // Default tier
+      tierId: args.tierId ?? 2, // Standard tier ($18/mo)
     });
 
     return {

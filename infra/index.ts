@@ -1,10 +1,6 @@
 import * as pulumi from "@pulumi/pulumi";
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import * as path from "node:path";
-import { VultrProvider } from "./providers/vultr.js";
-import { provisionNode } from "./orchestrate.js";
-import type { NodeConfig } from "./types.js";
+import { VultrProvider } from "./providers/vultr.ts";
+import type { NodeConfig } from "./types.ts";
 
 const config = new pulumi.Config();
 const provider = new VultrProvider();
@@ -41,7 +37,9 @@ const nodeProvisionerProvider: pulumi.dynamic.ResourceProvider = {
     const ip = inputs["ip"] as string;
     const nodeConfig = inputs["nodeConfig"] as NodeConfig;
 
-    const result = provisionNode(ip, nodeConfig);
+    // Dynamic require to avoid serialization issues with native modules
+    const { provisionNode: provision } = require("./orchestrate.ts");
+    const result = provision(ip, nodeConfig);
 
     return {
       id: nodeConfig.name,
@@ -95,7 +93,15 @@ interface NetbootArtifactsInputs {
   bucket: string;
 }
 
+// NOTE: Dynamic provider functions are serialized by Pulumi, so they
+// must require() Node.js modules inside the function body — top-level
+// imports of builtins (path, fs, child_process) can't be serialized.
+
 function buildAndUpload(inputs: Record<string, unknown>) {
+  const { execSync } = require("node:child_process");
+  const { readFileSync } = require("node:fs");
+  const path = require("node:path");
+
   const s3Hostname = inputs["s3Hostname"] as string;
   const accessKey = inputs["s3AccessKey"] as string;
   const secretKey = inputs["s3SecretKey"] as string;
@@ -163,11 +169,13 @@ const netbootArtifactsProvider: pulumi.dynamic.ResourceProvider = {
     olds: Record<string, unknown>,
     _news: Record<string, unknown>
   ) {
+    const { execSync: exec } = require("node:child_process");
+    const p = require("node:path");
     // Compare the current nix store path (content-addressed) against the
     // one that was uploaded. --refresh ensures we pick up flake input changes.
     try {
-      const seedFlake = path.resolve(process.cwd(), "..");
-      const currentPath = execSync(
+      const seedFlake = p.resolve(process.cwd(), "..");
+      const currentPath = exec(
         `nix build "path:${seedFlake}#netboot" --print-out-paths --no-link --refresh`,
         { encoding: "utf8", timeout: 600_000 }
       ).trim();
