@@ -1,8 +1,9 @@
-# Seed silo instance — SSH-only git server
+# Seed silo instance — git server with cgit web interface
 #
-# Identity = SSH key. No accounts, no web UI, no database.
+# Identity = SSH key. No accounts, no database.
 # First push auto-creates a bare repo. ACLs via .authorized_keys in each repo.
 # Host key fingerprint published as SSHFP DNS record to PowerDNS.
+# cgit provides read-only web browsing with syntax highlighting and markdown rendering.
 { config, pkgs, lib, ... }:
 
 let
@@ -186,6 +187,106 @@ let
       >/dev/null 2>&1 || true
   '';
 
+  # cgit source-filter — syntax highlighting + markdown rendering
+  siloSourceFilter = pkgs.writeShellScript "silo-source-filter" ''
+    # Args: $1 = filename
+    FILENAME="$1"
+    EXTENSION="''${FILENAME##*.}"
+    BASENAME=$(${pkgs.coreutils}/bin/basename "$FILENAME")
+
+    case "$FILENAME" in
+      *.md|*.markdown|*.mdown)
+        echo "<div class=\"markdown-body\">"
+        ${pkgs.cmark}/bin/cmark
+        echo "</div>"
+        ;;
+      *)
+        # Map special filenames to extensions highlight understands
+        case "$BASENAME" in
+          Makefile|makefile|GNUmakefile) EXTENSION="mk" ;;
+          Dockerfile) EXTENSION="dockerfile" ;;
+          *.nix) EXTENSION="nix" ;;
+        esac
+        ${pkgs.highlight}/bin/highlight --force -f -I -O xhtml -S "$EXTENSION" 2>/dev/null || ${pkgs.highlight}/bin/highlight --force -f -I -O xhtml -S txt
+        ;;
+    esac
+  '';
+
+  # cgit about-filter — renders README on summary pages
+  siloAboutFilter = pkgs.writeShellScript "silo-about-filter" ''
+    FILENAME="$1"
+    case "$FILENAME" in
+      *.md|*.markdown|*.mdown)
+        echo "<div class=\"markdown-body\">"
+        ${pkgs.cmark}/bin/cmark
+        echo "</div>"
+        ;;
+      *.htm|*.html)
+        ${pkgs.coreutils}/bin/cat
+        ;;
+      *)
+        echo "<pre>"
+        ${pkgs.coreutils}/bin/cat | ${pkgs.gnused}/bin/sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+        echo "</pre>"
+        ;;
+    esac
+  '';
+
+  # cgit head-include — CSS for highlight v4 + markdown
+  cgitHeadInclude = pkgs.writeText "cgit-head-include.html" ''
+    <style>
+      /* highlight v4 xhtml classes */
+      .hl.num { color: #2aa198; }
+      .hl.esc { color: #dc322f; }
+      .hl.str { color: #2aa198; }
+      .hl.pps { color: #2aa198; }
+      .hl.slc { color: #586e75; font-style: italic; }
+      .hl.com { color: #586e75; font-style: italic; }
+      .hl.ppc { color: #cb4b16; }
+      .hl.opt { color: #657b83; }
+      .hl.ipl { color: #dc322f; }
+      .hl.lin { color: #93a1a1; }
+      .hl.kwa { color: #859900; font-weight: bold; }
+      .hl.kwb { color: #b58900; }
+      .hl.kwc { color: #268bd2; }
+      .hl.kwd { color: #6c71c4; }
+
+      /* markdown-body */
+      .markdown-body { max-width: 900px; line-height: 1.6; font-size: 14px; }
+      .markdown-body h1 { font-size: 1.8em; border-bottom: 1px solid #ddd; padding-bottom: .3em; }
+      .markdown-body h2 { font-size: 1.4em; border-bottom: 1px solid #eee; padding-bottom: .3em; }
+      .markdown-body h3 { font-size: 1.2em; }
+      .markdown-body code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 90%; }
+      .markdown-body pre { background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; }
+      .markdown-body pre code { background: none; padding: 0; }
+      .markdown-body blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 1em; color: #666; }
+      .markdown-body table { border-collapse: collapse; }
+      .markdown-body td, .markdown-body th { border: 1px solid #ddd; padding: 6px 12px; }
+      .markdown-body th { background: #f4f4f4; }
+      .markdown-body img { max-width: 100%; }
+    </style>
+  '';
+
+  # cgitrc configuration
+  cgitrc = pkgs.writeText "cgitrc" ''
+    virtual-root=/
+    scan-path=${reposDir}
+    remove-suffix=1
+    clone-url=ssh://git@silo.loom.farm/$CGIT_REPO_URL
+    source-filter=${siloSourceFilter}
+    about-filter=${siloAboutFilter}
+    head-include=${cgitHeadInclude}
+    readme=:README.md
+    readme=:readme.md
+    enable-blame=1
+    enable-log-filecount=1
+    enable-commit-graph=1
+    enable-http-clone=0
+    cache-size=0
+    css=/cgit-data/cgit.css
+    logo=/cgit-data/cgit.png
+  '';
+
   # CGI script for git archive over HTTP
   #
   # Serves tarballs at /<repo>/archive/<ref>.tar.gz
@@ -333,7 +434,7 @@ in {
     };
   };
 
-  # nginx — serves git archive tarballs via fcgiwrap
+  # nginx — serves cgit web interface + git archive tarballs via fcgiwrap
   services.nginx = {
     enable = true;
     virtualHosts."_" = {
@@ -343,6 +444,19 @@ in {
           include ${pkgs.nginx}/conf/fastcgi_params;
           fastcgi_param SCRIPT_FILENAME "${siloArchiveCgi}";
           fastcgi_param REQUEST_URI $request_uri;
+          fastcgi_pass unix:/run/fcgiwrap/fcgiwrap.sock;
+        '';
+      };
+      locations."/cgit-data/" = {
+        alias = "${pkgs.cgit}/cgit/";
+      };
+      locations."/" = {
+        extraConfig = ''
+          include ${pkgs.nginx}/conf/fastcgi_params;
+          fastcgi_param SCRIPT_FILENAME "${pkgs.cgit}/cgit/cgit.cgi";
+          fastcgi_param CGIT_CONFIG "${cgitrc}";
+          fastcgi_param QUERY_STRING $query_string;
+          fastcgi_param HTTP_HOST $server_name;
           fastcgi_pass unix:/run/fcgiwrap/fcgiwrap.sock;
         '';
       };
