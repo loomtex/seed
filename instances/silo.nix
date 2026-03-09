@@ -370,7 +370,52 @@ let
       .markdown-body td, .markdown-body th { border: 1px solid #ddd; padding: 6px 12px; }
       .markdown-body th { background: #f4f4f4; }
       .markdown-body img { max-width: 100%; }
+
+      /* line highlighting */
+      tr.line-highlight > td { background: #fffbdd; }
+      tr.line-highlight > td.line-number { background: #fff5b1; }
+      tr.line-highlight > td.line-number a { color: rgba(27,31,35,.6); }
     </style>
+    <script>
+    (function() {
+      function highlight() {
+        document.querySelectorAll('tr.line-highlight').forEach(function(el) {
+          el.classList.remove('line-highlight');
+        });
+        var h = location.hash.substring(1);
+        if (!h) return;
+        var m = h.match(/^n(\d+)(?:-n(\d+))?$/);
+        if (!m) return;
+        var start = parseInt(m[1], 10);
+        var end = m[2] ? parseInt(m[2], 10) : start;
+        if (end < start) { var t = start; start = end; end = t; }
+        for (var i = start; i <= end; i++) {
+          var a = document.getElementById('n' + i);
+          if (a) {
+            var tr = a.closest('tr');
+            if (tr) tr.classList.add('line-highlight');
+          }
+        }
+      }
+      function clickHandler(e) {
+        var a = e.target.closest('td.line-number a, td.linenumbers a');
+        if (!a) return;
+        var id = a.id || a.getAttribute('name');
+        if (!id || !/^n\d+$/.test(id)) return;
+        if (e.shiftKey && location.hash) {
+          var prev = location.hash.substring(1).match(/^n(\d+)/);
+          if (prev) {
+            e.preventDefault();
+            location.hash = '#' + prev[0] + '-' + id;
+            return;
+          }
+        }
+      }
+      document.addEventListener('DOMContentLoaded', highlight);
+      window.addEventListener('hashchange', highlight);
+      document.addEventListener('click', clickHandler);
+    })();
+    </script>
   '';
 
   # cgitrc configuration
