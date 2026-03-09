@@ -59,13 +59,13 @@ in {
     serverAddr = lib.mkOption {
       type = lib.types.str;
       default = "";
-      description = "k3s server URL to join (e.g. https://server:6443). Required when role = agent.";
+      description = "k3s server URL to join (e.g. https://server:6443). Required when role = agent, or when a server joins an existing HA cluster.";
     };
 
     token = lib.mkOption {
       type = lib.types.str;
       default = "";
-      description = "k3s cluster join token. Required when role = agent (unless tokenFile is set).";
+      description = "k3s cluster join token. Required for agents and servers joining an existing HA cluster.";
     };
 
     tokenFile = lib.mkOption {
@@ -101,6 +101,12 @@ in {
         description = "File permissions for /etc/rancher/k3s/k3s.yaml.";
       };
 
+      clusterInit = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Bootstrap embedded etcd on first server. Only enable on one node for initial cluster creation, then disable.";
+      };
+
       dualStack = lib.mkEnableOption "IPv4/IPv6 dual-stack networking for pods and services";
     };
 
@@ -124,6 +130,12 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # etcd peer communication ports (server-to-server HA)
+    networking.firewall.allowedTCPPorts = lib.mkIf (cfg.role == "server") [
+      2379  # etcd client
+      2380  # etcd peer
+    ];
+
     # Kata config with VM sizing annotations enabled
     environment.etc."kata-containers/configuration.toml".text = kataConfig;
 
@@ -147,6 +159,9 @@ in {
           "--https-listen-port ${toString cfg.k3s.port}"
           "--write-kubeconfig-mode ${cfg.k3s.kubeconfigMode}"
         ]))
+        (lib.optionals (cfg.role == "server" && cfg.k3s.clusterInit) [
+          "--cluster-init"
+        ])
         (lib.optionals (cfg.role == "server" && cfg.k3s.dualStack) [
           "--cluster-cidr=10.42.0.0/16,fd00::/56"
           "--service-cidr=10.43.0.0/16,fd01::/108"
