@@ -268,9 +268,12 @@ let
   '';
 
   # cgitrc configuration
+  # NOTE: scan-path must be LAST — cgit processes it immediately using
+  # only the settings defined above it in the file.
   cgitrc = pkgs.writeText "cgitrc" ''
     virtual-root=/
-    scan-path=${reposDir}
+    css=/cgit-data/cgit.css
+    logo=/cgit-data/cgit.png
     remove-suffix=1
     clone-url=ssh://git@silo.loom.farm/$CGIT_REPO_URL
     source-filter=${siloSourceFilter}
@@ -283,8 +286,7 @@ let
     enable-commit-graph=1
     enable-http-clone=0
     cache-size=0
-    css=/cgit-data/cgit.css
-    logo=/cgit-data/cgit.png
+    scan-path=${reposDir}
   '';
 
   # CGI script for git archive over HTTP
