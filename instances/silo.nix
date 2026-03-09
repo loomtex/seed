@@ -421,9 +421,10 @@ in {
   # fcgiwrap — FastCGI wrapper for the archive CGI script
   # Runs as git:nginx so nginx can connect to the socket
   systemd.services.fcgiwrap = {
-    description = "FastCGI wrapper for git archive";
+    description = "FastCGI wrapper for git archive and cgit";
     wantedBy = [ "multi-user.target" ];
     after = [ "network.target" ];
+    environment.CGIT_CONFIG = "${cgitrc}";
     serviceConfig = {
       ExecStart = "${pkgs.fcgiwrap}/sbin/fcgiwrap -s unix:/run/fcgiwrap/fcgiwrap.sock";
       User = "git";
@@ -454,7 +455,6 @@ in {
         extraConfig = ''
           include ${pkgs.nginx}/conf/fastcgi_params;
           fastcgi_param SCRIPT_FILENAME "${pkgs.cgit}/cgit/cgit.cgi";
-          fastcgi_param CGIT_CONFIG "${cgitrc}";
           fastcgi_param SCRIPT_NAME "";
           fastcgi_param PATH_INFO $uri;
           fastcgi_param QUERY_STRING $query_string;
