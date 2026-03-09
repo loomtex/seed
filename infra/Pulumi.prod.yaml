@@ -8,7 +8,6 @@ config:
   seed-infra:ipv6Block: "2001:19f0:6402:7eb::/64"
   seed-infra:cacheBucket: seed-nix-cache
   seed-infra:cacheEndpoint: atl2.vultrobjects.com
-  seed-infra:netbootBucket: seed-netboot
   seed-infra:sshPubKeys:
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICsPaFplk95wdbZnGF9q1LnQUKy36Lh+4dSHyFJwMeUK josh@6bit.com
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi
@@ -17,4 +16,5 @@ config:
   seed-infra:nodes:
     - name: seed-atl-1
       clusterInit: true
+  seed-infra:sshProxy: seed-dfw-1
 encryptionsalt: v1:c0fFQkAJsIo=:v1:XN5gSWH+RRUSUAtO:GrQCFkY+T/pA/fet/+gL19vE2tMqJA==

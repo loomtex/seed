@@ -136,4 +136,5 @@ export interface NodeConfig {
   mynixDir: string; // path to mynix repo root
   clusterInit?: boolean;
   serverAddr?: string;
+  sshProxy?: string; // SSH host to proxy Tang/target connections through (e.g. "root@seed-dfw-1")
 }

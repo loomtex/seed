@@ -5,7 +5,25 @@ import { join } from "node:path";
 
 // Fetch Tang server advertisement (public signing keys).
 // Returns the advertisement JSON for non-interactive JWE creation.
-export function fetchTangAdvertisement(tangUrl: string): string {
+// If sshProxy is set, fetches via SSH tunnel through that host
+// (needed when Tang is firewalled from the local machine).
+export function fetchTangAdvertisement(
+  tangUrl: string,
+  sshProxy?: string
+): string {
+  if (sshProxy) {
+    const result = execFileSync(
+      "ssh",
+      [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        sshProxy,
+        `curl -sfS "${tangUrl}/adv"`,
+      ],
+      { encoding: "utf-8", timeout: 30_000 }
+    );
+    return result.trim();
+  }
   const result = execFileSync("curl", ["-sfS", `${tangUrl}/adv`], {
     encoding: "utf-8",
     timeout: 30_000,
@@ -18,10 +36,11 @@ export function fetchTangAdvertisement(tangUrl: string): string {
 // pre-fetching the Tang advertisement.
 export function createClevisJWE(
   passphrase: string,
-  tangUrl: string
+  tangUrl: string,
+  sshProxy?: string
 ): string {
   // Fetch Tang advertisement first (non-interactive)
-  const adv = fetchTangAdvertisement(tangUrl);
+  const adv = fetchTangAdvertisement(tangUrl, sshProxy);
   const tmpDir = mkdtempSync(join(tmpdir(), "clevis-"));
   const advFile = join(tmpDir, "tang-adv.json");
   writeFileSync(advFile, adv);

@@ -53,27 +53,25 @@ function generateSSHKeys(
 }
 
 // Wait for SSH to become available on a host.
+// If sshProxy is set, tests connectivity through the proxy.
 function waitForSSH(
   ip: string,
-  { timeout = 600, port = 22 }: { timeout?: number; port?: number } = {}
+  { timeout = 600, port = 22, sshProxy }: { timeout?: number; port?: number; sshProxy?: string } = {}
 ): void {
   const deadline = Date.now() + timeout * 1000;
-  const sshArgs = [
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
-    "-o",
-    "ConnectTimeout=5",
-    "-p",
-    String(port),
-    `root@${ip}`,
-    "true",
+  const baseOpts = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "ConnectTimeout=5",
   ];
+
+  const sshArgs = sshProxy
+    ? [...baseOpts, sshProxy, `ssh ${baseOpts.join(" ")} -p ${port} root@${ip} true`]
+    : [...baseOpts, "-p", String(port), `root@${ip}`, "true"];
 
   while (Date.now() < deadline) {
     try {
-      execFileSync("ssh", sshArgs, { stdio: "pipe", timeout: 10_000 });
+      execFileSync("ssh", sshArgs, { stdio: "pipe", timeout: 15_000 });
       return;
     } catch {
       // Retry after a short delay
@@ -210,7 +208,7 @@ export function provisionNode(
   // 4. Generate LUKS passphrase + Clevis JWE
   pulumi.log.info(`${config.name}: creating LUKS passphrase + Clevis JWE`);
   const luksPassphrase = generateLuksPassphrase();
-  const clevisJWE = createClevisJWE(luksPassphrase, config.tangUrl);
+  const clevisJWE = createClevisJWE(luksPassphrase, config.tangUrl, config.sshProxy);
 
   // 5. Store LUKS passphrase in sops-encrypted recovery file + commit
   pulumi.log.info(`${config.name}: storing LUKS recovery passphrase`);

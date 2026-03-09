@@ -1,3 +1,6 @@
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import * as pulumi from "@pulumi/pulumi";
 import { VultrProvider } from "./providers/vultr.ts";
 import type { NodeConfig } from "./types.ts";
@@ -16,10 +19,30 @@ const ipv4Address = config.require("ipv4Address");
 const ipv6Block = config.require("ipv6Block");
 const cacheBucket = config.require("cacheBucket");
 const cacheEndpoint = config.require("cacheEndpoint");
-const netbootBucket = config.require("netbootBucket");
 const sshPubKeys = config.requireObject<string[]>("sshPubKeys");
 const mynixDir = config.get("mynixDir") ?? "/agents/ada/projects/mynix";
 const tangUrl = `http://${tangIp}:${tangPort}`;
+// SSH proxy for reaching Tang/target hosts that are firewalled from signi
+const sshProxy = config.get("sshProxy");
+
+// --- Netboot init= path ---
+//
+// The netboot derivation is served from Tang's nix store via nginx (port 8080).
+// We only need the init= kernel parameter, which we extract from the nix-built
+// iPXE script. This runs at Pulumi eval time (not in a dynamic provider).
+
+const seedFlake = resolve(process.cwd(), "..");
+const netbootPath = execSync(
+  `nix build "path:${seedFlake}#netboot" --print-out-paths --no-link`,
+  { encoding: "utf8", timeout: 600_000 }
+).trim();
+
+const ipxeContent = readFileSync(`${netbootPath}/netboot.ipxe`, "utf8");
+const initMatch = ipxeContent.match(/init=(\S+)/);
+if (!initMatch) {
+  throw new Error("Could not parse init= path from netboot.ipxe");
+}
+const initPath = initMatch[1];
 
 // --- Dynamic Provider for Node Provisioning ---
 //
@@ -80,148 +103,6 @@ class NodeProvisioner extends pulumi.dynamic.Resource {
   }
 }
 
-// --- Netboot Image Builder + S3 Uploader ---
-//
-// Builds the NixOS netboot image (kernel + initrd) from the seed flake,
-// then uploads artifacts to the public netboot S3 bucket. The init= path
-// is extracted from the generated iPXE script and used in the Vultr boot script.
-
-interface NetbootArtifactsInputs {
-  s3Hostname: pulumi.Input<string>;
-  s3AccessKey: pulumi.Input<string>;
-  s3SecretKey: pulumi.Input<string>;
-  bucket: string;
-}
-
-// NOTE: Dynamic provider functions are serialized by Pulumi, so they
-// must require() Node.js modules inside the function body — top-level
-// imports of builtins (path, fs, child_process) can't be serialized.
-
-function buildAndUpload(inputs: Record<string, unknown>) {
-  const { execSync } = require("node:child_process");
-  const { readFileSync } = require("node:fs");
-  const path = require("node:path");
-
-  const s3Hostname = inputs["s3Hostname"] as string;
-  const accessKey = inputs["s3AccessKey"] as string;
-  const secretKey = inputs["s3SecretKey"] as string;
-  const bucket = inputs["bucket"] as string;
-
-  // Build netboot artifacts from the seed flake (parent of infra/)
-  const seedFlake = path.resolve(process.cwd(), "..");
-  const outPath = execSync(
-    `nix build "path:${seedFlake}#netboot" --print-out-paths --no-link`,
-    { encoding: "utf8", timeout: 600_000 }
-  ).trim();
-
-  // Extract init= path from the generated iPXE script
-  const ipxeContent = readFileSync(`${outPath}/netboot.ipxe`, "utf8");
-  const initMatch = ipxeContent.match(/init=(\S+)/);
-  if (!initMatch) {
-    throw new Error("Could not parse init= path from netboot.ipxe");
-  }
-  const initPath = initMatch[1];
-
-  // Upload kernel + initrd to S3 (public-read for iPXE access)
-  const env = {
-    ...process.env,
-    AWS_ACCESS_KEY_ID: accessKey,
-    AWS_SECRET_ACCESS_KEY: secretKey,
-  };
-  const s3Base = `s3://${bucket}`;
-  const endpoint = `https://${s3Hostname}`;
-  const awsCmd = `nix shell nixpkgs#awscli2 -c aws`;
-
-  // Ensure the bucket exists (Vultr Object Storage subscriptions don't
-  // auto-create buckets — the subscription provides credentials only)
-  try {
-    execSync(
-      `${awsCmd} s3 mb "${s3Base}" --endpoint-url "${endpoint}" --region us-east-1`,
-      { env, encoding: "utf8", timeout: 60_000, stdio: "pipe" }
-    );
-  } catch (e: any) {
-    // Ignore "BucketAlreadyOwnedByYou" — bucket already exists
-    if (!e.stderr?.includes("BucketAlreadyOwnedByYou")) throw e;
-  }
-
-  execSync(
-    `${awsCmd} s3 cp "${outPath}/bzImage" "${s3Base}/bzImage" ` +
-      `--endpoint-url "${endpoint}" --acl public-read`,
-    { env, encoding: "utf8", timeout: 300_000 }
-  );
-  execSync(
-    `${awsCmd} s3 cp "${outPath}/initrd" "${s3Base}/initrd" ` +
-      `--endpoint-url "${endpoint}" --acl public-read`,
-    { env, encoding: "utf8", timeout: 600_000 }
-  );
-
-  return {
-    id: "netboot-artifacts",
-    outs: {
-      initPath,
-      storePath: outPath,
-    },
-  };
-}
-
-const netbootArtifactsProvider: pulumi.dynamic.ResourceProvider = {
-  async create(inputs: Record<string, unknown>) {
-    return buildAndUpload(inputs);
-  },
-
-  async update(
-    _id: string,
-    _olds: Record<string, unknown>,
-    news: Record<string, unknown>
-  ) {
-    return buildAndUpload(news);
-  },
-
-  async diff(
-    _id: string,
-    olds: Record<string, unknown>,
-    _news: Record<string, unknown>
-  ) {
-    const { execSync: exec } = require("node:child_process");
-    const p = require("node:path");
-    // Compare the current nix store path (content-addressed) against the
-    // one that was uploaded. --refresh ensures we pick up flake input changes.
-    try {
-      const seedFlake = p.resolve(process.cwd(), "..");
-      const currentPath = exec(
-        `nix build "path:${seedFlake}#netboot" --print-out-paths --no-link --refresh`,
-        { encoding: "utf8", timeout: 600_000 }
-      ).trim();
-      return { changes: currentPath !== olds["storePath"] };
-    } catch {
-      // If the build fails during preview, don't block — skip the diff.
-      return { changes: false };
-    }
-  },
-};
-
-class NetbootArtifacts extends pulumi.dynamic.Resource {
-  public readonly initPath!: pulumi.Output<string>;
-  public readonly storePath!: pulumi.Output<string>;
-
-  constructor(
-    name: string,
-    args: NetbootArtifactsInputs,
-    opts?: pulumi.CustomResourceOptions
-  ) {
-    super(
-      netbootArtifactsProvider,
-      name,
-      {
-        initPath: undefined,
-        storePath: undefined,
-        ...args,
-      },
-      opts
-    );
-  }
-}
-
 // --- SSH Keys ---
 
 const sshKeys = sshPubKeys.map((key, i) => {
@@ -242,42 +123,19 @@ const vpc = provider.createVPC("seed-vpc", {
   subnetMask: 24,
 });
 
-// --- Netboot Bucket ---
-
-// Separate public bucket for netboot artifacts (kernel + initrd).
-// The nix cache bucket stays private (S3 protocol, no public HTTPS).
-const netboot = provider.createObjectStorage("seed-netboot", {
-  region,
-  label: netbootBucket,
-});
-
-// --- Netboot Build + Upload ---
-
-// Build the NixOS netboot image from the seed flake and upload kernel + initrd
-// to the public S3 bucket. The init= kernel parameter is extracted from the
-// nix-generated iPXE script (it contains the /nix/store/...-nixos-system-.../init path).
-const netbootArtifacts = new NetbootArtifacts("netboot-artifacts", {
-  s3Hostname: netboot.s3Hostname,
-  s3AccessKey: netboot.s3AccessKey,
-  s3SecretKey: netboot.s3SecretKey,
-  bucket: netbootBucket,
-});
-
 // --- iPXE Boot Script ---
 
-// Chain-loads the NixOS netboot image from the public bucket.
-// init= points to the NixOS init binary inside the initrd (not a file on S3).
-const ipxeScript = pulumi
-  .all([netboot.s3Hostname, netbootArtifacts.initPath])
-  .apply(
-    ([hostname, initPath]) => `#!ipxe
+// Chain-loads the NixOS netboot image from the Tang VM over HTTP.
+// iPXE on Vultr can't validate Let's Encrypt TLS certs, so we serve
+// netboot artifacts from Tang (port 8080) which speaks plain HTTP.
+// init= points to the NixOS init binary inside the initrd (not a file on the server).
+const ipxeScript = `#!ipxe
 dhcp
-set base https://${hostname}/${netbootBucket}
-kernel \${base}/bzImage init=${initPath} loglevel=4
+set base http://${tangIp}:8080
+kernel \${base}/bzImage init=${initPath} initrd=initrd nohibernate loglevel=4
 initrd \${base}/initrd
 boot
-`
-  );
+`;
 
 const bootScript = provider.createBootScript("nixos-netboot", {
   content: ipxeScript,
@@ -350,6 +208,7 @@ for (const node of nodes) {
       mynixDir,
       clusterInit: node.clusterInit,
       serverAddr: node.serverAddr,
+      sshProxy,
     },
   });
 
@@ -366,7 +225,6 @@ export const clusterInfo = {
   ipv4Address,
   ipv6Block,
   cacheBucket: `${cacheBucket}.${cacheEndpoint}`,
-  netbootEndpoint: netboot.s3Hostname,
   nodeCount: nodes.length,
 };
 
