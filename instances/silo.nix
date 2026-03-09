@@ -410,6 +410,7 @@ in {
     [core]
       hooksPath = /etc/silo/hooks
   '';
+  environment.etc."cgitrc".source = cgitrc;
   environment.etc."silo/hooks/post-receive" = {
     source = postReceiveHook;
     mode = "0755";
@@ -424,7 +425,6 @@ in {
     description = "FastCGI wrapper for git archive and cgit";
     wantedBy = [ "multi-user.target" ];
     after = [ "network.target" ];
-    environment.CGIT_CONFIG = "${cgitrc}";
     serviceConfig = {
       ExecStart = "${pkgs.fcgiwrap}/sbin/fcgiwrap -s unix:/run/fcgiwrap/fcgiwrap.sock";
       User = "git";
