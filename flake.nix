@@ -153,6 +153,13 @@
       ];
     };
 
+    # Minimal NixOS netboot image for iPXE-based bare metal provisioning.
+    # Boots SSH + DHCP, then nixos-anywhere handles disko + install.
+    nixosConfigurations.installer = nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [ ./infra/installer/installer.nix ];
+    };
+
     apps.${system}.vm = {
       type = "app";
       program = "${self.nixosConfigurations.vm.config.system.build.vm}/bin/run-nixos-vm";
@@ -407,6 +414,18 @@ INITEOF
         cd rootfs
         find . | cpio -o -H newc | gzip > $out
       '';
+
+      # Netboot artifacts for iPXE-based bare metal provisioning
+      netboot = let
+        installerBuild = self.nixosConfigurations.installer.config.system.build;
+      in pkgs.symlinkJoin {
+        name = "seed-netboot";
+        paths = [
+          installerBuild.netbootRamdisk
+          installerBuild.kernel
+          installerBuild.netbootIpxeScript
+        ];
+      };
 
       # Pool manager: maintains warm CLH VM pool for sandboxed nix eval/build
       poolManagerImage = pkgs.nix-snapshotter.buildImage {
