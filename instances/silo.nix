@@ -388,7 +388,7 @@ let
         var lines = html.split('\n');
         code.innerHTML = lines.map(function(l, i) {
           return '<span class="code-line" data-line="' + (i + 1) + '">' + l + '\n</span>';
-        }).join('');
+        }).join('''');
       }
       function highlight() {
         wrapLines();
