@@ -283,9 +283,11 @@ let
     trap '${pkgs.coreutils}/bin/rm -f "$TMPFILE"' EXIT
 
     # Run tree-sitter, extract highlighted lines (strip HTML document wrapper)
+    # tree-sitter outputs: <tr><td class=line-number>N</td><td class=line>CONTENT\n</td></tr>
+    # spanning two lines — delete the </td></tr> lines and strip the <tr><td> prefix
     if OUTPUT=$(${pkgs.tree-sitter}/bin/tree-sitter highlight --html --css-classes \
         --config-path ${tsConfig} "$TMPFILE" 2>/dev/null); then
-      echo "$OUTPUT" | ${pkgs.gnused}/bin/sed -n '/<table>/,/<\/table>/{ /<\/*table>/d; s/<tr><td class=line-number>[0-9]*<\/td><td class=line>//; s/<\/td><\/tr>//; p; }'
+      echo "$OUTPUT" | ${pkgs.gnused}/bin/sed -n '/<table>/,/<\/table>/{ /<\/*table>/d; /<\/td><\/tr>/d; s/<tr><td class=line-number>[0-9]*<\/td><td class=line>//; p; }'
     else
       # Fallback to highlight for unsupported languages
       ${pkgs.highlight}/bin/highlight --force -f -I -O xhtml -S "$EXTENSION" < "$TMPFILE" 2>/dev/null \
