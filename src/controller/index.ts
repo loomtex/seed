@@ -121,6 +121,7 @@ export function renderDesiredState(
   namespace: string,
   swtpmEnabled: boolean,
   ipv4Address: string,
+  poolManagerUrl: string,
   buildResults: Map<string, BuildResult>,
   ipv4Config: IPv4Config | null,
   ipv6Config: IPv6Config | null,
@@ -152,6 +153,7 @@ export function renderDesiredState(
       namespace,
       meta,
       tpmSocketPath,
+      poolManagerUrl || undefined,
     );
 
     const services: k8s.V1Service[] = [];
@@ -1044,6 +1046,7 @@ async function main(): Promise<void> {
         namespace,
         config.swtpmEnabled,
         config.ipv4Address,
+        config.poolManagerUrl,
         buildResults,
         ipv4Config,
         ipv6Config,

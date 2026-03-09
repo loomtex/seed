@@ -34,7 +34,7 @@ describe("renderDesiredState", () => {
       web: { imagePath: "/nix/store/abc-seed-web", meta: makeMeta("web") },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     assert.match(state.generation, /^[0-9a-f]{12}$/);
   });
 
@@ -46,8 +46,8 @@ describe("renderDesiredState", () => {
       web: { imagePath: "/nix/store/abc-seed-web", meta: makeMeta("web") },
     });
 
-    const state1 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results1, null, null, new Map());
-    const state2 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results2, null, null, new Map());
+    const state1 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results1, null, null, new Map());
+    const state2 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results2, null, null, new Map());
     assert.equal(state1.generation, state2.generation);
   });
 
@@ -59,8 +59,8 @@ describe("renderDesiredState", () => {
       web: { imagePath: "/nix/store/new-seed-web", meta: makeMeta("web") },
     });
 
-    const state1 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results1, null, null, new Map());
-    const state2 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results2, null, null, new Map());
+    const state1 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results1, null, null, new Map());
+    const state2 = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results2, null, null, new Map());
     assert.notEqual(state1.generation, state2.generation);
   });
 
@@ -70,7 +70,7 @@ describe("renderDesiredState", () => {
       dns: { imagePath: "/nix/store/def-seed-dns", meta: makeMeta("dns") },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     assert.equal(state.instances.size, 2);
     assert.ok(state.instances.has("web"));
     assert.ok(state.instances.has("dns"));
@@ -84,7 +84,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     const webInstance = state.instances.get("web")!;
     assert.equal(
       webInstance.deployment.spec?.template?.spec?.containers[0].image,
@@ -100,7 +100,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     const dep = state.instances.get("web")!.deployment;
     assert.equal(dep.apiVersion, "apps/v1");
     assert.equal(dep.kind, "Deployment");
@@ -121,7 +121,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     const webInstance = state.instances.get("web")!;
     assert.equal(webInstance.services.length, 1);
     assert.equal(webInstance.services[0].metadata?.name, "seed-web");
@@ -135,7 +135,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     assert.equal(state.instances.get("web")!.services.length, 0);
   });
 
@@ -151,7 +151,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     const pvcs = state.instances.get("web")!.pvcs;
     assert.equal(pvcs.length, 1);
     assert.equal(pvcs[0].metadata?.name, "seed-web-data");
@@ -165,7 +165,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, "", results, null, null, new Map());
     const pvcs = state.instances.get("web")!.pvcs;
     const tpmPvc = pvcs.find((p) => p.metadata?.name === "seed-web-tpm-identity");
     assert.ok(tpmPvc, "TPM identity PVC should exist");
@@ -180,7 +180,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, "", results, null, null, new Map());
     const hostTask = state.instances.get("dns")!.hostTask;
     assert.ok(hostTask, "host task should exist");
     assert.equal(hostTask!.spec.type, "swtpm");
@@ -195,7 +195,7 @@ describe("renderDesiredState", () => {
       },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     assert.equal(state.instances.get("web")!.hostTask, null);
   });
 
@@ -211,7 +211,7 @@ describe("renderDesiredState", () => {
       ["dns", { ready: true, socketPath: "/run/swtpm/s-gaydazldmnsg-dns/swtpm-sock" }],
     ]);
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, results, null, null, hostTaskStatuses);
+    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, "", results, null, null, hostTaskStatuses);
     const dep = state.instances.get("dns")!.deployment;
     assert.equal(
       dep.spec?.template?.metadata?.annotations?.["io.katacontainers.config.hypervisor.tpm_socket"],
@@ -231,7 +231,7 @@ describe("renderDesiredState", () => {
       ["dns", { ready: false, socketPath: "" }],
     ]);
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, results, null, null, hostTaskStatuses);
+    const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, "", results, null, null, hostTaskStatuses);
     const dep = state.instances.get("dns")!.deployment;
     assert.equal(
       dep.spec?.template?.metadata?.annotations?.["io.katacontainers.config.hypervisor.tpm_socket"],
@@ -251,7 +251,7 @@ describe("renderDesiredState", () => {
       },
     };
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, "1.2.3.4", results, ipv4Config, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, "1.2.3.4", "", results, ipv4Config, null, new Map());
     assert.equal(state.routes.ipv4.length, 1);
     assert.equal(state.routes.ipv4[0].spec?.loadBalancerIP, "1.2.3.4");
   });
@@ -269,7 +269,7 @@ describe("renderDesiredState", () => {
       },
     };
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, ipv6Config, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, ipv6Config, new Map());
     assert.equal(state.routes.ipv6.length, 1);
     assert.equal(state.routes.ipv6[0].spec?.loadBalancerIP, "2001:db8::1");
   });
@@ -279,7 +279,7 @@ describe("renderDesiredState", () => {
       web: { imagePath: "/nix/store/abc", meta: makeMeta("web") },
     });
 
-    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     assert.deepEqual(state.routes.ipv4, []);
     assert.deepEqual(state.routes.ipv6, []);
   });
@@ -289,8 +289,39 @@ describe("renderDesiredState", () => {
       web: { imagePath: "/nix/store/abc", meta: makeMeta("web") },
     });
 
-    const state = renderDesiredState("s-custom", false, DEFAULT_IPV4, results, null, null, new Map());
+    const state = renderDesiredState("s-custom", false, DEFAULT_IPV4, "", results, null, null, new Map());
     assert.equal(state.namespace, "s-custom");
     assert.equal(state.instances.get("web")!.deployment.metadata?.namespace, "s-custom");
+  });
+
+  it("injects SEED_SHOOT_URL when shoot enabled and poolManagerUrl set", () => {
+    const results = makeBuildResults({
+      app: {
+        imagePath: "/nix/store/abc",
+        meta: makeMeta("app", { shoot: { enable: true } }),
+      },
+    });
+
+    const pmUrl = "http://seed-pool-manager.seed-system.svc.cluster.local:9877";
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, pmUrl, results, null, null, new Map());
+    const env = state.instances.get("app")!.deployment.spec?.template?.spec?.containers[0].env;
+    const shootEnv = env?.find((e) => e.name === "SEED_SHOOT_URL");
+    assert.ok(shootEnv, "SEED_SHOOT_URL should be set");
+    assert.equal(shootEnv!.value, pmUrl);
+  });
+
+  it("does not inject SEED_SHOOT_URL when shoot not enabled", () => {
+    const results = makeBuildResults({
+      app: {
+        imagePath: "/nix/store/abc",
+        meta: makeMeta("app"),
+      },
+    });
+
+    const pmUrl = "http://seed-pool-manager.seed-system.svc.cluster.local:9877";
+    const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, pmUrl, results, null, null, new Map());
+    const env = state.instances.get("app")!.deployment.spec?.template?.spec?.containers[0].env;
+    const shootEnv = env?.find((e) => e.name === "SEED_SHOOT_URL");
+    assert.equal(shootEnv, undefined, "SEED_SHOOT_URL should not be set");
   });
 });

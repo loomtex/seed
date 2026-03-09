@@ -13,6 +13,7 @@ export function generateDeployment(
   namespace: string,
   meta: SeedMeta,
   tpmSocketPath?: string,
+  poolManagerUrl?: string,
 ): k8s.V1Deployment {
   const podAnnotations: Record<string, string> = {
     [ANNOTATIONS.KATA_VCPUS]: String(meta.resources.vcpus),
@@ -93,9 +94,9 @@ export function generateDeployment(
                   name: "SEED_NODE_IP",
                   valueFrom: { fieldRef: { fieldPath: "status.hostIP" } },
                 },
-                ...(meta.shoot?.enable ? [{
+                ...(meta.shoot?.enable && poolManagerUrl ? [{
                   name: "SEED_SHOOT_URL",
-                  value: "http://$(SEED_NODE_IP):9877",
+                  value: poolManagerUrl,
                 }] : []),
               ],
               ...(probePort ? {

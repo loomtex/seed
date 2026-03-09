@@ -360,7 +360,9 @@ let
     };
   });
 
-  # Pool manager Service
+  # Pool manager Service — internalTrafficPolicy: Local ensures requests
+  # from instance pods always reach the pool manager on the same node.
+  # This is critical because shoots mount node-local PVC storage via virtiofs.
   poolManagerService = pkgs.writeText "seed-pool-manager-service.yaml" (builtins.toJSON {
     apiVersion = "v1";
     kind = "Service";
@@ -370,6 +372,7 @@ let
     };
     spec = {
       selector."app.kubernetes.io/name" = "seed-pool-manager";
+      internalTrafficPolicy = "Local";
       ports = [{
         port = cfg.poolManager.port;
         targetPort = cfg.poolManager.port;
