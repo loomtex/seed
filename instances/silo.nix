@@ -372,15 +372,28 @@ let
       .markdown-body img { max-width: 100%; }
 
       /* line highlighting */
-      tr.line-highlight > td { background: #fffbdd; }
-      tr.line-highlight > td.line-number { background: #fff5b1; }
-      tr.line-highlight > td.line-number a { color: rgba(27,31,35,.6); }
+      .linenumbers a.line-hl { background: #fff5b1; color: rgba(27,31,35,.6); }
+      .lines .line-hl { background: #fffbdd; display: block; }
     </style>
     <script>
     (function() {
+      var wrapped = false;
+      function wrapLines() {
+        if (wrapped) return;
+        var code = document.querySelector('table.blob td.lines pre code');
+        if (!code) return;
+        wrapped = true;
+        var html = code.innerHTML;
+        if (html.charAt(html.length - 1) === '\n') html = html.slice(0, -1);
+        var lines = html.split('\n');
+        code.innerHTML = lines.map(function(l, i) {
+          return '<span class="code-line" data-line="' + (i + 1) + '">' + l + '\n</span>';
+        }).join('');
+      }
       function highlight() {
-        document.querySelectorAll('tr.line-highlight').forEach(function(el) {
-          el.classList.remove('line-highlight');
+        wrapLines();
+        document.querySelectorAll('.line-hl').forEach(function(el) {
+          el.classList.remove('line-hl');
         });
         var h = location.hash.substring(1);
         if (!h) return;
@@ -391,16 +404,15 @@ let
         if (end < start) { var t = start; start = end; end = t; }
         for (var i = start; i <= end; i++) {
           var a = document.getElementById('n' + i);
-          if (a) {
-            var tr = a.closest('tr');
-            if (tr) tr.classList.add('line-highlight');
-          }
+          if (a) a.classList.add('line-hl');
+          var span = document.querySelector('.code-line[data-line="' + i + '"]');
+          if (span) span.classList.add('line-hl');
         }
       }
       function clickHandler(e) {
-        var a = e.target.closest('td.line-number a, td.linenumbers a');
+        var a = e.target.closest('td.linenumbers a');
         if (!a) return;
-        var id = a.id || a.getAttribute('name');
+        var id = a.id;
         if (!id || !/^n\d+$/.test(id)) return;
         if (e.shiftKey && location.hash) {
           var prev = location.hash.substring(1).match(/^n(\d+)/);
