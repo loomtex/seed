@@ -130,16 +130,29 @@ function buildAndUpload(inputs: Record<string, unknown>) {
   };
   const s3Base = `s3://${bucket}`;
   const endpoint = `https://${s3Hostname}`;
+  const awsCmd = `nix shell nixpkgs#awscli2 -c aws`;
+
+  // Ensure the bucket exists (Vultr Object Storage subscriptions don't
+  // auto-create buckets — the subscription provides credentials only)
+  try {
+    execSync(
+      `${awsCmd} s3 mb "${s3Base}" --endpoint-url "${endpoint}" --region us-east-1`,
+      { env, encoding: "utf8", timeout: 60_000, stdio: "pipe" }
+    );
+  } catch (e: any) {
+    // Ignore "BucketAlreadyOwnedByYou" — bucket already exists
+    if (!e.stderr?.includes("BucketAlreadyOwnedByYou")) throw e;
+  }
 
   execSync(
-    `nix shell nixpkgs#awscli2 -c aws s3 cp "${outPath}/bzImage" "${s3Base}/bzImage" ` +
+    `${awsCmd} s3 cp "${outPath}/bzImage" "${s3Base}/bzImage" ` +
       `--endpoint-url "${endpoint}" --acl public-read`,
     { env, encoding: "utf8", timeout: 300_000 }
   );
   execSync(
-    `nix shell nixpkgs#awscli2 -c aws s3 cp "${outPath}/initrd" "${s3Base}/initrd" ` +
+    `${awsCmd} s3 cp "${outPath}/initrd" "${s3Base}/initrd" ` +
       `--endpoint-url "${endpoint}" --acl public-read`,
-    { env, encoding: "utf8", timeout: 300_000 }
+    { env, encoding: "utf8", timeout: 600_000 }
   );
 
   return {
