@@ -50,23 +50,12 @@ let
     inherit rrsets;
   });
 
-  # SQL to bootstrap zone data directly into SQLite on first boot.
-  # This avoids depending on the pdns API (which needs a sops-decrypted key).
-  zoneSql = pkgs.writeText "loom-farm-zone.sql" ''
-    INSERT INTO domains (name, type) VALUES ('loom.farm', 'NATIVE');
-    ${lib.concatMapStringsSep "\n" (rr:
-      lib.concatMapStringsSep "\n" (rec:
-        "INSERT INTO records (domain_id, name, type, content, ttl) VALUES ((SELECT id FROM domains WHERE name='loom.farm'), '${rr.name}', '${rr.type}', '${rec.content}', ${toString rr.ttl});"
-      ) rr.records
-    ) rrsets}
-  '';
-
   syncScript = pkgs.writeShellScript "pdns-sync-zones" ''
     set -euo pipefail
 
-    # Skip if API key isn't available (first boot — TPM identity is new)
+    # Skip if identity not yet available (fresh TPM, no secrets decrypted)
     if [ ! -f "${config.sops.secrets.pdns-api-key.path}" ]; then
-      echo "API key not available (first boot?), skipping sync — zone data from SQLite init"
+      echo "API key not available (no identity yet?), skipping zone sync"
       exit 0
     fi
 
@@ -160,8 +149,7 @@ in
       chown pdns:pdns /seed/storage/data/pdns.db*
 
       # Inject sops-decrypted API key into pdns config (if available).
-      # On first boot the TPM identity is new and sops can't decrypt yet —
-      # pdns starts without an API key, zone data comes from SQLite init.
+      # On a fresh node with no identity, pdns starts without an API key.
       mkdir -p /run/pdns/conf.d
       if [ -f "${config.sops.secrets.pdns-api-key.path}" ]; then
         echo "api-key=$(cat ${config.sops.secrets.pdns-api-key.path})" > /run/pdns/conf.d/secrets.conf
@@ -185,7 +173,7 @@ in
       Type = "oneshot";
       User = "pdns";
       Group = "pdns";
-      ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db < ${pkgs.pdns}/share/doc/pdns/schema.sqlite3.sql && ${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db < ${zoneSql}'";
+      ExecStart = "${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db < ${pkgs.pdns}/share/doc/pdns/schema.sqlite3.sql";
     };
   };
 
