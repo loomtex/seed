@@ -322,16 +322,12 @@ let
             env = [
               { name = "SEED_POOL_SIZE"; value = toString cfg.poolManager.poolSize; }
               { name = "SEED_POOL_PORT"; value = toString cfg.poolManager.port; }
-              { name = "SEED_POOL_KERNEL"; value = "${pkgs.kata-guest-kernel-tpm}/vmlinux"; }
-              { name = "SEED_POOL_INITRAMFS"; value = cfg.poolManager.initramfs; }
-              { name = "SEED_CLH_BINARY"; value = "${pkgs.cloud-hypervisor}/bin/cloud-hypervisor"; }
-              { name = "SEED_VIRTIOFSD_BINARY"; value = "${pkgs.virtiofsd}/bin/virtiofsd"; }
               { name = "NIX_REMOTE"; value = "daemon"; }
               { name = "NIX_CONFIG"; value = "experimental-features = nix-command flakes"; }
               { name = "NIX_SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               { name = "SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
-              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz pkgs.socat pkgs.cloud-hypervisor pkgs.virtiofsd ]; }
+              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz pkgs.socat ]; }
             ];
             ports = [{
               containerPort = cfg.poolManager.port;
@@ -471,12 +467,6 @@ in {
         type = lib.types.str;
         default = "";
         description = "Nix store path to the pool manager OCI image.";
-      };
-
-      initramfs = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Nix store path to the pool VM initramfs (cpio.gz).";
       };
     };
   };

@@ -7,15 +7,14 @@
 //   GET /health — pool status (idle/busy/total)
 //
 // Env vars:
-//   SEED_POOL_SIZE        — number of warm VM slots (default 2)
-//   SEED_POOL_PORT        — HTTP API port (default 9877)
-//   SEED_POOL_KERNEL      — path to guest kernel (vmlinux)
-//   SEED_POOL_INITRAMFS   — path to guest initramfs (cpio.gz)
-//   SEED_CLH_BINARY       — path to cloud-hypervisor binary
-//   SEED_VIRTIOFSD_BINARY — path to virtiofsd binary
+//   SEED_POOL_SIZE — number of warm VM slots (default 2)
+//   SEED_POOL_PORT — HTTP API port (default 9877)
+//
+// VM runtime deps (kernel, initramfs, CLH, virtiofsd) are resolved from
+// /app/deps/ symlinks in the image closure — no store paths in k8s YAML.
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readdir } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { log, loadKubeConfig, makeClients, type KubeClients } from "../shared/kube.js";
 import { LABELS } from "../shared/labels.js";
 import { Pool, type PoolConfig } from "./pool.js";
@@ -172,15 +171,14 @@ async function handleShoot(
 
 const COMPONENT = "pool-manager";
 
-function loadConfig(): PoolConfig {
-  const kernelPath = process.env["SEED_POOL_KERNEL"];
-  if (!kernelPath) throw new Error("SEED_POOL_KERNEL must be set");
+/** Resolve VM runtime deps from /app/deps/ symlinks in the image closure. */
+async function loadConfig(): Promise<PoolConfig> {
+  const depsDir = "/app/deps";
 
-  const initramfsPath = process.env["SEED_POOL_INITRAMFS"];
-  if (!initramfsPath) throw new Error("SEED_POOL_INITRAMFS must be set");
-
-  const clhBinary = process.env["SEED_CLH_BINARY"] || "cloud-hypervisor";
-  const virtiofsdBinary = process.env["SEED_VIRTIOFSD_BINARY"] || "virtiofsd";
+  const kernelPath = `${await realpath(`${depsDir}/kata-guest-kernel`)}/vmlinux`;
+  const initramfsPath = await realpath(`${depsDir}/initramfs`);
+  const clhBinary = `${await realpath(`${depsDir}/cloud-hypervisor`)}/bin/cloud-hypervisor`;
+  const virtiofsdBinary = `${await realpath(`${depsDir}/virtiofsd`)}/bin/virtiofsd`;
 
   return {
     poolSize: parseInt(process.env["SEED_POOL_SIZE"] || "2", 10),
@@ -195,7 +193,7 @@ function loadConfig(): PoolConfig {
 }
 
 async function main(): Promise<void> {
-  const config = loadConfig();
+  const config = await loadConfig();
   const port = parseInt(process.env["SEED_POOL_PORT"] || "9877", 10);
 
   log(COMPONENT, `starting (poolSize=${config.poolSize}, port=${port})`);
