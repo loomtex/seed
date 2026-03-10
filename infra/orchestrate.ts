@@ -212,6 +212,70 @@ function addTangSubnet(mynixDir: string, ip: string, comment: string): void {
   writeFileSync(subnetsFile, updated);
 }
 
+// Update Tang's runtime IPAddressAllow to include a new subnet.
+// SSHes to tang-1 and adds a systemd drop-in so the change takes effect
+// immediately without rebuilding tang-1.
+function updateTangRuntime(tangUrl: string, nodeIp: string, sshProxy?: string): void {
+  const subnet = ipToSubnet23(nodeIp);
+  const tangHost = new URL(tangUrl).hostname;
+  const user = userInfo().username;
+
+  // SSH to tang-1 to add a runtime drop-in
+  const dropinDir = "/run/systemd/system/tangd.socket.d";
+  // Sanitize subnet for use as filename
+  const safeName = subnet.replace(/[./]/g, "-");
+  const dropinContent = `[Socket]\\nIPAddressAllow=${subnet}`;
+
+  const sshTarget = sshProxy ?? `${user}@${tangHost}`;
+  const sshBase = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+  ];
+
+  // Check if the subnet is already allowed (skip if so)
+  try {
+    const existing = execFileSync("ssh", [
+      ...sshBase,
+      sshTarget,
+      `sudo systemctl show tangd.socket -p IPAddressAllow`,
+    ], { encoding: "utf-8", timeout: 15_000 }).trim();
+
+    if (existing.includes(subnet.split("/")[0])) {
+      pulumi.log.info(`Tang already allows ${subnet}, skipping runtime update`);
+      return;
+    }
+  } catch {
+    // Can't check — proceed with the update anyway
+  }
+
+  execFileSync("ssh", [
+    ...sshBase,
+    sshTarget,
+    `sudo mkdir -p ${dropinDir} && printf '${dropinContent}' | sudo tee ${dropinDir}/${safeName}.conf > /dev/null && sudo systemctl daemon-reload && sudo systemctl restart tangd.socket`,
+  ], { stdio: "pipe", timeout: 30_000 });
+  pulumi.log.info(`Tang updated: ${subnet} now allowed (runtime drop-in)`);
+}
+
+// Attempt LUKS unlock via initrd SSH (port 2222).
+// Used as fallback when first-boot auto-unlock fails.
+function unlockLuksViaInitrd(ip: string, passphrase: string): void {
+  const sshBase = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-p", "2222",
+  ];
+
+  pulumi.log.info(`Attempting LUKS unlock via initrd SSH at ${ip}:2222`);
+
+  // systemd-tty-ask-password-agent in --watch mode reads from stdin
+  // We pipe the passphrase to it
+  execSync(
+    `echo -n ${shellQuote(passphrase)} | ssh ${sshBase.join(" ")} root@${ip} "systemd-tty-ask-password-agent"`,
+    { stdio: "pipe", timeout: 30_000 }
+  );
+  pulumi.log.info(`LUKS passphrase sent via initrd SSH`);
+}
+
 // Fetch k3s token from a running cluster node.
 function fetchK3sToken(ip: string): string {
   const user = userInfo().username;
@@ -268,9 +332,10 @@ export function provisionNode(
     pulumi.log.info(`${config.name}: not yet provisioned, proceeding`);
   }
 
-  // 0. Add node's subnet to Tang allowlist
+  // 0. Add node's subnet to Tang allowlist (permanent + runtime)
   pulumi.log.info(`${config.name}: updating Tang allowlist with ${ip}`);
   addTangSubnet(config.mynixDir, ip, config.name);
+  updateTangRuntime(config.tangUrl, ip, config.sshProxy);
 
   // 1. Generate SSH host keys
   pulumi.log.info(`${config.name}: generating SSH host keys`);
@@ -351,7 +416,7 @@ export function provisionNode(
       "--extra-files",
       extraDir,
       "--phases",
-      "disko,install",
+      "disko,install,reboot",
       `root@${ip}`,
     ].join(" "),
     {
@@ -364,11 +429,27 @@ export function provisionNode(
     }
   );
 
-  // 11. Wait for reboot + verify
+  // 11. Wait for reboot + verify (with initrd LUKS fallback)
   pulumi.log.info(`${config.name}: waiting for reboot`);
   waitForSSHDown(ip, { timeout: 120 });
   pulumi.log.info(`${config.name}: waiting for post-install SSH`);
-  waitForSSH(ip, { timeout: 600, user: userInfo().username });
+  try {
+    // First, try waiting for normal SSH (port 22) — if Clevis auto-unlock
+    // worked, the system boots fully and SSH comes up directly.
+    waitForSSH(ip, { timeout: 180, user: userInfo().username });
+  } catch {
+    // Normal SSH didn't come up — likely stuck at LUKS prompt in initrd.
+    // Fall back to unlocking via initrd SSH (port 2222).
+    pulumi.log.info(`${config.name}: normal SSH timeout, trying initrd LUKS unlock`);
+    try {
+      waitForSSH(ip, { timeout: 120, port: 2222, user: "root" });
+      unlockLuksViaInitrd(ip, luksPassphrase);
+      pulumi.log.info(`${config.name}: LUKS unlocked via initrd, waiting for full boot`);
+    } catch (e) {
+      pulumi.log.warn(`${config.name}: initrd SSH also failed — may need manual LUKS unlock`);
+    }
+    waitForSSH(ip, { timeout: 300, user: userInfo().username });
+  }
 
   pulumi.log.info(`${config.name}: verifying health`);
   verifyNodeHealth(ip, config.name);
