@@ -220,17 +220,20 @@ function updateTangRuntime(tangUrl: string, nodeIp: string, sshProxy?: string): 
   const tangHost = new URL(tangUrl).hostname;
   const user = userInfo().username;
 
-  // SSH to tang-1 to add a runtime drop-in
+  // SSH to tang-1 to add a runtime drop-in.
+  // If sshProxy is set, jump through it (tang may be firewalled from signi).
   const dropinDir = "/run/systemd/system/tangd.socket.d";
-  // Sanitize subnet for use as filename
   const safeName = subnet.replace(/[./]/g, "-");
   const dropinContent = `[Socket]\\nIPAddressAllow=${subnet}`;
 
-  const sshTarget = sshProxy ?? `${user}@${tangHost}`;
   const sshBase = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
   ];
+  if (sshProxy) {
+    sshBase.push("-J", sshProxy);
+  }
+  const sshTarget = `${user}@${tangHost}`;
 
   // Check if the subnet is already allowed (skip if so)
   try {
