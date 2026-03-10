@@ -17,33 +17,33 @@ let
     { name = zone; type = "NS"; ttl = 300;
       records = [{ content = "ns1.loom.farm."; } { content = "ns2.loom.farm."; }]; }
     { name = "ns1.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "216.128.141.222"; }]; }
+      records = [{ content = "155.138.175.181"; }]; }
     { name = "ns1.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:6402:7eb::1"; }]; }
+      records = [{ content = "2001:19f0:5401:1c16::1"; }]; }
     { name = "ns2.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "216.128.141.222"; }]; }
+      records = [{ content = "155.138.175.181"; }]; }
     { name = "ns2.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:6402:7eb::2"; }]; }
+      records = [{ content = "2001:19f0:5401:1c16::2"; }]; }
 
     # Namespace wildcard — all instances in our namespace
     { name = "*.s-gaydazldmnsg.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "216.128.141.222"; }]; }
+      records = [{ content = "155.138.175.181"; }]; }
     { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
+      records = [{ content = "2001:19f0:5401:1c16::3"; }]; }
 
     # seed-demo namespace wildcard — IPv6 only
     { name = "*.s-mezggnjsgq4t.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:6402:7eb::4"; }]; }
+      records = [{ content = "2001:19f0:5401:1c16::4"; }]; }
 
     # Silo — routed through web pod (Caddy for HTTPS, socat for SSH), IPv6 only
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
+      records = [{ content = "2001:19f0:5401:1c16::3"; }]; }
 
     # Zone apex — can't CNAME at apex, use A/AAAA
     { name = zone; type = "A"; ttl = 300;
-      records = [{ content = "216.128.141.222"; }]; }
+      records = [{ content = "155.138.175.181"; }]; }
     { name = zone; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:6402:7eb::3"; }]; }
+      records = [{ content = "2001:19f0:5401:1c16::3"; }]; }
   ];
 
   zoneData = pkgs.writeText "loom-farm-zone.json" (builtins.toJSON {

@@ -69,6 +69,7 @@ export interface ReservedIPv4 {
 export interface ReserveIPv6Args {
   region: string;
   prefix: number; // e.g. 64
+  label?: string;
 }
 
 export interface ReservedIPv6 {

@@ -4,8 +4,6 @@ config:
   seed-infra:flakeUri: github:joshperry/mynix
   seed-infra:tangIp: 207.148.3.31
   seed-infra:tangPort: "7654"
-  seed-infra:ipv4Address: 216.128.141.222
-  seed-infra:ipv6Block: "2001:19f0:6402:7eb::/64"
   seed-infra:cacheBucket: seed-nix-cache
   seed-infra:cacheEndpoint: atl2.vultrobjects.com
   seed-infra:sshPubKeys:

@@ -15,8 +15,6 @@ const plan = config.require("plan");
 const flakeUri = config.require("flakeUri");
 const tangIp = config.require("tangIp");
 const tangPort = config.require("tangPort");
-const ipv4Address = config.require("ipv4Address");
-const ipv6Block = config.require("ipv6Block");
 const cacheBucket = config.require("cacheBucket");
 const cacheEndpoint = config.require("cacheEndpoint");
 const sshPubKeys = config.requireObject<string[]>("sshPubKeys");
@@ -130,6 +128,23 @@ const vpc = provider.createVPC("seed-vpc", {
   subnetMask: 24,
 });
 
+// --- Reserved IPs ---
+
+// Public IPv4 for LoadBalancer services (MetalLB L2 advertisement).
+// Attached to one node; MetalLB handles ARP for all services.
+const reservedIpv4 = provider.reserveIPv4("seed-ipv4", {
+  region,
+  label: "seed-atl",
+});
+
+// Public /64 IPv6 block for LoadBalancer services (MetalLB NDP advertisement).
+// Each service gets a unique address from this block.
+const reservedIpv6 = provider.reserveIPv6Block("seed-ipv6", {
+  region,
+  prefix: 64,
+  label: "seed-atl",
+});
+
 // --- iPXE Boot Script ---
 
 // Chain-loads the NixOS netboot image from the Tang VM over HTTP.
@@ -231,8 +246,8 @@ for (const node of nodes) {
 
 export const clusterInfo = {
   tangUrl,
-  ipv4Address,
-  ipv6Block,
+  ipv4Address: reservedIpv4.address,
+  ipv6Block: reservedIpv6.block,
   cacheBucket: `${cacheBucket}.${cacheEndpoint}`,
   nodeCount: nodes.length,
 };

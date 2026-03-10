@@ -106,13 +106,16 @@ export class VultrProvider implements SeedProvider {
   }
 
   reserveIPv6Block(name: string, args: ReserveIPv6Args): ReservedIPv6 {
-    // Vultr doesn't have a direct "reserve IPv6 block" resource in the
-    // Pulumi provider — IPv6 blocks are reserved via API and imported.
-    // For now, this is a placeholder that expects import.
-    throw new Error(
-      "IPv6 block reservation must be imported from existing Vultr resources. " +
-        "Use `pulumi import vultr:index/reservedIp:ReservedIp <name> <id>`"
-    );
+    const ip = new vultr.ReservedIp(name, {
+      region: args.region,
+      ipType: "v6",
+      label: args.label,
+    });
+
+    return {
+      id: ip.id,
+      block: ip.subnet.apply((s) => `${s}/${args.prefix}`),
+    };
   }
 
   createObjectStorage(name: string, args: StorageArgs): ObjectBucket {
