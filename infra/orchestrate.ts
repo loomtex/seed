@@ -350,7 +350,7 @@ export function provisionNode(
       "--extra-files",
       extraDir,
       "--phases",
-      '"disko install"',
+      "disko,install",
       `root@${ip}`,
     ].join(" "),
     {
