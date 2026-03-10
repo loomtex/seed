@@ -108,6 +108,17 @@ in {
       };
 
       dualStack = lib.mkEnableOption "IPv4/IPv6 dual-stack networking for pods and services";
+
+      autoNodeIp = lib.mkOption {
+        type = lib.types.enum [ "disabled" "vultr" ];
+        default = "disabled";
+        description = ''
+          Cloud metadata provider for deriving --node-ip at boot.
+          "vultr" — queries http://169.254.169.254/v1.json for IPv4/IPv6.
+          Also reads /persist/seed/server-addr (if present) for cluster join.
+          Writes /run/k3s/node-config.yaml consumed by k3s --config.
+        '';
+      };
     };
 
     nixSnapshotter = {
@@ -146,6 +157,14 @@ in {
     boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
     boot.kernel.sysctl."net.ipv6.conf.all.forwarding" = 1;
 
+    # Accept IPv6 router advertisements even with forwarding enabled.
+    # forwarding=1 disables RA acceptance by default (accept_ra=1 means
+    # "accept unless forwarding"). accept_ra=2 overrides this so nodes
+    # get their IPv6 address + gateway via SLAAC while still forwarding
+    # pod traffic.
+    boot.kernel.sysctl."net.ipv6.conf.all.accept_ra" = lib.mkIf cfg.k3s.dualStack (lib.mkDefault 2);
+    boot.kernel.sysctl."net.ipv6.conf.default.accept_ra" = lib.mkIf cfg.k3s.dualStack (lib.mkDefault 2);
+
     # Kernel modules for Kata VM isolation
     boot.kernelModules = [ "vhost_net" "vhost_vsock" ];
 
@@ -158,6 +177,9 @@ in {
       snapshotter = lib.mkIf cfg.nixSnapshotter.enable "nix";
 
       extraFlags = lib.concatLists [
+        (lib.optionals (cfg.k3s.autoNodeIp != "disabled") [
+          "--config" "/run/k3s/node-config.yaml"
+        ])
         (lib.optionals (cfg.role == "server") (disableFlags ++ [
           "--https-listen-port ${toString cfg.k3s.port}"
           "--write-kubeconfig-mode ${cfg.k3s.kubeconfigMode}"
@@ -172,7 +194,7 @@ in {
         cfg.k3s.extraFlags
       ];
 
-      serverAddr = lib.mkIf (cfg.serverAddr != "") cfg.serverAddr;
+      serverAddr = lib.mkIf (cfg.serverAddr != "" && !(cfg.k3s.autoNodeIp != "disabled")) cfg.serverAddr;
       token = lib.mkIf (cfg.token != "") cfg.token;
       tokenFile = lib.mkIf (cfg.tokenFile != null) (toString cfg.tokenFile);
 
@@ -204,14 +226,52 @@ in {
           "/dev/kmsg r"
         ];
 
-        # Deploy RuntimeClass manifest before k3s starts (server only)
-        ExecStartPre = lib.mkIf (cfg.role == "server") [
-          "+${pkgs.writeShellScript "seed-manifests" ''
-            mkdir -p /var/lib/rancher/k3s/server/manifests
-            ln -sf ${runtimeClassManifest} /var/lib/rancher/k3s/server/manifests/seed-kata-runtime-class.yaml
-            ln -sf ${metallbManifest} /var/lib/rancher/k3s/server/manifests/seed-metallb.yaml
-          ''}"
-        ];
+        ExecStartPre =
+          # Derive node-ip (and optionally server-addr) from cloud metadata
+          (lib.optionals (cfg.k3s.autoNodeIp != "disabled") [
+            "+${pkgs.writeShellScript "seed-derive-node-ip" ''
+              set -euo pipefail
+              mkdir -p /run/k3s
+
+              ${lib.optionalString (cfg.k3s.autoNodeIp == "vultr") ''
+                # Query Vultr metadata API (retry up to 30s for slow network)
+                META=""
+                for i in $(seq 1 15); do
+                  META=$(${pkgs.curl}/bin/curl -sf http://169.254.169.254/v1.json) && break
+                  sleep 2
+                done
+
+                if [ -z "$META" ]; then
+                  echo "WARNING: metadata API unreachable, writing empty config" >&2
+                  echo "# metadata unavailable" > /run/k3s/node-config.yaml
+                  exit 0
+                fi
+
+                IPV4=$(echo "$META" | ${pkgs.jq}/bin/jq -r '.main_ip // empty')
+                IPV6=$(echo "$META" | ${pkgs.jq}/bin/jq -r '.v6_main_ip // empty')
+
+                if [ -n "$IPV6" ]; then
+                  echo "node-ip: \"$IPV4,$IPV6\"" > /run/k3s/node-config.yaml
+                else
+                  echo "node-ip: \"$IPV4\"" > /run/k3s/node-config.yaml
+                fi
+              ''}
+
+              # If a server-addr file exists (written by provisioner for joining nodes),
+              # add it to the k3s config so we don't hardcode the init node's IP.
+              if [ -f /persist/seed/server-addr ]; then
+                echo "server: \"$(cat /persist/seed/server-addr)\"" >> /run/k3s/node-config.yaml
+              fi
+            ''}"
+          ]) ++
+          # Deploy RuntimeClass + MetalLB manifests (server only)
+          (lib.optionals (cfg.role == "server") [
+            "+${pkgs.writeShellScript "seed-manifests" ''
+              mkdir -p /var/lib/rancher/k3s/server/manifests
+              ln -sf ${runtimeClassManifest} /var/lib/rancher/k3s/server/manifests/seed-kata-runtime-class.yaml
+              ln -sf ${metallbManifest} /var/lib/rancher/k3s/server/manifests/seed-metallb.yaml
+            ''}"
+          ]);
       };
     };
   };

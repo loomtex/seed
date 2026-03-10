@@ -236,6 +236,8 @@ for (const node of nodes) {
       cacheBucket,
       cacheEndpoint,
       cachePublicKey: "seed-cache-1:HmHh2GMeZTBXufX8RRs30bBNVB75+QfkgFllazC365E=",
+      reservedIpv4: reservedIpv4.address,
+      reservedIpv6: reservedIpv6.block,
     },
   }, { parent: bm.resource });
 

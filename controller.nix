@@ -189,6 +189,15 @@ let
             name = "controller";
             image = "nix:0${cfg.controllerImage}";
             command = [ "${pkgs.nodejs_22}/bin/node" "/app/controller.mjs" ];
+            # Cluster-level config (reserved IPs, etc.) from ConfigMap.
+            # Created by provisioner after cluster bootstrap. Optional so the
+            # controller starts even before the ConfigMap exists.
+            envFrom = [{
+              configMapRef = {
+                name = "seed-cluster-config";
+                optional = true;
+              };
+            }];
             env = [
               { name = "SEED_FLAKE_PATHS"; value = builtins.concatStringsSep "," cfg.flakePaths; }
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
@@ -203,11 +212,7 @@ let
               { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               # PATH: nix + git + coreutils (for nix eval/build)
               { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz ]; }
-            ] ++ lib.optional (cfg.ipv4Address != "") {
-              name = "SEED_IPV4_ADDRESS"; value = cfg.ipv4Address;
-            } ++ lib.optional (cfg.ipv6Block != "") {
-              name = "SEED_IPV6_BLOCK"; value = cfg.ipv6Block;
-            } ++ lib.optional (cfg.webhook.secretFile != "") {
+            ] ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
             } ++ lib.optional cfg.poolManager.enable {
               name = "SEED_POOL_MANAGER_URL"; value = "http://seed-pool-manager.${seedSystemNS}.svc.cluster.local:${toString cfg.poolManager.port}";

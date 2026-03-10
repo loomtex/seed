@@ -143,4 +143,6 @@ export interface NodeConfig {
   cacheBucket?: string;   // S3 bucket name for binary cache (e.g. "seed-nix-cache")
   cacheEndpoint?: string; // S3 endpoint hostname (e.g. "atl2.vultrobjects.com")
   cachePublicKey?: string; // nix public key for the cache (e.g. "seed-cache-1:...")
+  reservedIpv4?: string;  // Cluster's reserved IPv4 (for controller ConfigMap + joining node serverAddr)
+  reservedIpv6?: string;  // Cluster's reserved IPv6 block (for controller ConfigMap)
 }

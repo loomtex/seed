@@ -121,11 +121,13 @@ function waitForSSHDown(
 //   /persist/etc/ssh/ssh_host_{ed25519,rsa}_key{,.pub}
 //   /persist/secrets/initrd/ssh_host_ed25519_key{,.pub}
 //   /persist/secrets/clevis-cryptroot.jwe
+//   /persist/seed/server-addr  (joining nodes only)
 function prepareExtraFiles(args: {
   hostEd25519: SSHKeyPair;
   hostRsa: SSHKeyPair;
   initrdKey: SSHKeyPair;
   clevisJWE: string;
+  serverAddr?: string; // k3s server URL for joining nodes
 }): string {
   const dir = mkdtempSync(join(tmpdir(), "extra-files-"));
 
@@ -147,6 +149,13 @@ function prepareExtraFiles(args: {
   const secretsDir = join(dir, "persist", "secrets");
   mkdirSync(secretsDir, { recursive: true });
   writeFileSync(join(secretsDir, "clevis-cryptroot.jwe"), args.clevisJWE + "\n", { mode: 0o600 });
+
+  // Server addr for joining nodes → /persist/seed/server-addr
+  if (args.serverAddr) {
+    const seedDir = join(dir, "persist", "seed");
+    mkdirSync(seedDir, { recursive: true });
+    writeFileSync(join(seedDir, "server-addr"), args.serverAddr, { mode: 0o644 });
+  }
 
   return dir;
 }
@@ -277,6 +286,27 @@ function unlockLuksViaInitrd(ip: string, passphrase: string): void {
     { stdio: "pipe", timeout: 30_000 }
   );
   pulumi.log.info(`LUKS passphrase sent via initrd SSH`);
+}
+
+// Wait for k3s API server to be ready on a node.
+function waitForK3s(ip: string, timeout = 300): void {
+  const user = userInfo().username;
+  const deadline = Date.now() + timeout * 1000;
+
+  while (Date.now() < deadline) {
+    try {
+      execFileSync("ssh", [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        `${user}@${ip}`,
+        "sudo k3s kubectl get nodes",
+      ], { stdio: "pipe", timeout: 15_000 });
+      return;
+    } catch {
+      execFileSync("sleep", ["5"]);
+    }
+  }
+  throw new Error(`k3s not ready on ${ip} after ${timeout}s`);
 }
 
 // Fetch k3s token from a running cluster node.
@@ -474,11 +504,22 @@ export function provisionNode(
 
   // 8. Prepare extra-files
   pulumi.log.info(`${config.name}: preparing extra-files`);
+
+  // Joining nodes: write server-addr so k3s knows which server to join.
+  // Uses the reserved IPv4 if available (stable across reprovisioning),
+  // otherwise falls back to the init node's ephemeral IP.
+  let serverAddr: string | undefined;
+  if (!config.clusterInit && (config.reservedIpv4 || config.initNodeIp)) {
+    const joinIp = config.reservedIpv4 || config.initNodeIp!;
+    serverAddr = `https://${joinIp}:6443`;
+  }
+
   const extraDir = prepareExtraFiles({
     hostEd25519,
     hostRsa,
     initrdKey,
     clevisJWE,
+    serverAddr,
   });
 
   // Write LUKS passphrase to temp file for nixos-anywhere
@@ -545,6 +586,37 @@ export function provisionNode(
 
   pulumi.log.info(`${config.name}: verifying health`);
   verifyNodeHealth(ip, config.name);
+
+  // 12. For init node: wait for k3s API and create seed-cluster-config ConfigMap
+  //     with reserved IPs so the controller can configure MetalLB.
+  if (config.clusterInit && (config.reservedIpv4 || config.reservedIpv6)) {
+    pulumi.log.info(`${config.name}: waiting for k3s API`);
+    waitForK3s(ip, 300);
+
+    const user = userInfo().username;
+    const sshCmd = (cmd: string) =>
+      execFileSync("ssh", [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        `${user}@${ip}`,
+        cmd,
+      ], { stdio: "pipe", timeout: 30_000 });
+
+    const literals: string[] = [];
+    if (config.reservedIpv4) literals.push(`--from-literal=SEED_IPV4_ADDRESS=${config.reservedIpv4}`);
+    if (config.reservedIpv6) literals.push(`--from-literal=SEED_IPV6_BLOCK=${config.reservedIpv6}`);
+
+    sshCmd(`sudo k3s kubectl create namespace seed-system --dry-run=client -o yaml | sudo k3s kubectl apply -f -`);
+    sshCmd(`sudo k3s kubectl create configmap seed-cluster-config -n seed-system ${literals.join(" ")} --dry-run=client -o yaml | sudo k3s kubectl apply -f -`);
+
+    // Restart controller if it started before ConfigMap existed
+    try {
+      sshCmd(`sudo k3s kubectl rollout restart deployment/seed-controller -n seed-system 2>/dev/null`);
+    } catch {
+      // Controller deployment may not exist yet — that's fine, it'll pick up the ConfigMap on first start
+    }
+    pulumi.log.info(`${config.name}: seed-cluster-config ConfigMap created`);
+  }
 
   // Cleanup
   rmSync(extraDir, { recursive: true });
