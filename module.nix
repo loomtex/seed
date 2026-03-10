@@ -130,10 +130,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    # etcd peer communication ports (server-to-server HA)
+    # k3s cluster communication ports
     networking.firewall.allowedTCPPorts = lib.mkIf (cfg.role == "server") [
       2379  # etcd client
       2380  # etcd peer
+    ];
+    networking.firewall.allowedUDPPorts = [
+      8472  # flannel VXLAN (cross-node pod traffic)
     ];
 
     # Kata config with VM sizing annotations enabled

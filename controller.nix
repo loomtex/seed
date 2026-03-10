@@ -182,6 +182,8 @@ let
         metadata.labels."app.kubernetes.io/name" = "seed-controller";
         spec = {
           serviceAccountName = "seed-controller";
+          # Pin to this node — controller needs hostPath secrets (sops-nix)
+          nodeSelector."kubernetes.io/hostname" = config.networking.hostName;
           # Default runtime — controller doesn't need Kata
           containers = [{
             name = "controller";
