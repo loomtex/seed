@@ -427,7 +427,9 @@ export function provisionNode(
       timeout: 1800_000, // 30 minutes
       env: {
         ...process.env,
-        NIX_CONFIG: "experimental-features = nix-command flakes",
+        // tarball-ttl=0 forces nix to re-fetch the flake from GitHub,
+        // ensuring the just-pushed secrets/sops changes are included in the build.
+        NIX_CONFIG: "experimental-features = nix-command flakes\ntarball-ttl = 0",
       },
     }
   );
