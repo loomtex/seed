@@ -243,6 +243,27 @@ export function provisionNode(
 ): ProvisionResult {
   pulumi.log.info(`Provisioning ${config.name} at ${ip}...`);
 
+  // Check if node is already provisioned and healthy — skip if so.
+  // This makes the provisioner idempotent (safe to re-run after failures).
+  try {
+    verifyNodeHealth(ip, config.name);
+    pulumi.log.info(`${config.name}: already provisioned and healthy, skipping`);
+    const existingPubKey = execFileSync(
+      "ssh",
+      [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        `ada@${ip}`,
+        "cat /etc/ssh/ssh_host_ed25519_key.pub",
+      ],
+      { encoding: "utf-8", timeout: 15_000 }
+    ).trim();
+    const agePublicKey = sshToAge(existingPubKey);
+    return { luksPassphrase: "", agePublicKey };
+  } catch {
+    pulumi.log.info(`${config.name}: not yet provisioned, proceeding`);
+  }
+
   // 0. Add node's subnet to Tang allowlist
   pulumi.log.info(`${config.name}: updating Tang allowlist with ${ip}`);
   addTangSubnet(config.mynixDir, ip, config.name);
