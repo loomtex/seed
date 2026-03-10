@@ -476,6 +476,8 @@ INITEOF
     checks.${system} = {
       # Tests metadata eval + image build (no KVM needed)
       image = import ./tests/image.nix { inherit self pkgs nixpkgs; };
+      # Tests Vultr metadata API jq parsing (canned payloads, no network)
+      metadata = import ./tests/metadata.nix { inherit pkgs; };
     };
 
     templates = {
