@@ -53,31 +53,39 @@
       cd "$INFRA_DIR"
       exec ${pkgs.pulumi}/bin/pulumi "$@"
     '';
+    infraPackages = [
+      pkgs.pulumi
+      pkgs.pulumiPackages.pulumi-language-nodejs
+      pkgs.nodejs_22
+      pkgs.sops
+      pkgs.awscli2
+      pkgs.openssh
+      pkgs.ssh-to-age
+      pkgs.nixos-anywhere
+      pulumiWrapper
+    ];
+
+    infraShellHook = ''
+      export PULUMI_BACKEND_URL="file://$(pwd)/.pulumi-state"
+      export PULUMI_HOME="$(pwd)/.pulumi-state/.home"
+      mkdir -p .pulumi-state/.home
+    '';
   in {
     devShells.${system}.default = pkgs.mkShell {
-      packages = [
-        pkgs.pulumi
-        pkgs.pulumiPackages.pulumi-language-nodejs
-        pkgs.nodejs_22
-        pkgs.sops
-        pkgs.awscli2
-        pkgs.openssh
-        pkgs.ssh-to-age
-        pkgs.nixos-anywhere
-        pulumiWrapper
-      ];
-
-      shellHook = ''
-        export PULUMI_BACKEND_URL="file://$(pwd)/.pulumi-state"
-        export PULUMI_HOME="$(pwd)/.pulumi-state/.home"
-        mkdir -p .pulumi-state/.home
-
+      packages = infraPackages;
+      shellHook = infraShellHook + ''
         echo "Seed infra devshell"
         echo "  pu preview   — preview changes"
         echo "  pu up        — apply changes"
         echo "  pu destroy   — tear down"
         echo "  pu config    — manage config"
       '';
+    };
+
+    # Quiet shell for scripted use (no banner to contaminate stdout)
+    devShells.${system}.ci = pkgs.mkShell {
+      packages = infraPackages;
+      shellHook = infraShellHook;
     };
 
     # Standalone scripts (usable without entering devshell)
