@@ -435,6 +435,14 @@ INITEOF
           mkdir -p $out/{app,tmp,nix/store,run/seed-pool}
           cp ${seedController}/app/pool-manager.mjs $out/app/
           cp -r ${seedController}/app/node_modules $out/app/
+
+          # Include VM runtime deps in the image closure so nix-snapshotter
+          # realizes them on every node (not just the controller node).
+          mkdir -p $out/app/deps
+          ln -s ${pkgs.cloud-hypervisor} $out/app/deps/cloud-hypervisor
+          ln -s ${pkgs.virtiofsd} $out/app/deps/virtiofsd
+          ln -s ${pkgs.kata-guest-kernel-tpm} $out/app/deps/kata-guest-kernel
+          ln -s ${self.packages.${system}.poolVmInitramfs} $out/app/deps/initramfs
         '';
         config.entrypoint = [ "${pkgs.nodejs_22}/bin/node" "/app/pool-manager.mjs" ];
       };
