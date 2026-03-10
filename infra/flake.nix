@@ -71,21 +71,23 @@
       mkdir -p .pulumi-state/.home
     '';
   in {
-    devShells.${system}.default = pkgs.mkShell {
-      packages = infraPackages;
-      shellHook = infraShellHook + ''
-        echo "Seed infra devshell"
-        echo "  pu preview   — preview changes"
-        echo "  pu up        — apply changes"
-        echo "  pu destroy   — tear down"
-        echo "  pu config    — manage config"
-      '';
-    };
+    devShells.${system} = {
+      default = pkgs.mkShell {
+        packages = infraPackages;
+        shellHook = infraShellHook + ''
+          echo "Seed infra devshell"
+          echo "  pu preview   — preview changes"
+          echo "  pu up        — apply changes"
+          echo "  pu destroy   — tear down"
+          echo "  pu config    — manage config"
+        '';
+      };
 
-    # Quiet shell for scripted use (no banner to contaminate stdout)
-    devShells.${system}.ci = pkgs.mkShell {
-      packages = infraPackages;
-      shellHook = infraShellHook;
+      # Quiet shell for scripted use (no banner to contaminate stdout)
+      ci = pkgs.mkShell {
+        packages = infraPackages;
+        shellHook = infraShellHook;
+      };
     };
 
     # Standalone scripts (usable without entering devshell)
