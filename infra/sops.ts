@@ -50,7 +50,8 @@ export function addNodeToSops(
   }
 
   // Ensure a creation rule exists for this node's secrets file
-  const secretsRegex = `secrets/${nodeName.replace(/-/g, "\\-")}\\.yaml\\$`;
+  // Note: dashes don't need escaping in YAML regex, only dots do
+  const secretsRegex = `secrets/${nodeName}\\.yaml$`;
   if (!content.includes(`path_regex: ${secretsRegex}`)) {
     // Find the "creation_rules:" section and add a rule
     const ruleRef = `*${nodeName.replace(/-/g, "_")}_age`;

@@ -7,7 +7,7 @@ import {
   rmSync,
   chmodSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import * as pulumi from "@pulumi/pulumi";
 import type { NodeConfig } from "./types.ts";
@@ -58,7 +58,7 @@ function generateSSHKeys(
 // If sshProxy is set, tests connectivity through the proxy.
 function waitForSSH(
   ip: string,
-  { timeout = 600, port = 22, sshProxy }: { timeout?: number; port?: number; sshProxy?: string } = {}
+  { timeout = 600, port = 22, sshProxy, user = "root" }: { timeout?: number; port?: number; sshProxy?: string; user?: string } = {}
 ): void {
   const deadline = Date.now() + timeout * 1000;
   const baseOpts = [
@@ -68,8 +68,8 @@ function waitForSSH(
   ];
 
   const sshArgs = sshProxy
-    ? [...baseOpts, sshProxy, `ssh ${baseOpts.join(" ")} -p ${port} root@${ip} true`]
-    : [...baseOpts, "-p", String(port), `root@${ip}`, "true"];
+    ? [...baseOpts, sshProxy, `ssh ${baseOpts.join(" ")} -p ${port} ${user}@${ip} true`]
+    : [...baseOpts, "-p", String(port), `${user}@${ip}`, "true"];
 
   while (Date.now() < deadline) {
     try {
@@ -152,14 +152,16 @@ function prepareExtraFiles(args: {
 }
 
 // Verify node health after nixos-anywhere install + reboot.
+// Uses current Unix user (not root) since nodes have PermitRootLogin=no.
 function verifyNodeHealth(ip: string, label: string): void {
+  const user = userInfo().username;
   const sshCmd = (cmd: string) =>
     execFileSync(
       "ssh",
       [
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
-        `root@${ip}`,
+        `${user}@${ip}`,
         cmd,
       ],
       { encoding: "utf-8", timeout: 30_000 }
@@ -172,7 +174,7 @@ function verifyNodeHealth(ip: string, label: string): void {
   }
 
   // Check LUKS is active
-  const luks = sshCmd("ls /dev/mapper/cryptroot 2>/dev/null && echo ok || echo missing");
+  const luks = sshCmd("sudo ls /dev/mapper/cryptroot 2>/dev/null && echo ok || echo missing");
   if (!luks.includes("ok")) {
     throw new Error(`LUKS device not active on ${label}`);
   }
@@ -212,12 +214,13 @@ function addTangSubnet(mynixDir: string, ip: string, comment: string): void {
 
 // Fetch k3s token from a running cluster node.
 function fetchK3sToken(ip: string): string {
+  const user = userInfo().username;
   const token = execFileSync(
     "ssh",
     [
       "-o", "StrictHostKeyChecking=no",
       "-o", "UserKnownHostsFile=/dev/null",
-      `ada@${ip}`,
+      `${user}@${ip}`,
       "sudo cat /var/lib/rancher/k3s/server/token",
     ],
     { encoding: "utf-8", timeout: 15_000 }
@@ -248,12 +251,13 @@ export function provisionNode(
   try {
     verifyNodeHealth(ip, config.name);
     pulumi.log.info(`${config.name}: already provisioned and healthy, skipping`);
+    const user = userInfo().username;
     const existingPubKey = execFileSync(
       "ssh",
       [
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
-        `ada@${ip}`,
+        `${user}@${ip}`,
         "cat /etc/ssh/ssh_host_ed25519_key.pub",
       ],
       { encoding: "utf-8", timeout: 15_000 }
@@ -363,7 +367,7 @@ export function provisionNode(
   pulumi.log.info(`${config.name}: waiting for reboot`);
   waitForSSHDown(ip, { timeout: 120 });
   pulumi.log.info(`${config.name}: waiting for post-install SSH`);
-  waitForSSH(ip, { timeout: 600 });
+  waitForSSH(ip, { timeout: 600, user: userInfo().username });
 
   pulumi.log.info(`${config.name}: verifying health`);
   verifyNodeHealth(ip, config.name);
