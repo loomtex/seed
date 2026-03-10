@@ -344,6 +344,7 @@ export function provisionNode(
       "nixos-anywhere",
       "--flake",
       config.flakeRef,
+      "--build-on-remote",
       "--disk-encryption-keys",
       "/tmp/disk-password",
       passFile,
