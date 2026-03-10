@@ -239,7 +239,11 @@ for (const node of nodes) {
       reservedIpv4: reservedIpv4.address,
       reservedIpv6: reservedIpv6.block,
     },
-  }, { parent: bm.resource });
+  }, {
+    parent: bm.resource,
+    // Alias the old URN (before parent was added) so Pulumi doesn't delete+create
+    aliases: [{ parent: pulumi.rootStackResource }],
+  });
 
   nodeOutputs[node.name] = {
     ip: bm.ipv4,
