@@ -5,7 +5,7 @@ import {
   writeFileSync,
   rmSync,
 } from "node:fs";
-import { userInfo } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import * as pulumi from "@pulumi/pulumi";
 import { sshToAge, addNodeToSops, reencryptSecrets } from "./sops.ts";
@@ -28,7 +28,7 @@ function generateSSHKeys(
   comment: string,
   type: "ed25519" | "rsa" = "ed25519"
 ): SSHKeyPair {
-  const tmpDir = mkdtempSync(join(require("os").tmpdir(), "ssh-"));
+  const tmpDir = mkdtempSync(join(tmpdir(), "ssh-"));
   const keyPath = join(tmpDir, "key");
 
   const args = ["-t", type, "-C", comment, "-f", keyPath, "-N", ""];
@@ -159,7 +159,7 @@ export function provisionTang(
 
   // 6. Prepare extra-files (SSH host keys only — no LUKS, no Clevis)
   pulumi.log.info(`${config.name}: preparing extra-files`);
-  const extraDir = mkdtempSync(join(require("os").tmpdir(), "tang-extra-"));
+  const extraDir = mkdtempSync(join(tmpdir(), "tang-extra-"));
   const sshDir = join(extraDir, "etc", "ssh");
   mkdirSync(sshDir, { recursive: true });
   writeFileSync(join(sshDir, "ssh_host_ed25519_key"), hostEd25519.privateKey + "\n", { mode: 0o600 });

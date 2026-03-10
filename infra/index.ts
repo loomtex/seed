@@ -6,6 +6,12 @@ import { VultrProvider } from "./providers/vultr.ts";
 import type { NodeConfig } from "./types.ts";
 import type { TangProvisionConfig } from "./provision-tang.ts";
 
+// Absolute paths for dynamic import() inside Pulumi dynamic providers.
+// Dynamic providers serialize their create() functions — ESM doesn't have require(),
+// so we use import() with absolute paths captured at module level.
+const orchestratePath = resolve(process.cwd(), "orchestrate.ts");
+const provisionTangPath = resolve(process.cwd(), "provision-tang.ts");
+
 const config = new pulumi.Config();
 const provider = new VultrProvider();
 
@@ -69,8 +75,9 @@ const nodeProvisionerProvider: pulumi.dynamic.ResourceProvider = {
       nodeConfig.initNodeIp = initNodeIp;
     }
 
-    // Dynamic require to avoid serialization issues with native modules
-    const { provisionNode: provision } = require("./orchestrate.ts");
+    // Dynamic import to avoid serialization issues with native modules.
+    // ESM doesn't have require() — use import() with absolute path.
+    const { provisionNode: provision } = await import(orchestratePath);
     const result = provision(ip, nodeConfig);
 
     return {
@@ -157,7 +164,7 @@ const tangProvisionerProvider: pulumi.dynamic.ResourceProvider = {
     const ip = inputs["ip"] as string;
     const tangConfig = inputs["tangConfig"] as TangProvisionConfig;
 
-    const { provisionTang } = require("./provision-tang.ts");
+    const { provisionTang } = await import(provisionTangPath);
     const result = provisionTang(ip, tangConfig);
 
     return {
