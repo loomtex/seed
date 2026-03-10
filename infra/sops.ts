@@ -85,7 +85,7 @@ export function addNodeToSops(
   // Also add the node to the seed-system.yaml creation rule
   const nodeRef = `*${nodeName.replace(/-/g, "_")}_age`;
   const systemRuleMatch = content.match(
-    /path_regex: secrets\/seed-system\.yaml\$[\s\S]*?(?=\n\s+-\s+path_regex|\n\s+#|\n$)/
+    /path_regex: secrets\/seed-system\\\.yaml\$[\s\S]*?(?=\n\s+-\s+path_regex|\n\s+#|\n$)/
   );
   if (systemRuleMatch && !systemRuleMatch[0].includes(nodeRef)) {
     // Find the last age key reference in the seed-system rule and add after it
