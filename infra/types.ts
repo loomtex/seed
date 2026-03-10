@@ -33,6 +33,7 @@ export interface BareMetal {
   ipv4: pulumi.Output<string>;
   ipv6: pulumi.Output<string>;
   label: pulumi.Output<string>;
+  resource: pulumi.Resource; // underlying Pulumi resource (for parent/dependsOn)
 }
 
 // --- Virtual Machine ---
@@ -139,4 +140,7 @@ export interface NodeConfig {
   serverAddr?: string;
   initNodeIp?: string; // IP of the init node (for fetching k3s token on joining nodes)
   sshProxy?: string; // SSH host to proxy Tang/target connections through (e.g. "root@seed-dfw-1")
+  cacheBucket?: string;   // S3 bucket name for binary cache (e.g. "seed-nix-cache")
+  cacheEndpoint?: string; // S3 endpoint hostname (e.g. "atl2.vultrobjects.com")
+  cachePublicKey?: string; // nix public key for the cache (e.g. "seed-cache-1:...")
 }

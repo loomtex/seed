@@ -43,8 +43,8 @@
 
       mkdir -p "$STATE_DIR" "$PULUMI_HOME"
 
-      # Ensure Pulumi plugins are on PATH
-      export PATH="${pkgs.pulumiPackages.pulumi-language-nodejs}/bin:${pkgs.nodejs_22}/bin:$PATH"
+      # Ensure Pulumi plugins + provisioning tools are on PATH
+      export PATH="${pkgs.pulumiPackages.pulumi-language-nodejs}/bin:${pkgs.nodejs_22}/bin:${pkgs.nixos-anywhere}/bin:${pkgs.sops}/bin:${pkgs.ssh-to-age}/bin:$PATH"
 
       # Auto-login to local backend and select stack
       ${pkgs.pulumi}/bin/pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null

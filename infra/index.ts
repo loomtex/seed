@@ -233,8 +233,11 @@ for (const node of nodes) {
       clusterInit: node.clusterInit,
       serverAddr: node.serverAddr,
       sshProxy,
+      cacheBucket,
+      cacheEndpoint,
+      cachePublicKey: "seed-cache-1:HmHh2GMeZTBXufX8RRs30bBNVB75+QfkgFllazC365E=",
     },
-  });
+  }, { parent: bm.resource });
 
   nodeOutputs[node.name] = {
     ip: bm.ipv4,

@@ -305,6 +305,90 @@ function generateK3sToken(): string {
   return Buffer.from(bytes).toString("hex");
 }
 
+// Configure the S3 binary cache on the iPXE installer so nixos-anywhere's
+// --build-on-remote can pull pre-built derivations instead of compiling from source.
+// Also sets up a post-build-hook to push newly-built paths, so the first node's
+// builds are available for subsequent nodes.
+function configureBinaryCache(ip: string, config: NodeConfig): void {
+  if (!config.cacheBucket || !config.cacheEndpoint || !config.cachePublicKey) {
+    pulumi.log.info(`${config.name}: no binary cache configured, skipping`);
+    return;
+  }
+
+  pulumi.log.info(`${config.name}: configuring binary cache on installer`);
+
+  const sshBase = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+  ];
+  const ssh = (cmd: string) =>
+    execFileSync("ssh", [...sshBase, `root@${ip}`, cmd], {
+      stdio: "pipe",
+      timeout: 30_000,
+    });
+
+  // Decrypt S3 credentials from sops
+  const seedSystemFile = join(config.mynixDir, "secrets", "seed-system.yaml");
+  const accessKey = execFileSync(
+    "sops",
+    ["--decrypt", "--extract", '["seed"]["s3-access-key"]', seedSystemFile],
+    { encoding: "utf-8", cwd: config.mynixDir }
+  ).trim();
+  const secretKey = execFileSync(
+    "sops",
+    ["--decrypt", "--extract", '["seed"]["s3-secret-key"]', seedSystemFile],
+    { encoding: "utf-8", cwd: config.mynixDir }
+  ).trim();
+
+  const cacheUrl = `s3://${config.cacheBucket}?endpoint=${config.cacheEndpoint}&region=us-east-1&profile=default`;
+
+  // Decrypt signing key for push
+  let signingKey: string | undefined;
+  try {
+    signingKey = execFileSync(
+      "sops",
+      ["--decrypt", "--extract", '["seed"]["cache-signing-key"]', seedSystemFile],
+      { encoding: "utf-8", cwd: config.mynixDir }
+    ).trim();
+  } catch {
+    pulumi.log.warn(`${config.name}: could not decrypt cache signing key, push disabled`);
+  }
+
+  // Write AWS credentials on remote
+  ssh(
+    `mkdir -p /root/.aws && cat > /root/.aws/credentials << 'CREDS'\n[default]\naws_access_key_id=${accessKey}\naws_secret_access_key=${secretKey}\nCREDS`
+  );
+
+  // Configure nix substituter on remote
+  ssh(
+    `cat >> /etc/nix/nix.conf << 'NIX'\nextra-substituters = ${cacheUrl}\nextra-trusted-public-keys = ${config.cachePublicKey}\nNIX`
+  );
+
+  // If we have a signing key, set up post-build-hook for push
+  if (signingKey) {
+    ssh(`cat > /root/.cache-signing-key << 'KEY'\n${signingKey}\nKEY\nchmod 600 /root/.cache-signing-key`);
+    // Write the post-build-hook script
+    ssh(
+      `cat > /root/upload-to-cache << 'HOOK'\n#!/bin/sh\nset -eu\nset -f\nexport AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials\nexport AWS_EC2_METADATA_DISABLED=true\nnix store sign --key-file /root/.cache-signing-key $OUT_PATHS\nnix copy --to '${cacheUrl}' $OUT_PATHS\nHOOK\nchmod +x /root/upload-to-cache`
+    );
+    ssh(
+      `cat >> /etc/nix/nix.conf << 'NIX'\npost-build-hook = /root/upload-to-cache\nNIX`
+    );
+  }
+
+  // Set AWS env for nix-daemon and restart
+  ssh(
+    [
+      `mkdir -p /run/systemd/system/nix-daemon.service.d`,
+      `cat > /run/systemd/system/nix-daemon.service.d/cache.conf << 'DROPIN'\n[Service]\nEnvironment=AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials\nEnvironment=AWS_EC2_METADATA_DISABLED=true\nDROPIN`,
+      `systemctl daemon-reload`,
+      `systemctl restart nix-daemon`,
+    ].join(" && ")
+  );
+
+  pulumi.log.info(`${config.name}: binary cache configured (pull + ${signingKey ? "push" : "pull-only"})`);
+}
+
 // Full provisioning workflow for a single node.
 // Runs synchronously (called inside pulumi.output.apply).
 export function provisionNode(
@@ -404,6 +488,9 @@ export function provisionNode(
   // 9. Wait for iPXE instance SSH
   pulumi.log.info(`${config.name}: waiting for iPXE instance SSH at ${ip}`);
   waitForSSH(ip, { timeout: 600 });
+
+  // 9b. Configure binary cache on the installer (pull + push)
+  configureBinaryCache(ip, config);
 
   // 10. Run nixos-anywhere
   pulumi.log.info(`${config.name}: running nixos-anywhere`);

@@ -54,6 +54,7 @@ export class VultrProvider implements SeedProvider {
       ipv4: server.mainIp,
       ipv6: server.v6MainIp,
       label: server.label.apply((l) => l ?? args.label),
+      resource: server,
     };
   }
 
