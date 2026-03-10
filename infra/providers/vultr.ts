@@ -47,6 +47,11 @@ export class VultrProvider implements SeedProvider {
       // Don't persist PXE — boot from disk after first install
       persistentPxe: false,
       activationEmail: false,
+    }, {
+      // Bare metal provisioning on Vultr can take 60+ minutes
+      // (disk wipe, hardware allocation, iPXE boot). The default
+      // Vultr provider timeout of ~59m is too short.
+      customTimeouts: { create: "90m" },
     });
 
     return {
