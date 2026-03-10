@@ -2,18 +2,20 @@ import { execFileSync, execSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   writeFileSync,
   rmSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import * as pulumi from "@pulumi/pulumi";
-import { sshToAge, addNodeToSops, reencryptSecrets } from "./sops.ts";
+import { sshToAge, addNodeToSops, encryptSecrets, reencryptSecrets } from "./sops.ts";
 
 export interface TangProvisionConfig {
   name: string;
   flakeRef: string; // e.g. "github:joshperry/mynix#seed-tang-atl"
   mynixDir: string;
+  vultrApiKeyFile?: string; // path to plaintext Vultr API key (for creating tang's sops secrets)
   cacheBucket?: string;
   cacheEndpoint?: string;
   cachePublicKey?: string;
@@ -147,17 +149,26 @@ export function provisionTang(
   const sopsYamlPath = join(config.mynixDir, ".sops.yaml");
   addNodeToSops(sopsYamlPath, config.name, agePublicKey);
 
-  // 4. Re-encrypt shared secrets
+  // 4. Create per-tang secrets file (vultr-api-key for DNS sync)
+  if (config.vultrApiKeyFile) {
+    pulumi.log.info(`${config.name}: creating secrets file`);
+    const vultrApiKey = readFileSync(config.vultrApiKeyFile, "utf-8").trim();
+    encryptSecrets(config.mynixDir, `secrets/${config.name}.yaml`, {
+      "vultr-api-key": vultrApiKey,
+    });
+  }
+
+  // 5. Re-encrypt shared secrets
   pulumi.log.info(`${config.name}: re-encrypting seed-system.yaml`);
   reencryptSecrets(config.mynixDir, "secrets/seed-system.yaml");
 
-  // 5. Commit + push sops changes
+  // 6. Commit + push sops changes
   execSync(
     `cd ${shellQuote(config.mynixDir)} && git add .sops.yaml secrets/ && git commit -m "infra: add sops config for ${config.name}" && git push`,
     { stdio: "pipe", timeout: 30_000 }
   );
 
-  // 6. Prepare extra-files (SSH host keys only — no LUKS, no Clevis)
+  // 7. Prepare extra-files (SSH host keys only — no LUKS, no Clevis)
   pulumi.log.info(`${config.name}: preparing extra-files`);
   const extraDir = mkdtempSync(join(tmpdir(), "tang-extra-"));
   const sshDir = join(extraDir, "etc", "ssh");
@@ -167,11 +178,11 @@ export function provisionTang(
   writeFileSync(join(sshDir, "ssh_host_rsa_key"), hostRsa.privateKey + "\n", { mode: 0o600 });
   writeFileSync(join(sshDir, "ssh_host_rsa_key.pub"), hostRsa.publicKey + "\n", { mode: 0o644 });
 
-  // 7. Wait for Debian SSH
+  // 8. Wait for Debian SSH
   pulumi.log.info(`${config.name}: waiting for SSH at ${ip}`);
   waitForSSH(ip, { timeout: 300 });
 
-  // 8. Run nixos-anywhere (no disk encryption, simple install)
+  // 9. Run nixos-anywhere (no disk encryption, simple install)
   // kexec phase boots into NixOS installer (Debian doesn't have nix-daemon).
   pulumi.log.info(`${config.name}: running nixos-anywhere`);
   execSync(
@@ -196,7 +207,7 @@ export function provisionTang(
     }
   );
 
-  // 9. Wait for reboot + verify
+  // 10. Wait for reboot + verify
   pulumi.log.info(`${config.name}: waiting for reboot`);
   waitForSSHDown(ip, { timeout: 120 });
   pulumi.log.info(`${config.name}: waiting for post-install SSH`);

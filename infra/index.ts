@@ -204,6 +204,7 @@ const tangProvision = new TangProvisioner("seed-tang-1", {
     name: "seed-tang-1",
     flakeRef: `${flakeUri}#seed-tang-1`,
     mynixDir,
+    vultrApiKeyFile: "/run/secrets/ada/vultr-api-key",
   },
 }, {
   parent: tangVm.resource,
