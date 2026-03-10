@@ -389,6 +389,10 @@ function configureBinaryCache(ip: string, config: NodeConfig): void {
     `mkdir -p /root/.aws && cat > /root/.aws/credentials << 'CREDS'\n[default]\naws_access_key_id=${accessKey}\naws_secret_access_key=${secretKey}\nCREDS`
   );
 
+  // NixOS netboot has /etc/nix/nix.conf as a read-only symlink into the nix store.
+  // Replace it with a mutable copy so we can append substituter/hook config.
+  ssh(`cp --remove-destination $(readlink -f /etc/nix/nix.conf) /etc/nix/nix.conf`);
+
   // Configure nix substituter on remote
   ssh(
     `cat >> /etc/nix/nix.conf << 'NIX'\nextra-substituters = ${cacheUrl}\nextra-trusted-public-keys = ${config.cachePublicKey}\nNIX`
