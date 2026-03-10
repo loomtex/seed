@@ -172,17 +172,18 @@ export function provisionTang(
   waitForSSH(ip, { timeout: 300 });
 
   // 8. Run nixos-anywhere (no disk encryption, simple install)
+  // kexec phase boots into NixOS installer (Debian doesn't have nix-daemon).
   pulumi.log.info(`${config.name}: running nixos-anywhere`);
   execSync(
     [
       "nixos-anywhere",
       "--flake",
       config.flakeRef,
-      "--build-on-remote",
+      "--build-on", "remote",
       "--extra-files",
       extraDir,
       "--phases",
-      "disko,install,reboot",
+      "kexec,disko,install,reboot",
       `root@${ip}`,
     ].join(" "),
     {
