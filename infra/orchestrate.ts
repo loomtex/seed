@@ -390,12 +390,13 @@ function configureBinaryCache(ip: string, config: NodeConfig): void {
   );
 
   // NixOS netboot has /etc/nix/nix.conf as a read-only symlink into the nix store.
-  // Replace it with a mutable copy so we can append substituter/hook config.
-  ssh(`cp --remove-destination $(readlink -f /etc/nix/nix.conf) /etc/nix/nix.conf`);
+  // Overwrite with a mutable copy of the original so we can append config.
+  // Using /etc/static/ (NixOS symlink target) ensures idempotent retries.
+  ssh(`cp "$(readlink -f /etc/static/nix/nix.conf)" /etc/nix/nix.conf`);
 
-  // Configure nix substituter on remote
+  // Configure nix substituter + experimental features on remote
   ssh(
-    `cat >> /etc/nix/nix.conf << 'NIX'\nextra-substituters = ${cacheUrl}\nextra-trusted-public-keys = ${config.cachePublicKey}\nNIX`
+    `cat >> /etc/nix/nix.conf << 'NIX'\nextra-experimental-features = nix-command flakes\nextra-substituters = ${cacheUrl}\nextra-trusted-public-keys = ${config.cachePublicKey}\nNIX`
   );
 
   // If we have a signing key, set up post-build-hook for push
@@ -510,12 +511,12 @@ export function provisionNode(
   pulumi.log.info(`${config.name}: preparing extra-files`);
 
   // Joining nodes: write server-addr so k3s knows which server to join.
-  // Uses the reserved IPv4 if available (stable across reprovisioning),
-  // otherwise falls back to the init node's ephemeral IP.
+  // Uses the init node's actual IP (not the reserved IP, which may not be
+  // attached yet). Once the cluster is stable, the reserved IP can be
+  // configured as the permanent endpoint.
   let serverAddr: string | undefined;
-  if (!config.clusterInit && (config.reservedIpv4 || config.initNodeIp)) {
-    const joinIp = config.reservedIpv4 || config.initNodeIp!;
-    serverAddr = `https://${joinIp}:6443`;
+  if (!config.clusterInit && config.initNodeIp) {
+    serverAddr = `https://${config.initNodeIp}:6443`;
   }
 
   const extraDir = prepareExtraFiles({
