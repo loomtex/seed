@@ -121,6 +121,24 @@ in {
       };
     };
 
+    dns = {
+      nameserver = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          VPC DNS resolver IP (e.g. tang's VPC address). When set with autoNodeIp,
+          the derive-node-ip script configures this as the system nameserver via resolvectl
+          after the VPC interface is up.
+        '';
+      };
+
+      searchDomains = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "DNS search domains (e.g. [\"atl.combine.loom.farm\" \"combine.loom.farm\"]).";
+      };
+    };
+
     nixSnapshotter = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -250,10 +268,65 @@ in {
                 IPV4=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "public") | .ipv4.address) // empty')
                 IPV6=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "public") | .ipv6.address) // empty')
 
-                if [ -n "$IPV6" ]; then
-                  echo "node-ip: \"$IPV4,$IPV6\"" > /run/k3s/node-config.yaml
+                # VPC interface: find private network, configure IP by MAC address
+                VPC_MAC=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "private") | .["mac-address"]) // empty')
+                VPC_IP=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "private") | .ipv4.address) // empty')
+                VPC_MASK=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "private") | .ipv4.netmask) // empty')
+
+                if [ -n "$VPC_MAC" ] && [ -n "$VPC_IP" ]; then
+                  # Find interface name by MAC address
+                  VPC_IFACE=""
+                  for iface in /sys/class/net/*/address; do
+                    if [ "$(cat "$iface")" = "$VPC_MAC" ]; then
+                      VPC_IFACE=$(basename "$(dirname "$iface")")
+                      break
+                    fi
+                  done
+
+                  if [ -n "$VPC_IFACE" ]; then
+                    # Convert netmask to CIDR prefix length
+                    CIDR=$(echo "$VPC_MASK" | ${pkgs.gawk}/bin/awk -F. '{
+                      split($0, a, ".");
+                      bits=0;
+                      for(i=1;i<=4;i++) {
+                        n=a[i];
+                        while(n>0) { bits+=n%2; n=int(n/2) }
+                      }
+                      print bits
+                    }')
+
+                    ${pkgs.iproute2}/bin/ip addr add "$VPC_IP/$CIDR" dev "$VPC_IFACE" 2>/dev/null || true
+                    ${pkgs.iproute2}/bin/ip link set "$VPC_IFACE" up
+
+                    # Use VPC IP as node-ip, public IPs as external
+                    echo "node-ip: \"$VPC_IP\"" > /run/k3s/node-config.yaml
+                    if [ -n "$IPV6" ]; then
+                      echo "node-external-ip: \"$IPV4,$IPV6\"" >> /run/k3s/node-config.yaml
+                    else
+                      echo "node-external-ip: \"$IPV4\"" >> /run/k3s/node-config.yaml
+                    fi
+
+                    ${lib.optionalString (cfg.dns.nameserver != null) ''
+                      # Configure DNS resolver on the VPC interface
+                      ${pkgs.systemd}/bin/resolvectl dns "$VPC_IFACE" ${cfg.dns.nameserver}
+                      ${lib.optionalString (cfg.dns.searchDomains != []) ''
+                        ${pkgs.systemd}/bin/resolvectl domain "$VPC_IFACE" ${lib.concatStringsSep " " cfg.dns.searchDomains}
+                      ''}
+                    ''}
+                  else
+                    echo "WARNING: VPC MAC $VPC_MAC not found, using public IPs" >&2
+                    if [ -n "$IPV6" ]; then
+                      echo "node-ip: \"$IPV4,$IPV6\"" > /run/k3s/node-config.yaml
+                    else
+                      echo "node-ip: \"$IPV4\"" > /run/k3s/node-config.yaml
+                    fi
+                  fi
                 else
-                  echo "node-ip: \"$IPV4\"" > /run/k3s/node-config.yaml
+                  if [ -n "$IPV6" ]; then
+                    echo "node-ip: \"$IPV4,$IPV6\"" > /run/k3s/node-config.yaml
+                  else
+                    echo "node-ip: \"$IPV4\"" > /run/k3s/node-config.yaml
+                  fi
                 fi
               ''}
 

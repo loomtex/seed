@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import * as pulumi from "@pulumi/pulumi";
 import { VultrProvider } from "./providers/vultr.ts";
 import type { NodeConfig } from "./types.ts";
+import type { TangProvisionConfig } from "./provision-tang.ts";
 
 const config = new pulumi.Config();
 const provider = new VultrProvider();
@@ -13,13 +14,11 @@ const provider = new VultrProvider();
 const region = config.require("region");
 const plan = config.require("plan");
 const flakeUri = config.require("flakeUri");
-const tangIp = config.require("tangIp");
 const tangPort = config.require("tangPort");
 const cacheBucket = config.require("cacheBucket");
 const cacheEndpoint = config.require("cacheEndpoint");
 const sshPubKeys = config.requireObject<string[]>("sshPubKeys");
 const mynixDir = config.get("mynixDir") ?? "/agents/ada/projects/mynix";
-const tangUrl = `http://${tangIp}:${tangPort}`;
 // SSH proxy for reaching Tang/target hosts that are firewalled from signi
 const sshProxy = config.get("sshProxy");
 
@@ -50,6 +49,7 @@ const initPath = initMatch[1];
 
 interface NodeProvisionerInputs {
   ip: pulumi.Input<string>;
+  tangUrl: pulumi.Input<string>;
   initNodeIp?: pulumi.Input<string>;
   nodeConfig: NodeConfig;
 }
@@ -57,8 +57,12 @@ interface NodeProvisionerInputs {
 const nodeProvisionerProvider: pulumi.dynamic.ResourceProvider = {
   async create(inputs: Record<string, unknown>) {
     const ip = inputs["ip"] as string;
+    const resolvedTangUrl = inputs["tangUrl"] as string;
     const initNodeIp = inputs["initNodeIp"] as string | undefined;
     const nodeConfig = inputs["nodeConfig"] as NodeConfig;
+
+    // Override tangUrl with the resolved value from tang VM
+    nodeConfig.tangUrl = resolvedTangUrl;
 
     // Pass resolved initNodeIp into config for the orchestrator
     if (initNodeIp) {
@@ -128,6 +132,68 @@ const vpc = provider.createVPC("seed-vpc", {
   subnetMask: 24,
 });
 
+// --- Tang VM ---
+
+// Tang NBDE server on VPC — provides disk encryption key escrow, netboot artifacts,
+// and DNS resolution (unbound + pdns) for all seed nodes.
+// OS ID 2136 = Debian 12 (base for nixos-anywhere).
+const tangVm = provider.createVM("seed-tang-1", {
+  region,
+  plan: "vm-1c-2gb",
+  label: "seed-tang-1",
+  osId: 2136,
+  enableIPv6: true,
+  sshKeyIds,
+  vpcId: vpc.id,
+  tags: ["tang"],
+});
+
+const tangUrl = pulumi.interpolate`http://${tangVm.ipv4}:${tangPort}`;
+
+// --- Tang Provisioner ---
+
+const tangProvisionerProvider: pulumi.dynamic.ResourceProvider = {
+  async create(inputs: Record<string, unknown>) {
+    const ip = inputs["ip"] as string;
+    const tangConfig = inputs["tangConfig"] as TangProvisionConfig;
+
+    const { provisionTang } = require("./provision-tang.ts");
+    const result = provisionTang(ip, tangConfig);
+
+    return {
+      id: tangConfig.name,
+      outs: { agePublicKey: result.agePublicKey },
+    };
+  },
+
+  async diff() {
+    return { changes: false };
+  },
+};
+
+class TangProvisioner extends pulumi.dynamic.Resource {
+  public readonly agePublicKey!: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    args: { ip: pulumi.Input<string>; tangConfig: TangProvisionConfig },
+    opts?: pulumi.CustomResourceOptions
+  ) {
+    super(tangProvisionerProvider, name, { agePublicKey: undefined, ...args }, opts);
+  }
+}
+
+const tangProvision = new TangProvisioner("seed-tang-1", {
+  ip: tangVm.ipv4,
+  tangConfig: {
+    name: "seed-tang-1",
+    flakeRef: `${flakeUri}#seed-tang-1`,
+    mynixDir,
+  },
+}, {
+  parent: tangVm.resource,
+});
+
 // --- Reserved IPs ---
 
 // Public IPv4 for LoadBalancer services (MetalLB L2 advertisement).
@@ -151,13 +217,15 @@ const reservedIpv6 = provider.reserveIPv6Block("seed-ipv6", {
 // iPXE on Vultr can't validate Let's Encrypt TLS certs, so we serve
 // netboot artifacts from Tang (port 8080) which speaks plain HTTP.
 // init= points to the NixOS init binary inside the initrd (not a file on the server).
-const ipxeScript = `#!ipxe
+//
+// Uses tangVm.ipv4 dynamically so the boot script updates when tang is reprovisioned.
+const ipxeScript = tangVm.ipv4.apply((tangIp) => `#!ipxe
 dhcp
 set base http://${tangIp}:8080
 kernel \${base}/bzImage init=${initPath} initrd=initrd nohibernate loglevel=4
 initrd \${base}/initrd
 boot
-`;
+`);
 
 const bootScript = provider.createBootScript("nixos-netboot", {
   content: ipxeScript,
@@ -218,8 +286,12 @@ for (const node of nodes) {
   // Orchestrate install via Pulumi dynamic provider.
   // LUKS passphrases are stored in mynix/secrets/luks-recovery.yaml
   // (sops-encrypted to josh's GPG + ada's age key). No Pulumi secrets needed.
+  //
+  // tangUrl is resolved from the tang VM's public IP. The NodeProvisioner's
+  // dynamic provider receives it as a resolved string (Pulumi serializes Outputs).
   const provision = new NodeProvisioner(node.name, {
     ip: bm.ipv4,
+    tangUrl,
     // Joining nodes need the init node's IP to fetch the k3s token
     initNodeIp: !node.clusterInit && initBm ? initBm.ipv4 : undefined,
     nodeConfig: {
@@ -227,7 +299,7 @@ for (const node of nodes) {
       region,
       plan,
       flakeRef: `${flakeUri}#${node.name}`,
-      tangUrl,
+      tangUrl: "", // placeholder — overridden by resolved tangUrl input
       sopsFile: `${mynixDir}/.sops.yaml`,
       mynixDir,
       clusterInit: node.clusterInit,
@@ -241,6 +313,7 @@ for (const node of nodes) {
     },
   }, {
     parent: bm.resource,
+    dependsOn: [tangProvision],
     // Alias the old URN (before parent was added) so Pulumi doesn't delete+create
     aliases: [{ parent: pulumi.rootStackResource }],
   });
@@ -255,6 +328,8 @@ for (const node of nodes) {
 
 export const clusterInfo = {
   tangUrl,
+  tangPublicIp: tangVm.ipv4,
+  tangVpcIp: tangVm.internalIp,
   ipv4Address: reservedIpv4.address,
   ipv6Block: reservedIpv6.block,
   cacheBucket: `${cacheBucket}.${cacheEndpoint}`,

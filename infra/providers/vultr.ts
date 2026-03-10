@@ -73,6 +73,7 @@ export class VultrProvider implements SeedProvider {
       osId: args.osId,
       enableIpv6: args.enableIPv6,
       sshKeyIds: args.sshKeyIds,
+      vpcIds: args.vpcId ? [args.vpcId] : undefined,
       tags: args.tags,
       activationEmail: false,
     });
@@ -81,7 +82,9 @@ export class VultrProvider implements SeedProvider {
       id: instance.id,
       ipv4: instance.mainIp,
       ipv6: instance.v6MainIp,
+      internalIp: instance.internalIp,
       label: instance.label.apply((l) => l ?? args.label),
+      resource: instance,
     };
   }
 

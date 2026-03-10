@@ -45,6 +45,7 @@ export interface VMArgs {
   osId: number;
   enableIPv6?: boolean;
   sshKeyIds?: pulumi.Input<string>[];
+  vpcId?: pulumi.Input<string>;
   tags?: string[];
 }
 
@@ -52,7 +53,9 @@ export interface VM {
   id: pulumi.Output<string>;
   ipv4: pulumi.Output<string>;
   ipv6: pulumi.Output<string>;
+  internalIp: pulumi.Output<string>;
   label: pulumi.Output<string>;
+  resource: pulumi.Resource;
 }
 
 // --- Reserved IPs ---
