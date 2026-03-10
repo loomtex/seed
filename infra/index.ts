@@ -52,13 +52,20 @@ const initPath = initMatch[1];
 
 interface NodeProvisionerInputs {
   ip: pulumi.Input<string>;
+  initNodeIp?: pulumi.Input<string>;
   nodeConfig: NodeConfig;
 }
 
 const nodeProvisionerProvider: pulumi.dynamic.ResourceProvider = {
   async create(inputs: Record<string, unknown>) {
     const ip = inputs["ip"] as string;
+    const initNodeIp = inputs["initNodeIp"] as string | undefined;
     const nodeConfig = inputs["nodeConfig"] as NodeConfig;
+
+    // Pass resolved initNodeIp into config for the orchestrator
+    if (initNodeIp) {
+      nodeConfig.initNodeIp = initNodeIp;
+    }
 
     // Dynamic require to avoid serialization issues with native modules
     const { provisionNode: provision } = require("./orchestrate.ts");
@@ -198,6 +205,8 @@ for (const node of nodes) {
   // (sops-encrypted to josh's GPG + ada's age key). No Pulumi secrets needed.
   const provision = new NodeProvisioner(node.name, {
     ip: bm.ipv4,
+    // Joining nodes need the init node's IP to fetch the k3s token
+    initNodeIp: !node.clusterInit && initBm ? initBm.ipv4 : undefined,
     nodeConfig: {
       name: node.name,
       region,

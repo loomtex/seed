@@ -14,6 +14,7 @@ import {
   sshToAge,
   addNodeToSops,
   encryptSecrets,
+  reencryptSecrets,
   updateLuksRecovery,
 } from "./sops.ts";
 import { createClevisJWE, generateLuksPassphrase } from "./clevis.ts";
@@ -182,6 +183,31 @@ function verifyNodeHealth(ip: string, label: string): void {
   pulumi.log.info(`${label} SSH fingerprint: ${fingerprint}`);
 }
 
+// Fetch k3s token from a running cluster node.
+function fetchK3sToken(ip: string): string {
+  const token = execFileSync(
+    "ssh",
+    [
+      "-o", "StrictHostKeyChecking=no",
+      "-o", "UserKnownHostsFile=/dev/null",
+      `ada@${ip}`,
+      "sudo cat /var/lib/rancher/k3s/server/token",
+    ],
+    { encoding: "utf-8", timeout: 15_000 }
+  ).trim();
+  if (!token.startsWith("K10")) {
+    throw new Error(`Unexpected k3s token format from ${ip}: ${token.slice(0, 20)}...`);
+  }
+  return token;
+}
+
+// Generate a random k3s cluster token (for init node bootstrapping).
+function generateK3sToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Buffer.from(bytes).toString("hex");
+}
+
 // Full provisioning workflow for a single node.
 // Runs synchronously (called inside pulumi.output.apply).
 export function provisionNode(
@@ -200,25 +226,45 @@ export function provisionNode(
   const agePublicKey = sshToAge(hostEd25519.publicKey);
   pulumi.log.info(`${config.name}: age key = ${agePublicKey}`);
 
-  // 3. Update .sops.yaml + encrypt secrets
+  // 3. Update .sops.yaml with node's age key
   pulumi.log.info(`${config.name}: updating sops configuration`);
   const sopsYamlPath = join(config.mynixDir, ".sops.yaml");
   addNodeToSops(sopsYamlPath, config.name, agePublicKey);
 
-  // 4. Generate LUKS passphrase + Clevis JWE
+  // 4. Get or generate k3s token + create per-node secrets file
+  pulumi.log.info(`${config.name}: creating node secrets`);
+  let k3sToken: string;
+  if (config.clusterInit) {
+    k3sToken = generateK3sToken();
+    pulumi.log.info(`${config.name}: generated new k3s cluster token`);
+  } else if (config.initNodeIp) {
+    k3sToken = fetchK3sToken(config.initNodeIp);
+    pulumi.log.info(`${config.name}: fetched k3s token from init node ${config.initNodeIp}`);
+  } else {
+    throw new Error(`${config.name}: joining node requires initNodeIp to fetch k3s token`);
+  }
+  encryptSecrets(config.mynixDir, `secrets/${config.name}.yaml`, {
+    "seed/k3s-token": k3sToken,
+  });
+
+  // 5. Re-encrypt seed-system.yaml so the new node can decrypt shared secrets
+  pulumi.log.info(`${config.name}: re-encrypting seed-system.yaml`);
+  reencryptSecrets(config.mynixDir, "secrets/seed-system.yaml");
+
+  // 6. Generate LUKS passphrase + Clevis JWE
   pulumi.log.info(`${config.name}: creating LUKS passphrase + Clevis JWE`);
   const luksPassphrase = generateLuksPassphrase();
   const clevisJWE = createClevisJWE(luksPassphrase, config.tangUrl, config.sshProxy);
 
-  // 5. Store LUKS passphrase in sops-encrypted recovery file + commit
+  // 7. Store LUKS passphrase in sops-encrypted recovery file + commit all secrets
   pulumi.log.info(`${config.name}: storing LUKS recovery passphrase`);
   updateLuksRecovery(config.mynixDir, config.name, luksPassphrase);
   execSync(
-    `cd ${shellQuote(config.mynixDir)} && git add .sops.yaml secrets/luks-recovery.yaml && git commit -m "infra: add sops config + LUKS recovery for ${config.name}" && git push`,
+    `cd ${shellQuote(config.mynixDir)} && git add .sops.yaml secrets/ && git commit -m "infra: add secrets + sops config for ${config.name}" && git push`,
     { stdio: "pipe", timeout: 30_000 }
   );
 
-  // 6. Prepare extra-files
+  // 8. Prepare extra-files
   pulumi.log.info(`${config.name}: preparing extra-files`);
   const extraDir = prepareExtraFiles({
     hostEd25519,
@@ -231,11 +277,11 @@ export function provisionNode(
   const passFile = join(extraDir, ".luks-pass");
   writeFileSync(passFile, luksPassphrase, { mode: 0o600 });
 
-  // 7. Wait for iPXE instance SSH
+  // 9. Wait for iPXE instance SSH
   pulumi.log.info(`${config.name}: waiting for iPXE instance SSH at ${ip}`);
   waitForSSH(ip, { timeout: 600 });
 
-  // 8. Run nixos-anywhere
+  // 10. Run nixos-anywhere
   pulumi.log.info(`${config.name}: running nixos-anywhere`);
   execSync(
     [
@@ -261,7 +307,7 @@ export function provisionNode(
     }
   );
 
-  // 9. Wait for reboot + verify
+  // 11. Wait for reboot + verify
   pulumi.log.info(`${config.name}: waiting for reboot`);
   waitForSSHDown(ip, { timeout: 120 });
   pulumi.log.info(`${config.name}: waiting for post-install SSH`);

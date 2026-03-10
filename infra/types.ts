@@ -136,5 +136,6 @@ export interface NodeConfig {
   mynixDir: string; // path to mynix repo root
   clusterInit?: boolean;
   serverAddr?: string;
+  initNodeIp?: string; // IP of the init node (for fetching k3s token on joining nodes)
   sshProxy?: string; // SSH host to proxy Tang/target connections through (e.g. "root@seed-dfw-1")
 }
