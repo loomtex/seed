@@ -247,8 +247,8 @@ in {
                   exit 0
                 fi
 
-                IPV4=$(echo "$META" | ${pkgs.jq}/bin/jq -r '.main_ip // empty')
-                IPV6=$(echo "$META" | ${pkgs.jq}/bin/jq -r '.v6_main_ip // empty')
+                IPV4=$(echo "$META" | ${pkgs.jq}/bin/jq -r '(.interfaces[] | select(.["network-type"] == "public") | .ipv4.address) // empty')
+                IPV6=$(echo "$META" | ${pkgs.jq}/bin/jq -r '(.interfaces[] | select(.["network-type"] == "public") | .ipv6.address) // empty')
 
                 if [ -n "$IPV6" ]; then
                   echo "node-ip: \"$IPV4,$IPV6\"" > /run/k3s/node-config.yaml
