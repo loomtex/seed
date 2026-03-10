@@ -63,6 +63,7 @@
         pkgs.awscli2
         pkgs.openssh
         pkgs.ssh-to-age
+        pkgs.nixos-anywhere
         pulumiWrapper
       ];
 
