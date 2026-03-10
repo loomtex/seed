@@ -13,7 +13,7 @@ let
 
   rrsets = [
     { name = zone; type = "SOA"; ttl = 300;
-      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026030706 10800 3600 604800 300"; }]; }
+      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026031001 10800 3600 604800 300"; }]; }
     { name = zone; type = "NS"; ttl = 300;
       records = [{ content = "ns1.loom.farm."; } { content = "ns2.loom.farm."; }]; }
     { name = "ns1.${zone}"; type = "A"; ttl = 300;
@@ -50,8 +50,26 @@ let
     inherit rrsets;
   });
 
+  # SQL to bootstrap zone data directly into SQLite on first boot.
+  # This avoids depending on the pdns API (which needs a sops-decrypted key).
+  zoneSql = pkgs.writeText "loom-farm-zone.sql" ''
+    INSERT INTO domains (name, type) VALUES ('loom.farm', 'NATIVE');
+    ${lib.concatMapStringsSep "\n" (rr:
+      lib.concatMapStringsSep "\n" (rec:
+        "INSERT INTO records (domain_id, name, type, content, ttl) VALUES ((SELECT id FROM domains WHERE name='loom.farm'), '${rr.name}', '${rr.type}', '${rec.content}', ${toString rr.ttl});"
+      ) rr.records
+    ) rrsets}
+  '';
+
   syncScript = pkgs.writeShellScript "pdns-sync-zones" ''
     set -euo pipefail
+
+    # Skip if API key isn't available (first boot — TPM identity is new)
+    if [ ! -f "${config.sops.secrets.pdns-api-key.path}" ]; then
+      echo "API key not available (first boot?), skipping sync — zone data from SQLite init"
+      exit 0
+    fi
+
     API_KEY=$(cat ${config.sops.secrets.pdns-api-key.path})
     API="http://127.0.0.1:8081/api/v1/servers/localhost"
     DESIRED=${zoneData}
@@ -141,11 +159,15 @@ in
       # Ensure pdns user owns the database and WAL files
       chown pdns:pdns /seed/storage/data/pdns.db*
 
-      # Inject sops-decrypted API key into pdns config
+      # Inject sops-decrypted API key into pdns config (if available).
+      # On first boot the TPM identity is new and sops can't decrypt yet —
+      # pdns starts without an API key, zone data comes from SQLite init.
       mkdir -p /run/pdns/conf.d
-      echo "api-key=$(cat ${config.sops.secrets.pdns-api-key.path})" > /run/pdns/conf.d/secrets.conf
-      chown pdns:pdns /run/pdns/conf.d/secrets.conf
-      chmod 0400 /run/pdns/conf.d/secrets.conf
+      if [ -f "${config.sops.secrets.pdns-api-key.path}" ]; then
+        echo "api-key=$(cat ${config.sops.secrets.pdns-api-key.path})" > /run/pdns/conf.d/secrets.conf
+        chown pdns:pdns /run/pdns/conf.d/secrets.conf
+        chmod 0400 /run/pdns/conf.d/secrets.conf
+      fi
     ''}"
   ];
 
@@ -163,7 +185,7 @@ in
       Type = "oneshot";
       User = "pdns";
       Group = "pdns";
-      ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db < ${pkgs.pdns}/share/doc/pdns/schema.sqlite3.sql'";
+      ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db < ${pkgs.pdns}/share/doc/pdns/schema.sqlite3.sql && ${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db < ${zoneSql}'";
     };
   };
 
