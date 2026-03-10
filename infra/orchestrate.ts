@@ -424,11 +424,47 @@ function configureBinaryCache(ip: string, config: NodeConfig): void {
   pulumi.log.info(`${config.name}: binary cache configured (pull + ${signingKey ? "push" : "pull-only"})`);
 }
 
+// Trigger Vultr "reinstall" on a bare metal server.
+// This re-PXE-boots the server from its startup script. Vultr BMs only PXE boot
+// on initial creation or after a reinstall — a plain reboot won't re-PXE.
+function reinstallBareMetal(apiKey: string, bmId: string): void {
+  pulumi.log.info(`Triggering Vultr reinstall for bare metal ${bmId}`);
+  execFileSync("curl", [
+    "-sf", "-X", "POST",
+    `https://api.vultr.com/v2/bare-metals/${bmId}/reinstall`,
+    "-H", `Authorization: Bearer ${apiKey}`,
+    "-H", "Content-Type: application/json",
+  ], { stdio: "pipe", timeout: 30_000 });
+}
+
+// Wait for SSH, with automatic Vultr reinstall fallback for BMs that failed PXE boot.
+// First tries SSH for initialTimeout seconds. If that fails and we have Vultr API
+// credentials, triggers a reinstall (re-PXE) and waits again for reinstallTimeout.
+function waitForSSHWithReinstall(
+  ip: string,
+  config: NodeConfig,
+  vultrApiKey: string | undefined,
+  { initialTimeout = 300, reinstallTimeout = 600, sshProxy }: { initialTimeout?: number; reinstallTimeout?: number; sshProxy?: string } = {},
+): void {
+  try {
+    waitForSSH(ip, { timeout: initialTimeout, sshProxy });
+  } catch {
+    if (config.vultrBmId && vultrApiKey) {
+      pulumi.log.info(`${config.name}: SSH timeout after ${initialTimeout}s — triggering Vultr reinstall (re-PXE boot)`);
+      reinstallBareMetal(vultrApiKey, config.vultrBmId);
+      waitForSSH(ip, { timeout: reinstallTimeout, sshProxy });
+    } else {
+      throw new Error(`${config.name}: SSH not available after ${initialTimeout}s and no reinstall credentials`);
+    }
+  }
+}
+
 // Full provisioning workflow for a single node.
 // Runs synchronously (called inside pulumi.output.apply).
 export function provisionNode(
   ip: string,
-  config: NodeConfig
+  config: NodeConfig,
+  vultrApiKey?: string,
 ): ProvisionResult {
   pulumi.log.info(`Provisioning ${config.name} at ${ip}...`);
 
@@ -531,9 +567,9 @@ export function provisionNode(
   const passFile = join(extraDir, ".luks-pass");
   writeFileSync(passFile, luksPassphrase, { mode: 0o600 });
 
-  // 9. Wait for iPXE instance SSH
+  // 9. Wait for iPXE instance SSH (with reinstall fallback for PXE failures)
   pulumi.log.info(`${config.name}: waiting for iPXE instance SSH at ${ip}`);
-  waitForSSH(ip, { timeout: 600 });
+  waitForSSHWithReinstall(ip, config, vultrApiKey, { sshProxy: config.sshProxy });
 
   // 9b. Configure binary cache on the installer (pull + push)
   configureBinaryCache(ip, config);

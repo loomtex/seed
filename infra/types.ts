@@ -148,4 +148,5 @@ export interface NodeConfig {
   cachePublicKey?: string; // nix public key for the cache (e.g. "seed-cache-1:...")
   reservedIpv4?: string;  // Cluster's reserved IPv4 (for controller ConfigMap + joining node serverAddr)
   reservedIpv6?: string;  // Cluster's reserved IPv6 block (for controller ConfigMap)
+  vultrBmId?: string;     // Vultr bare metal ID (for triggering reinstall on PXE boot failure)
 }

@@ -13,6 +13,7 @@ const orchestratePath = resolve(process.cwd(), "orchestrate.ts");
 const provisionTangPath = resolve(process.cwd(), "provision-tang.ts");
 
 const config = new pulumi.Config();
+const vultrConfig = new pulumi.Config("vultr");
 const provider = new VultrProvider();
 
 // --- Configuration ---
@@ -57,6 +58,8 @@ interface NodeProvisionerInputs {
   ip: pulumi.Input<string>;
   tangUrl: pulumi.Input<string>;
   initNodeIp?: pulumi.Input<string>;
+  vultrApiKey?: pulumi.Input<string>;
+  vultrBmId?: pulumi.Input<string>;
   nodeConfig: NodeConfig;
 }
 
@@ -65,20 +68,25 @@ const nodeProvisionerProvider: pulumi.dynamic.ResourceProvider = {
     const ip = inputs["ip"] as string;
     const resolvedTangUrl = inputs["tangUrl"] as string;
     const initNodeIp = inputs["initNodeIp"] as string | undefined;
+    const vultrApiKey = inputs["vultrApiKey"] as string | undefined;
+    const vultrBmId = inputs["vultrBmId"] as string | undefined;
     const nodeConfig = inputs["nodeConfig"] as NodeConfig;
 
     // Override tangUrl with the resolved value from tang VM
     nodeConfig.tangUrl = resolvedTangUrl;
 
-    // Pass resolved initNodeIp into config for the orchestrator
+    // Pass resolved inputs into config for the orchestrator
     if (initNodeIp) {
       nodeConfig.initNodeIp = initNodeIp;
+    }
+    if (vultrBmId) {
+      nodeConfig.vultrBmId = vultrBmId;
     }
 
     // Dynamic import to avoid serialization issues with native modules.
     // ESM doesn't have require() — use import() with absolute path.
     const { provisionNode: provision } = await import(orchestratePath);
-    const result = provision(ip, nodeConfig);
+    const result = provision(ip, nodeConfig, vultrApiKey);
 
     return {
       id: nodeConfig.name,
@@ -301,6 +309,9 @@ for (const node of nodes) {
     tangUrl,
     // Joining nodes need the init node's IP to fetch the k3s token
     initNodeIp: !node.clusterInit && initBm ? initBm.ipv4 : undefined,
+    // Vultr API credentials for reinstalling BMs on PXE boot failure
+    vultrApiKey: vultrConfig.requireSecret("apiKey"),
+    vultrBmId: bm.id,
     nodeConfig: {
       name: node.name,
       region,
