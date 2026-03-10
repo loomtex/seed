@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   writeFileSync,
+  readFileSync,
   rmSync,
   chmodSync,
 } from "node:fs";
@@ -183,6 +184,32 @@ function verifyNodeHealth(ip: string, label: string): void {
   pulumi.log.info(`${label} SSH fingerprint: ${fingerprint}`);
 }
 
+// Compute the /23 CIDR for an IPv4 address (Vultr bare metal subnets).
+function ipToSubnet23(ip: string): string {
+  const parts = ip.split(".").map(Number);
+  // /23 means the third octet's LSB is masked out
+  parts[2] = parts[2] & 0xfe;
+  parts[3] = 0;
+  return `${parts.join(".")}/23`;
+}
+
+// Add a node's subnet to the Tang allowlist (node-subnets.nix).
+// Idempotent: skips if the subnet is already listed.
+function addTangSubnet(mynixDir: string, ip: string, comment: string): void {
+  const subnetsFile = join(mynixDir, "machines", "seed-tang-1", "node-subnets.nix");
+  const content = readFileSync(subnetsFile, "utf-8");
+  const subnet = ipToSubnet23(ip);
+
+  if (content.includes(subnet)) {
+    return; // Already listed
+  }
+
+  // Insert before the closing bracket
+  const newLine = `  "${subnet}"   # ${comment}`;
+  const updated = content.replace(/\n\]/, `\n${newLine}\n]`);
+  writeFileSync(subnetsFile, updated);
+}
+
 // Fetch k3s token from a running cluster node.
 function fetchK3sToken(ip: string): string {
   const token = execFileSync(
@@ -215,6 +242,10 @@ export function provisionNode(
   config: NodeConfig
 ): ProvisionResult {
   pulumi.log.info(`Provisioning ${config.name} at ${ip}...`);
+
+  // 0. Add node's subnet to Tang allowlist
+  pulumi.log.info(`${config.name}: updating Tang allowlist with ${ip}`);
+  addTangSubnet(config.mynixDir, ip, config.name);
 
   // 1. Generate SSH host keys
   pulumi.log.info(`${config.name}: generating SSH host keys`);
@@ -260,7 +291,7 @@ export function provisionNode(
   pulumi.log.info(`${config.name}: storing LUKS recovery passphrase`);
   updateLuksRecovery(config.mynixDir, config.name, luksPassphrase);
   execSync(
-    `cd ${shellQuote(config.mynixDir)} && git add .sops.yaml secrets/ && git commit -m "infra: add secrets + sops config for ${config.name}" && git push`,
+    `cd ${shellQuote(config.mynixDir)} && git add .sops.yaml secrets/ machines/seed-tang-1/node-subnets.nix && git commit -m "infra: add secrets + sops config for ${config.name}" && git push`,
     { stdio: "pipe", timeout: 30_000 }
   );
 
