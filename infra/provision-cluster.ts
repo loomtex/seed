@@ -2,11 +2,9 @@
 //
 // provision-cluster.ts — Event-driven cluster provisioning
 //
-// Runs on the stake VM. Watches for phone-home registrations from machines
-// that iPXE-booted from stake's netboot endpoint. Matches registrations to
-// the expected manifest (from Pulumi) and provisions in dependency order:
-//   Phase 1: puncher (tang + DNS)
-//   Phase 2: BM nodes (LUKS + k3s), clusterInit first
+// Runs on the stake VM. Provisions machines in dependency order:
+//   Phase 1: puncher (tang + DNS) — Debian VM, detected via SSH polling
+//   Phase 2: BM nodes (LUKS + k3s) — iPXE-booted, detected via phone-home
 //
 // Usage:
 //   npx tsx provision-cluster.ts                          # Read manifest from Pulumi stack output
@@ -16,11 +14,32 @@
 //
 
 import { watch, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { provisionNode } from "./orchestrate.ts";
 import { provisionTang } from "./provision-tang.ts";
 import type { ClusterManifest, NodeConfig } from "./types.ts";
+
+function waitForSSH(ip: string, timeout = 600): void {
+  const deadline = Date.now() + timeout * 1000;
+  const baseOpts = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "ConnectTimeout=5",
+  ];
+  while (Date.now() < deadline) {
+    try {
+      execFileSync("ssh", [...baseOpts, `root@${ip}`, "true"], {
+        stdio: "pipe",
+        timeout: 15_000,
+      });
+      return;
+    } catch {
+      execFileSync("sleep", ["5"]);
+    }
+  }
+  throw new Error(`SSH to ${ip} not available after ${timeout}s`);
+}
 
 const REGISTER_DIR = "/var/lib/seed-register";
 
@@ -100,7 +119,8 @@ function provisionBmNode(
   vultrApiKey?: string,
 ): void {
   const n = manifest.nodes[nodeIndex];
-  const tangUrl = `http://${manifest.puncher.ip}:${manifest.puncherPort}`;
+  // Use VPC IP for Tang — BMs access it over the internal network
+  const tangUrl = `http://${manifest.puncher.internalIp}:${manifest.puncherPort}`;
 
   log(`Provisioning node ${n.name} at ${n.ip}`);
 
@@ -174,70 +194,60 @@ async function main(): Promise<void> {
     writeFileSync(vultrApiKeyFile, vultrApiKey, { mode: 0o600 });
   }
 
-  // Track what's been provisioned
-  let puncherDone = nodesOnly; // skip puncher if --nodes-only
-  const nodesDone = new Set<number>();
+  // --- Phase 1: Puncher (Debian VM — detected via SSH polling) ---
 
-  // Expected machines we need to see
-  const expectedIps = new Set<string>();
-  if (!puncherOnly && !nodesOnly) {
-    expectedIps.add(manifest.puncher.ip);
-    for (const n of manifest.nodes) expectedIps.add(n.ip);
-  } else if (puncherOnly) {
-    expectedIps.add(manifest.puncher.ip);
-  } else {
-    for (const n of manifest.nodes) expectedIps.add(n.ip);
+  let puncherDone = nodesOnly; // skip puncher if --nodes-only
+
+  if (!puncherDone) {
+    log(`Waiting for puncher SSH at ${manifest.puncher.ip}...`);
+    waitForSSH(manifest.puncher.ip, 600);
+    log(`Puncher SSH available — provisioning`);
+    provisionPuncher(manifest, vultrApiKey ? vultrApiKeyFile : undefined);
+    puncherDone = true;
   }
 
-  const totalExpected = expectedIps.size;
+  if (puncherOnly || manifest.nodes.length === 0) {
+    log("All machines provisioned");
+    return;
+  }
 
-  // Process a registration
+  // --- Phase 2: BM nodes (iPXE — detected via phone-home registrations) ---
+
+  const nodesDone = new Set<number>();
+
+  // Process a phone-home registration from an iPXE-booted BM
   const processRegistration = (reg: Registration): void => {
     const match = matchRegistration(reg, manifest);
-    if (!match) {
-      log(`Unknown registration from ${reg.ip} (MAC: ${reg.mac}) — ignoring`);
+    if (!match || match.type === "puncher") {
+      if (!match) log(`Unknown registration from ${reg.ip} (MAC: ${reg.mac}) — ignoring`);
       return;
     }
 
-    if (match.type === "puncher") {
-      if (puncherDone) return;
-      provisionPuncher(manifest, vultrApiKey ? vultrApiKeyFile : undefined);
-      puncherDone = true;
-    } else {
-      if (puncherOnly) return;
-      if (nodesDone.has(match.index)) return;
+    if (nodesDone.has(match.index)) return;
 
-      const node = manifest.nodes[match.index];
+    const node = manifest.nodes[match.index];
 
-      // Ensure dependency order: clusterInit node must be done before joining nodes
-      if (!node.clusterInit) {
-        // Find the init node — it must be provisioned first
-        const initIndex = manifest.nodes.findIndex((n) => n.clusterInit);
-        if (initIndex >= 0 && !nodesDone.has(initIndex)) {
-          log(`${node.name}: waiting for init node ${manifest.nodes[initIndex].name} to be provisioned first`);
-          return; // Will be retried when init node completes
-        }
+    // Ensure dependency order: clusterInit node must be done before joining nodes
+    if (!node.clusterInit) {
+      const initIndex = manifest.nodes.findIndex((n) => n.clusterInit);
+      if (initIndex >= 0 && !nodesDone.has(initIndex)) {
+        log(`${node.name}: waiting for init node ${manifest.nodes[initIndex].name} to be provisioned first`);
+        return; // Will be retried when init node completes
       }
+    }
 
-      // Wait for puncher to be done before provisioning nodes (Clevis needs Tang)
-      if (!puncherDone) {
-        log(`${node.name}: waiting for puncher to be provisioned first`);
-        return;
-      }
+    // Find init node IP for joining nodes
+    const initNode = manifest.nodes.find((n) => n.clusterInit);
+    const initNodeIp = !node.clusterInit && initNode ? initNode.ip : undefined;
 
-      // Find init node IP for joining nodes
-      const initNode = manifest.nodes.find((n) => n.clusterInit);
-      const initNodeIp = !node.clusterInit && initNode ? initNode.ip : undefined;
+    provisionBmNode(manifest, match.index, initNodeIp, vultrApiKey);
+    nodesDone.add(match.index);
 
-      provisionBmNode(manifest, match.index, initNodeIp, vultrApiKey);
-      nodesDone.add(match.index);
-
-      // After provisioning init node, retry any pending joining nodes
-      if (node.clusterInit) {
-        log("Init node done — retrying pending joining node registrations");
-        for (const existing of scanExistingRegistrations()) {
-          processRegistration(existing);
-        }
+    // After provisioning init node, retry any pending joining nodes
+    if (node.clusterInit) {
+      log("Init node done — retrying pending joining node registrations");
+      for (const existing of scanExistingRegistrations()) {
+        processRegistration(existing);
       }
     }
   };
@@ -248,14 +258,12 @@ async function main(): Promise<void> {
     processRegistration(reg);
   }
 
-  // Check if we're already done
-  const doneCount = (puncherDone ? 1 : 0) + nodesDone.size;
-  if (doneCount >= totalExpected) {
+  if (nodesDone.size >= manifest.nodes.length) {
     log("All machines provisioned");
     return;
   }
 
-  log(`Waiting for ${totalExpected - doneCount} more machine(s) to register...`);
+  log(`Waiting for ${manifest.nodes.length - nodesDone.size} more node(s) to register...`);
 
   // Watch for new registrations via inotify
   return new Promise<void>((resolve, reject) => {
@@ -276,9 +284,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      // Check if we're done
-      const done = (puncherDone ? 1 : 0) + nodesDone.size;
-      if (done >= totalExpected) {
+      if (nodesDone.size >= manifest.nodes.length) {
         log("All machines provisioned");
         watcher.close();
         resolve();
@@ -287,13 +293,12 @@ async function main(): Promise<void> {
 
     // Safety timeout: 2 hours
     setTimeout(() => {
-      const done = (puncherDone ? 1 : 0) + nodesDone.size;
-      log(`Timeout: ${done}/${totalExpected} machines provisioned`);
+      log(`Timeout: ${nodesDone.size}/${manifest.nodes.length} nodes provisioned`);
       watcher.close();
-      if (done >= totalExpected) {
+      if (nodesDone.size >= manifest.nodes.length) {
         resolve();
       } else {
-        reject(new Error(`Timed out waiting for machines: ${totalExpected - done} remaining`));
+        reject(new Error(`Timed out waiting for nodes: ${manifest.nodes.length - nodesDone.size} remaining`));
       }
     }, 2 * 60 * 60 * 1000);
   });
