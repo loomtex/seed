@@ -114,7 +114,7 @@ boot
   // OS ID 159 = Custom (iPXE boot via bootScriptId).
   const puncherVm = provider.createVM("seed-puncher-1", {
     region,
-    plan: "vm-1c-2gb",
+    plan: "vm-2c-4gb",
     label: "seed-puncher-1",
     osId: 159,
     bootScriptId: bootScript.id,

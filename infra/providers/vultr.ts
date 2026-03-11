@@ -24,6 +24,7 @@ const PLAN_MAP: Record<string, string> = {
   "bm-6c-32gb": "vbm-6c-32gb",
   "vm-1c-1gb": "vc2-1c-1gb",
   "vm-1c-2gb": "vc2-1c-2gb",
+  "vm-2c-4gb": "vc2-2c-4gb",
 };
 
 // Vultr OS IDs
