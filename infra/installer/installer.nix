@@ -20,10 +20,12 @@
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi"
   ];
 
-  # Intel 10GbE NIC driver (Vultr bare metal uses ixgbe)
-  boot.initrd.availableKernelModules = [ "ixgbe" ];
+  # Network drivers: ixgbe for Vultr bare metal (10GbE), virtio for Vultr VMs.
+  # Loaded in initrd so they're available before stage 2 networking starts.
+  boot.initrd.availableKernelModules = [ "ixgbe" "virtio_net" "virtio_pci" ];
 
-  # The iPXE environment has networking via DHCP
+  # Force DHCP on all interfaces in stage 2.
+  # netboot-minimal.nix disables NetworkManager, so this uses dhcpcd.
   networking.useDHCP = lib.mkForce true;
 
   # Phone-home: announce ourselves to the stake's registration endpoint.
