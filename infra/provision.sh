@@ -230,15 +230,20 @@ attach_stake_to_vpc() {
 
   # Hot-added VPC interface needs OS-side static IP configuration.
   # Vultr VPC v1 assigns IPs API-side but doesn't provide DHCP for the host OS.
-  # Find the unconfigured interface and assign the VPC IP.
+  # The VPC NIC may already have a link-local (169.254.x.x) IP from DHCP fallback,
+  # so we identify it by MAC prefix (Vultr VPC NICs use 5a:00:xx).
   log "Configuring VPC interface on stake..."
   remote_ssh ada "$STAKE_IP" "
-    # Find the interface without an IPv4 address (the newly attached VPC NIC)
-    VPC_DEV=\$(ip -4 -o addr show | awk '{print \$2}' | sort -u | comm -23 <(ls /sys/class/net/ | grep -v lo | sort) - | head -1)
+    # Skip if VPC IP is already configured
+    if ip addr show | grep -q '$STAKE_VPC_IP'; then
+      echo 'VPC IP already configured'
+      exit 0
+    fi
+    # Find VPC NIC — it's the non-primary interface (not lo, not the one with the public IP)
+    PUBLIC_DEV=\$(ip -4 route show default | awk '{print \$5; exit}')
+    VPC_DEV=\$(ls /sys/class/net/ | grep -v lo | grep -v \"\$PUBLIC_DEV\" | head -1)
     if [ -z \"\$VPC_DEV\" ]; then
-      echo 'All interfaces already have IPs, checking for VPC IP...'
-      ip addr show | grep -q '$STAKE_VPC_IP' && exit 0
-      echo 'ERROR: No unconfigured interface found and VPC IP not present' >&2
+      echo 'ERROR: No VPC interface found' >&2
       exit 1
     fi
     echo \"Assigning $STAKE_VPC_IP/24 to \$VPC_DEV\"

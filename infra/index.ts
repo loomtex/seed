@@ -91,14 +91,14 @@ function createMachines(stakeIp: string, stakePublicIp: string) {
   // --- iPXE Boot Script ---
   //
   // Chain-loads the NixOS netboot image from the stake VM.
-  // PXE download uses the public IP (iPXE firmware can't reliably DHCP VPC NICs).
-  // phone_home uses the VPC IP (private network for all provisioning traffic).
-  // The only public traffic is the ~12MB kernel+initrd download.
+  // Both the PXE download and phone_home use the public IP because the NixOS
+  // installer doesn't have the VPC interface configured (Vultr VPC v1 has no DHCP,
+  // and the installer can't statically assign VPC IPs).
 
   const ipxeScript = `#!ipxe
 dhcp
 set base http://${stakePublicIp}:8080
-kernel \${base}/bzImage init=${initPath} phone_home=http://${stakeIp}:8081/register initrd=initrd nohibernate loglevel=4
+kernel \${base}/bzImage init=${initPath} phone_home=http://${stakePublicIp}:8081/register initrd=initrd nohibernate loglevel=4
 initrd \${base}/initrd
 boot
 `;
