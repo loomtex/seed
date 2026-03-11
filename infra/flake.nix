@@ -16,7 +16,7 @@
       version = "2.27.1";
       src = pkgs.fetchurl {
         url = "https://github.com/dirien/pulumi-vultr/releases/download/v${version}/${pname}-v${version}-linux-amd64.tar.gz";
-        hash = "sha256-m3B2z1kQaEqYkXqLLCqfcb/+oLMBc5lDkfz6lM3sXME=";
+        hash = "sha256-TGByHtGkrJuX9KTKacq1U6vUEUNOWo4w6YdotXJdkYY=";
       };
       sourceRoot = ".";
       installPhase = ''
