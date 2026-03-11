@@ -51,6 +51,10 @@ STAKE_LABEL="seed-stake"
 STAKE_FLAKE="github:joshperry/mynix#seed-stake"
 STAKE_OS_ID=2136  # Debian 12
 
+# S3 binary cache (same bucket as Pulumi state)
+S3_CACHE_SUBSTITUTER="s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default"
+S3_CACHE_PUBKEY="seed-cache-1:HmHh2GMeZTBXufX8RRs30bBNVB75+QfkgFllazC365E="
+
 # --- Helpers ---
 
 log() { echo "==> $*" >&2; }
@@ -96,6 +100,9 @@ preflight() {
   S3_SECRET_KEY="$(sops --decrypt --extract '["seed"]["s3-secret-key"]' "$MYNIX_DIR/secrets/seed-system.yaml")"
   export AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY"
   export AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY"
+
+  # Decrypt cache signing key (for pushing built derivations to S3)
+  S3_SIGNING_KEY="$(sops --decrypt --extract '["seed"]["cache-signing-key"]' "$MYNIX_DIR/secrets/seed-system.yaml")"
 }
 
 # --- Stake VM lifecycle ---
@@ -260,19 +267,92 @@ wait_for_ssh() {
   err "SSH to $user@$ip not available after ${timeout}s"
 }
 
+configure_installer_cache() {
+  # After kexec, we're in the NixOS installer. Configure the nix-daemon to use
+  # our S3 binary cache so the remote build pulls pre-built derivations instead
+  # of rebuilding everything from source. This is the difference between a 30-min
+  # install and a <1-min install. Also configures push so newly built derivations
+  # (like the netboot initrd) get cached for future stakes.
+  log "Configuring S3 binary cache in installer..."
+
+  remote_ssh root "$STAKE_IP" "
+    # AWS credentials for S3 binary cache access
+    mkdir -p /root/.aws
+    cat > /root/.aws/credentials << 'AWSEOF'
+[default]
+aws_access_key_id=$S3_ACCESS_KEY
+aws_secret_access_key=$S3_SECRET_KEY
+AWSEOF
+
+    # Cache signing key for pushing built derivations
+    cat > /root/.cache-signing-key << 'SIGNEOF'
+$S3_SIGNING_KEY
+SIGNEOF
+    chmod 600 /root/.cache-signing-key
+
+    # Post-build-hook: sign + upload every build to S3
+    cat > /root/upload-to-cache.sh << 'HOOKEOF'
+#!/bin/sh
+set -eu
+set -f
+export AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials
+export AWS_EC2_METADATA_DISABLED=true
+if [ -f /root/.cache-signing-key ]; then
+  nix store sign --key-file /root/.cache-signing-key \$OUT_PATHS
+  nix copy --to '$S3_CACHE_SUBSTITUTER' \$OUT_PATHS
+fi
+HOOKEOF
+    chmod +x /root/upload-to-cache.sh
+
+    # Point nix-daemon at the credentials and disable Vultr IMDS
+    mkdir -p /etc/systemd/system/nix-daemon.service.d
+    cat > /etc/systemd/system/nix-daemon.service.d/s3-cache.conf << 'EOF'
+[Service]
+Environment=\"AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials\"
+Environment=\"AWS_EC2_METADATA_DISABLED=true\"
+EOF
+    systemctl daemon-reload
+    systemctl restart nix-daemon
+
+    # Add S3 substituter + post-build-hook to nix.conf
+    cat >> /etc/nix/nix.conf << 'EOF'
+extra-substituters = $S3_CACHE_SUBSTITUTER
+extra-trusted-public-keys = $S3_CACHE_PUBKEY
+post-build-hook = /root/upload-to-cache.sh
+EOF
+    systemctl restart nix-daemon
+  "
+  log "S3 binary cache configured in installer (pull + push)"
+}
+
 provision_stake() {
   log "Provisioning NixOS on stake VM at $STAKE_IP"
 
   wait_for_ssh "$STAKE_IP" root 300
 
-  # nixos-anywhere --build-on remote: the stake VM (8c/64GB) builds its own
-  # closure. The kexec phase sends a small NixOS installer from signi (~1GB), then
-  # the VM builds everything from cache.nixos.org. Avoids sending the full closure
-  # through signi's slow uplink.
+  # Phase 1: kexec into NixOS installer (~1GB sent from signi)
+  log "Phase 1: kexec into NixOS installer..."
   nixos-anywhere \
     --flake "$STAKE_FLAKE" \
     --build-on remote \
-    --phases kexec,disko,install,reboot \
+    --phases kexec \
+    "root@$STAKE_IP"
+
+  # Wait for the installer to come up after kexec
+  sleep 10
+  wait_for_ssh "$STAKE_IP" root 120
+
+  # Inject S3 binary cache credentials into the installer's nix-daemon.
+  # Without this, the remote build pulls from cache.nixos.org and rebuilds
+  # everything our S3 cache already has.
+  configure_installer_cache
+
+  # Phases 2-4: disko, install, reboot (now uses S3 cache for the build)
+  log "Phase 2: disko + install + reboot (building from S3 cache)..."
+  nixos-anywhere \
+    --flake "$STAKE_FLAKE" \
+    --build-on remote \
+    --phases disko,install,reboot \
     "root@$STAKE_IP"
 
   log "Waiting for post-install reboot..."
@@ -383,6 +463,7 @@ run_pulumi_machines() {
     pulumi stack select prod 2>/dev/null
 
     pulumi config set seed-infra:stakeIp '$STAKE_VPC_IP' -s prod
+    pulumi config set seed-infra:stakePublicIp '$STAKE_IP' -s prod
 
     pulumi up -s prod -y --skip-preview
   "

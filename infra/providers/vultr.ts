@@ -52,6 +52,10 @@ export class VultrProvider implements SeedProvider {
       // (disk wipe, hardware allocation, iPXE boot). The default
       // Vultr provider timeout of ~59m is too short.
       customTimeouts: { create: "90m" },
+      // BM destruction on Vultr involves disk wipes and can take hours.
+      // retainOnDelete removes BM from state without blocking on the API.
+      // The provision script handles actual API deletion separately.
+      retainOnDelete: true,
     });
 
     return {

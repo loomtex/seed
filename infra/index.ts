@@ -24,7 +24,8 @@ const flakeUri = config.require("flakeUri");
 const puncherPort = Number(config.require("puncherPort"));
 const sshPubKeys = config.requireObject<string[]>("sshPubKeys");
 const mynixDir = config.get("mynixDir") ?? "/agents/ada/projects/mynix";
-const stakeIp = config.get("stakeIp"); // Optional — set after stake joins VPC
+const stakeIp = config.get("stakeIp"); // Optional — VPC IP, set after stake joins VPC
+const stakePublicIp = config.get("stakePublicIp"); // Optional — public IP for iPXE netboot
 
 // --- SSH Keys ---
 
@@ -67,7 +68,7 @@ export const vpcId = vpc.id;
 
 // --- Phase 2: machines (only when stakeIp is set) ---
 
-function createMachines(stakeIp: string) {
+function createMachines(stakeIp: string, stakePublicIp: string) {
   // --- Netboot init= path ---
   //
   // The netboot derivation is served from stake's nix store via nginx (port 8080).
@@ -89,15 +90,14 @@ function createMachines(stakeIp: string) {
 
   // --- iPXE Boot Script ---
   //
-  // Chain-loads the NixOS netboot image from the stake VM over HTTP.
-  // stakeIp is the stake's VPC IP — all targets are on the same VPC.
-  // init= points to the NixOS init binary inside the initrd.
-  // phone_home= tells the netboot installer where to register itself.
+  // Chain-loads the NixOS netboot image from the stake VM.
+  // PXE download uses the public IP (iPXE firmware can't reliably DHCP VPC NICs).
+  // phone_home uses the VPC IP (private network for all provisioning traffic).
+  // The only public traffic is the ~12MB kernel+initrd download.
 
   const ipxeScript = `#!ipxe
-dhcp net0
-dhcp net1
-set base http://${stakeIp}:8080
+dhcp
+set base http://${stakePublicIp}:8080
 kernel \${base}/bzImage init=${initPath} phone_home=http://${stakeIp}:8081/register initrd=initrd nohibernate loglevel=4
 initrd \${base}/initrd
 boot
@@ -132,11 +132,7 @@ boot
     serverAddr?: string;
   }
 
-  const nodes = config.getObject<NodeDef[]>("nodes") ?? [
-    { name: "seed-atl-1", clusterInit: true },
-    { name: "seed-atl-2" },
-    { name: "seed-atl-3" },
-  ];
+  const nodes = config.getObject<NodeDef[]>("nodes") ?? [];
 
   // --- Create Bare Metal Nodes ---
 
@@ -217,7 +213,7 @@ boot
 }
 
 // Phase 2 outputs — only populated when stakeIp is set
-const machines = stakeIp ? createMachines(stakeIp) : undefined;
+const machines = stakeIp ? createMachines(stakeIp, stakePublicIp ?? stakeIp) : undefined;
 export const manifest = machines?.manifest;
 export const clusterInfo = machines?.clusterInfo;
 export const nodeIPs = machines?.nodeIPs;
