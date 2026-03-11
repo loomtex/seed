@@ -345,19 +345,41 @@ provision_stake() {
   wait_for_ssh "$STAKE_IP" root 120
 
   # Inject S3 binary cache credentials into the installer's nix-daemon.
-  # Without this, the remote build pulls from cache.nixos.org and rebuilds
-  # everything our S3 cache already has.
+  # Without this, everything builds from source instead of pulling from S3.
   configure_installer_cache
 
-  # Phases 2-4: disko, install, reboot (now uses S3 cache for the build)
-  log "Phase 2: disko + install + reboot (building from S3 cache)..."
-  nixos-anywhere \
-    --flake "$STAKE_FLAKE" \
-    --build-on remote \
-    --phases disko,install,reboot \
-    "root@$STAKE_IP"
+  # Phase 2: Build from GitHub flake directly on the installer.
+  # This avoids nixos-anywhere's .drv copy from signi (which can't use our S3
+  # cache). The installer fetches the flake from GitHub, and nix-daemon pulls
+  # pre-built derivations from S3. With a warm cache this takes <1 min.
+  local flake_uri="${STAKE_FLAKE%%#*}"
+  local config_name="${STAKE_FLAKE##*#}"
 
-  log "Waiting for post-install reboot..."
+  log "Phase 2: building system on installer from $flake_uri ($config_name) + S3 cache..."
+  remote_ssh root "$STAKE_IP" "
+    set -euo pipefail
+    export NIX_CONFIG='experimental-features = nix-command flakes'
+
+    echo '==> Building disko script...'
+    DISKO_PATH=\$(nix build '${flake_uri}#nixosConfigurations.${config_name}.config.system.build.diskoScript' \
+      --no-link --print-out-paths --refresh)
+    echo \"disko: \$DISKO_PATH\"
+
+    echo '==> Building system toplevel...'
+    SYSTEM_PATH=\$(nix build '${flake_uri}#nixosConfigurations.${config_name}.config.system.build.toplevel' \
+      --no-link --print-out-paths --refresh)
+    echo \"system: \$SYSTEM_PATH\"
+
+    echo '==> Running disko (partition + format + mount)...'
+    \$DISKO_PATH
+
+    echo '==> Installing NixOS...'
+    nixos-install --system \$SYSTEM_PATH --no-root-password --no-channel-copy
+  "
+
+  # Reboot into the installed system
+  log "Rebooting into installed system..."
+  remote_ssh root "$STAKE_IP" "reboot" || true
   sleep 10
   wait_for_ssh "$STAKE_IP" ada 300
   log "Stake NixOS installed and reachable"
