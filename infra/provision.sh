@@ -9,6 +9,7 @@
 #
 # Usage:
 #   ./provision.sh              # Full run: create provisioner, run Pulumi, destroy
+#   ./provision.sh --setup-only     # Stop after setup, print SSH instructions
 #   ./provision.sh --skip-destroy   # Keep provisioner alive for debugging
 #   ./provision.sh --destroy-only   # Just destroy an existing provisioner
 #
@@ -293,9 +294,11 @@ destroy_provisioner() {
 main() {
   local skip_destroy=false
   local destroy_only=false
+  local setup_only=false
 
   for arg in "$@"; do
     case "$arg" in
+      --setup-only) setup_only=true ;;
       --skip-destroy) skip_destroy=true ;;
       --destroy-only) destroy_only=true ;;
       *) err "Unknown argument: $arg" ;;
@@ -324,6 +327,31 @@ main() {
   fi
 
   setup_provisioner
+
+  if $setup_only; then
+    log "Provisioner ready at $PROVISIONER_IP"
+    log ""
+    log "SSH in and run Pulumi manually:"
+    log "  ssh -A ${ssh_opts[*]} ada@$PROVISIONER_IP"
+    log ""
+    log "Then on the provisioner:"
+    log "  export PULUMI_BACKEND_URL='file:///tmp/pulumi-state'"
+    log "  export PULUMI_HOME='/tmp/pulumi-state/.home'"
+    log "  export PULUMI_CONFIG_PASSPHRASE='<passphrase>'"
+    log "  export SOPS_AGE_KEY_FILE='/tmp/workspace/.config/sops/age/keys.txt'"
+    log "  export MYNIX_DIR='/tmp/workspace/mynix'"
+    log "  export NIX_CONFIG='experimental-features = nix-command flakes'"
+    log "  cd /tmp/workspace/seed/infra"
+    log "  pulumi login \$PULUMI_BACKEND_URL"
+    log "  pulumi stack select prod"
+    log "  pulumi config set seed-infra:mynixDir /tmp/workspace/mynix -s prod"
+    log "  pulumi up -s prod -y --skip-preview"
+    log ""
+    log "When done, copy state back:"
+    log "  ./provision.sh --destroy-only  (or rsync state manually)"
+    exit 0
+  fi
+
   run_pulumi
   copy_state_back
 

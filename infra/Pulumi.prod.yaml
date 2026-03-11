@@ -13,6 +13,4 @@ config:
   seed-infra:nodes:
     - name: seed-atl-1
       clusterInit: true
-    - name: seed-atl-2
-    - name: seed-atl-3
 encryptionsalt: v1:c0fFQkAJsIo=:v1:XN5gSWH+RRUSUAtO:GrQCFkY+T/pA/fet/+gL19vE2tMqJA==
