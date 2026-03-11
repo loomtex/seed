@@ -199,7 +199,7 @@ export function provisionTang(
     ].join(" "),
     {
       stdio: "inherit",
-      timeout: 1800_000,
+      timeout: 7200_000, // 2h — local build + slow upload to small VM
       env: {
         ...process.env,
         NIX_CONFIG: "experimental-features = nix-command flakes\ntarball-ttl = 0",
