@@ -48,19 +48,20 @@ const vpc = provider.createVPC("seed-vpc", {
 });
 
 // --- Reserved IPs ---
-
-// Public IPv4 for LoadBalancer services (MetalLB L2 advertisement).
-const reservedIpv4 = provider.reserveIPv4("seed-ipv4", {
-  region,
-  label: "seed-atl",
-});
-
-// Public /64 IPv6 block for LoadBalancer services (MetalLB NDP advertisement).
-const reservedIpv6 = provider.reserveIPv6Block("seed-ipv6", {
-  region,
-  prefix: 64,
-  label: "seed-atl",
-});
+// TODO: uncomment when Vultr reserved IP quota clears
+//
+// // Public IPv4 for LoadBalancer services (MetalLB L2 advertisement).
+// const reservedIpv4 = provider.reserveIPv4("seed-ipv4", {
+//   region,
+//   label: "seed-atl",
+// });
+//
+// // Public /64 IPv6 block for LoadBalancer services (MetalLB NDP advertisement).
+// const reservedIpv6 = provider.reserveIPv6Block("seed-ipv6", {
+//   region,
+//   prefix: 64,
+//   label: "seed-atl",
+// });
 
 // --- Phase 1 exports (always available) ---
 
@@ -165,11 +166,9 @@ boot
   const manifest = pulumi.all([
     puncherVm.ipv4,
     puncherVm.internalIp,
-    reservedIpv4.address,
-    reservedIpv6.block,
     ...nodes.map((n) => bmOutputs[n.name].ip),
     ...nodes.map((n) => bmOutputs[n.name].id),
-  ]).apply(([puncherIp, puncherInternalIp, ipv4Addr, ipv6Block, ...rest]) => {
+  ]).apply(([puncherIp, puncherInternalIp, ...rest]) => {
     const nodeIps = rest.slice(0, nodes.length) as string[];
     const nodeIds = rest.slice(nodes.length) as string[];
 
@@ -188,8 +187,8 @@ boot
         bmId: nodeIds[i],
         flakeRef: `${flakeUri}#${n.name}`,
       })),
-      reservedIpv4: ipv4Addr,
-      reservedIpv6: ipv6Block,
+      reservedIpv4: "", // TODO: restore when IP quota clears
+      reservedIpv6: "", // TODO: restore when IP quota clears
       puncherPort,
       mynixDir,
       sopsFile: `${mynixDir}/.sops.yaml`,
@@ -202,8 +201,8 @@ boot
     clusterInfo: {
       puncherPublicIp: puncherVm.ipv4,
       puncherVpcIp: puncherVm.internalIp,
-      ipv4Address: reservedIpv4.address,
-      ipv6Block: reservedIpv6.block,
+      ipv4Address: "", // TODO: restore
+      ipv6Block: "",   // TODO: restore
       nodeCount: nodes.length,
     },
     nodeIPs: Object.fromEntries(

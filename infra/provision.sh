@@ -347,45 +347,77 @@ provision_stake() {
   sleep 10
   wait_for_ssh "$STAKE_IP" root 120
 
+  # Replace the tmpfs nix store overlay with a disk-backed one.
+  # The kexec installer runs entirely from RAM (squashfs + tmpfs overlay).
+  # We format the disk and swap the overlay so nix builds write to SSD,
+  # not RAM. The squashfs lower layer stays in RAM as the read-only base.
+  log "Swapping nix store overlay to disk..."
+  remote_ssh root "$STAKE_IP" '
+    set -euo pipefail
+
+    # Format disk and mount
+    mkfs.ext4 -q -F /dev/vda
+    mkdir -p /mnt/disk
+    mount /dev/vda /mnt/disk
+    mkdir -p /mnt/disk/nix-upper /mnt/disk/nix-work /mnt/disk/workspace
+
+    # Find current overlay upper dir and copy contents to disk
+    UPPER=$(mount | grep "on /nix/store" | grep -oP "upperdir=\K[^,]+")
+    if [ -n "$UPPER" ]; then
+      echo "Copying overlay upper ($UPPER) to disk..."
+      cp -a "$UPPER"/. /mnt/disk/nix-upper/ 2>/dev/null || true
+    fi
+
+    # Find the read-only lower dir
+    LOWER=$(mount | grep "on /nix/store" | grep -oP "lowerdir=\K[^,]+")
+    echo "Lower: $LOWER, Upper was: $UPPER"
+
+    # Stop nix-daemon, swap overlay, restart
+    systemctl stop nix-daemon.socket nix-daemon.service
+    umount -l /nix/store
+    mount -t overlay overlay \
+      -o "lowerdir=$LOWER,upperdir=/mnt/disk/nix-upper,workdir=/mnt/disk/nix-work" \
+      /nix/store
+    systemctl start nix-daemon.socket
+
+    echo "Nix store overlay now disk-backed at /dev/vda"
+    df -h /mnt/disk
+  '
+
   # Inject S3 binary cache credentials into the installer's nix-daemon.
   # Without this, everything builds from source instead of pulling from S3.
   configure_installer_cache
 
-  # Phase 2: Build from GitHub flake directly on the installer.
-  # This avoids nixos-anywhere's .drv copy from signi (which can't use our S3
-  # cache). The installer fetches the flake from GitHub, and nix-daemon pulls
-  # pre-built derivations from S3. With a warm cache this takes <1 min.
+  # Phase 2: Build the stake system and activate it in place.
+  # No disko, no nixos-install, no reboot. The kexec installer is already
+  # a running NixOS — we just switch its configuration. The disk is for
+  # nix store + workspace, not a root filesystem.
   local flake_uri="${STAKE_FLAKE%%#*}"
   local config_name="${STAKE_FLAKE##*#}"
 
-  log "Phase 2: building system on installer from $flake_uri ($config_name) + S3 cache..."
+  log "Phase 2: building + activating $config_name on installer..."
   remote_ssh root "$STAKE_IP" "
     set -euo pipefail
     export NIX_CONFIG='experimental-features = nix-command flakes'
-
-    echo '==> Building disko script...'
-    DISKO_PATH=\$(nix build '${flake_uri}#nixosConfigurations.${config_name}.config.system.build.diskoScript' \
-      --no-link --print-out-paths --refresh)
-    echo \"disko: \$DISKO_PATH\"
 
     echo '==> Building system toplevel...'
     SYSTEM_PATH=\$(nix build '${flake_uri}#nixosConfigurations.${config_name}.config.system.build.toplevel' \
       --no-link --print-out-paths --refresh)
     echo \"system: \$SYSTEM_PATH\"
 
-    echo '==> Running disko (partition + format + mount)...'
-    \$DISKO_PATH
+    echo '==> Activating in place (switch-to-configuration test)...'
+    \$SYSTEM_PATH/bin/switch-to-configuration test
+    nix-env -p /nix/var/nix/profiles/system --set \$SYSTEM_PATH 2>/dev/null || true
 
-    echo '==> Installing NixOS...'
-    nixos-install --system \$SYSTEM_PATH --no-root-password --no-channel-copy
+    echo '==> Activation complete'
+    hostname
   "
 
-  # Reboot into the installed system
-  log "Rebooting into installed system..."
-  remote_ssh root "$STAKE_IP" "reboot" || true
-  sleep 10
-  wait_for_ssh "$STAKE_IP" ada 300
-  log "Stake NixOS installed and reachable"
+  # The installer is now running the stake config. No reboot needed.
+  # Wait briefly for services to settle, then verify SSH as ada.
+  sleep 5
+  wait_for_ssh "$STAKE_IP" ada 60
+  log "Stake activated (ephemeral infect, no reboot)"
 }
 
 setup_stake() {
@@ -393,8 +425,15 @@ setup_stake() {
 
   log "Setting up stake environment"
 
-  # Clean + create workspace on stake (idempotent re-runs)
-  remote_ssh "$user" "$STAKE_IP" "rm -rf /tmp/workspace && mkdir -p /tmp/workspace"
+  # Workspace on disk (survives across setup re-runs, not in tmpfs RAM)
+  remote_ssh "$user" "$STAKE_IP" "
+    if mountpoint -q /mnt/disk 2>/dev/null; then
+      rm -rf /mnt/disk/workspace && mkdir -p /mnt/disk/workspace
+      ln -sfn /mnt/disk/workspace /tmp/workspace
+    else
+      rm -rf /tmp/workspace && mkdir -p /tmp/workspace
+    fi
+  "
 
   # Add GitHub SSH host key (git push needs it for host verification)
   remote_ssh "$user" "$STAKE_IP" "ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null"
@@ -681,11 +720,13 @@ main() {
 
   create_stake
 
-  # If stake was just created (Debian), install NixOS.
-  # If reusing an existing NixOS stake, skip.
+  # If stake is already activated (hostname = seed-stake), skip provisioning.
+  # The kexec installer has /etc/NIXOS too, so we check hostname instead.
   local needs_provision=true
-  if ssh "${ssh_opts[@]}" -o ConnectTimeout=5 "ada@$STAKE_IP" "test -f /etc/NIXOS" 2>/dev/null; then
-    log "Stake already running NixOS, skipping nixos-anywhere"
+  local current_hostname
+  current_hostname="$(ssh "${ssh_opts[@]}" -o ConnectTimeout=5 "ada@$STAKE_IP" hostname 2>/dev/null || true)"
+  if [[ "$current_hostname" == "seed-stake" ]]; then
+    log "Stake already activated (hostname=seed-stake), skipping provision"
     needs_provision=false
   fi
 
