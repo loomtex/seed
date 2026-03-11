@@ -100,6 +100,28 @@ preflight() {
 
 # --- Stake VM lifecycle ---
 
+ensure_ssh_keys() {
+  # Stake is created before Pulumi, so SSH keys might not exist in Vultr yet.
+  # Upload keys from ssh-agent if they're not already registered.
+  local existing_fps
+  existing_fps="$(vultr ssh-key list -o json | jq -r '.ssh_keys[].ssh_key' | ssh-keygen -l -f - 2>/dev/null | awk '{print $2}' || true)"
+
+  local i=0
+  while IFS= read -r pubkey; do
+    local fp
+    fp="$(echo "$pubkey" | ssh-keygen -l -f - 2>/dev/null | awk '{print $2}')"
+    if echo "$existing_fps" | grep -qF "$fp" 2>/dev/null; then
+      continue
+    fi
+    local comment
+    comment="$(echo "$pubkey" | awk '{print $3}')"
+    [[ -z "$comment" ]] && comment="key-$i"
+    log "Uploading SSH key: $comment"
+    vultr ssh-key create --name "$comment" --key "$pubkey" > /dev/null
+    i=$((i + 1))
+  done < <(ssh-add -L 2>/dev/null)
+}
+
 create_stake() {
   if [[ -f "$STAKE_STATE_FILE" ]]; then
     local existing_id
@@ -124,6 +146,9 @@ create_stake() {
   fi
 
   log "Creating stake VM ($STAKE_PLAN in $STAKE_REGION)"
+
+  # Ensure SSH keys are in Vultr (stake is created before Pulumi)
+  ensure_ssh_keys
 
   # Find SSH key IDs
   local ssh_key_args=()
