@@ -361,15 +361,14 @@ provision_stake() {
     mount /dev/vda /mnt/disk
     mkdir -p /mnt/disk/nix-upper /mnt/disk/nix-work /mnt/disk/workspace
 
-    # Find current overlay upper dir and copy contents to disk
-    UPPER=$(mount | grep "on /nix/store" | grep -oP "upperdir=\K[^,]+")
+    # Find current overlay upper and lower dirs (head -1 in case of duplicate mounts)
+    OVERLAY_LINE=$(mount | grep "^overlay on /nix/store " | head -1)
+    UPPER=$(echo "$OVERLAY_LINE" | grep -oP "upperdir=\K[^,)]+")
+    LOWER=$(echo "$OVERLAY_LINE" | grep -oP "lowerdir=\K[^,)]+")
     if [ -n "$UPPER" ]; then
       echo "Copying overlay upper ($UPPER) to disk..."
       cp -a "$UPPER"/. /mnt/disk/nix-upper/ 2>/dev/null || true
     fi
-
-    # Find the read-only lower dir
-    LOWER=$(mount | grep "on /nix/store" | grep -oP "lowerdir=\K[^,]+")
     echo "Lower: $LOWER, Upper was: $UPPER"
 
     # Stop nix-daemon, swap overlay, restart
