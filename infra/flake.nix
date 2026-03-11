@@ -10,6 +10,20 @@
     system = "x86_64-linux";
     pkgs = import nixpkgs { inherit system; };
 
+    # Slim Vultr provider: statically-linked Go binary, no patching needed
+    pulumi-resource-vultr = pkgs.stdenv.mkDerivation rec {
+      pname = "pulumi-resource-vultr";
+      version = "2.27.1";
+      src = pkgs.fetchurl {
+        url = "https://github.com/dirien/pulumi-vultr/releases/download/v${version}/${pname}-v${version}-linux-amd64.tar.gz";
+        hash = "sha256-m3B2z1kQaEqYkXqLLCqfcb/+oLMBc5lDkfz6lM3sXME=";
+      };
+      sourceRoot = ".";
+      installPhase = ''
+        install -Dm755 pulumi-resource-vultr $out/bin/pulumi-resource-vultr
+      '';
+    };
+
     # Wrapper that handles sops passphrase + local backend
     pulumiWrapper = pkgs.writeShellScriptBin "pu" ''
       set -euo pipefail
@@ -56,6 +70,7 @@
     infraPackages = [
       pkgs.pulumi
       pkgs.pulumiPackages.pulumi-language-nodejs
+      pulumi-resource-vultr
       pkgs.nodejs_22
       pkgs.sops
       pkgs.awscli2
