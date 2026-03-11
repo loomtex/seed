@@ -15,12 +15,21 @@
 # Prerequisites:
 #   - Vultr API key at /run/secrets/ada/vultr-api-key (signi sops)
 #   - Age key at ~/.config/sops/age/keys.txt
-#   - SSH key for target access (~/.ssh/id_ed25519)
+#   - SSH agent with key loaded (forwarded to provisioner for target access)
 #   - mynix repo at $MYNIX_DIR (default: /agents/ada/projects/mynix)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Re-exec inside nix shell with required tools if nixos-anywhere isn't on PATH
+if ! command -v nixos-anywhere &>/dev/null; then
+  exec nix shell \
+    nixpkgs#nixos-anywhere nixpkgs#sops nixpkgs#jq nixpkgs#rsync \
+    nixpkgs#openssh nixpkgs#vultr-cli \
+    -c bash "$0" "$@"
+fi
+
 SEED_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MYNIX_DIR="${MYNIX_DIR:-/agents/ada/projects/mynix}"
 VULTR_API_KEY_FILE="${VULTR_API_KEY_FILE:-/run/secrets/ada/vultr-api-key}"
@@ -39,14 +48,19 @@ PROVISIONER_OS_ID=2136  # Debian 12
 log() { echo "==> $*" >&2; }
 err() { echo "ERROR: $*" >&2; exit 1; }
 
-vultr_api() {
-  local method="$1" endpoint="$2"
+# vultr-cli wrapper — uses VULTR_API_KEY env var automatically
+vultr() { vultr-cli "$@"; }
+
+ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+
+remote_ssh() {
+  local user="$1" ip="$2"
   shift 2
-  curl -sf -X "$method" \
-    "https://api.vultr.com/v2$endpoint" \
-    -H "Authorization: Bearer $VULTR_API_KEY" \
-    -H "Content-Type: application/json" \
-    "$@"
+  ssh -A "${ssh_opts[@]}" "$user@$ip" "$@"
+}
+
+remote_scp() {
+  scp "${ssh_opts[@]}" "$@"
 }
 
 # --- Pre-flight checks ---
@@ -57,12 +71,13 @@ preflight() {
   export VULTR_API_KEY
 
   [[ -f "$AGE_KEY_FILE" ]] || err "Age key not found: $AGE_KEY_FILE"
-  [[ -f "$HOME/.ssh/id_ed25519" ]] || err "SSH key not found: ~/.ssh/id_ed25519"
   [[ -d "$MYNIX_DIR" ]] || err "mynix dir not found: $MYNIX_DIR"
+  ssh-add -l &>/dev/null || err "No SSH agent keys loaded (needed for agent forwarding)"
 
   command -v nixos-anywhere >/dev/null || err "nixos-anywhere not in PATH"
   command -v sops >/dev/null || err "sops not in PATH"
   command -v jq >/dev/null || err "jq not in PATH"
+  command -v vultr-cli >/dev/null || err "vultr-cli not in PATH"
 
   # Decrypt Pulumi passphrase (needed for provisioner to run Pulumi)
   PULUMI_PASSPHRASE="$(sops --decrypt --extract '["pulumi-passphrase"]' "$MYNIX_DIR/secrets/pulumi-passphrase.yaml")"
@@ -71,14 +86,11 @@ preflight() {
 
 # --- Provisioner VM lifecycle ---
 
-# Get SSH public key IDs from Vultr (reuse existing keys)
-get_ssh_key_ids() {
-  vultr_api GET /ssh-keys | jq -r '.ssh_keys[].id' | tr '\n' ',' | sed 's/,$//'
-}
-
 # Find the VPC ID for the seed cluster
 get_vpc_id() {
-  vultr_api GET "/vpcs2?per_page=100" | jq -r '.vpcs[] | select(.description == "Seed cluster internal network") | .id'
+  vultr instance list -o json | jq -r '
+    .instances[]? | select(.label == "seed-tang-1" or .label == "seed-atl-1") |
+    .vpc_ids[0] // empty' | head -1
 }
 
 create_provisioner() {
@@ -89,10 +101,10 @@ create_provisioner() {
 
     # Verify it's still alive
     local status
-    status="$(vultr_api GET "/instances/$existing_id" 2>/dev/null | jq -r '.instance.status' 2>/dev/null || echo "gone")"
+    status="$(vultr instance get "$existing_id" -o json 2>/dev/null | jq -r '.instance.status' 2>/dev/null || echo "gone")"
     if [[ "$status" != "gone" ]]; then
       PROVISIONER_ID="$existing_id"
-      PROVISIONER_IP="$(vultr_api GET "/instances/$existing_id" | jq -r '.instance.main_ip')"
+      PROVISIONER_IP="$(vultr instance get "$existing_id" -o json | jq -r '.instance.main_ip')"
       log "Reusing existing provisioner at $PROVISIONER_IP (status: $status)"
       return 0
     else
@@ -103,37 +115,34 @@ create_provisioner() {
 
   log "Creating provisioner VM ($PROVISIONER_PLAN in $PROVISIONER_REGION)"
 
-  local ssh_keys vpc_id
-  ssh_keys="$(get_ssh_key_ids)"
-  vpc_id="$(get_vpc_id)"
+  # Find SSH key IDs
+  local ssh_key_args=()
+  while IFS= read -r key_id; do
+    [[ -n "$key_id" ]] && ssh_key_args+=(--ssh-keys "$key_id")
+  done < <(vultr ssh-key list -o json | jq -r '.ssh_keys[].id')
 
-  local create_body
-  create_body=$(jq -n \
-    --arg region "$PROVISIONER_REGION" \
-    --arg plan "$PROVISIONER_PLAN" \
-    --arg label "$PROVISIONER_LABEL" \
-    --argjson os_id "$PROVISIONER_OS_ID" \
-    --arg vpc_id "$vpc_id" \
-    '{
-      region: $region,
-      plan: $plan,
-      label: $label,
-      hostname: $label,
-      os_id: $os_id,
-      enable_ipv6: true,
-      sshkey_id: [],
-      attach_vpc2: [$vpc_id],
-      activation_email: false
-    }')
-
-  # Add SSH key IDs as array
-  if [[ -n "$ssh_keys" ]]; then
-    create_body=$(echo "$create_body" | jq --arg keys "$ssh_keys" '.sshkey_id = ($keys | split(","))')
+  # Find VPC ID
+  local vpc_args=()
+  local vpc_id
+  vpc_id="$(vultr vpc list -o json | jq -r '.vpcs[] | select(.description == "Seed cluster internal network") | .id' | head -1)"
+  if [[ -n "$vpc_id" ]]; then
+    vpc_args=(--vpc-ids "$vpc_id" --vpc-enable)
   fi
 
-  local response
-  response="$(vultr_api POST /instances -d "$create_body")"
-  PROVISIONER_ID="$(echo "$response" | jq -r '.instance.id')"
+  # Create instance
+  local output
+  output="$(vultr instance create \
+    --region "$PROVISIONER_REGION" \
+    --plan "$PROVISIONER_PLAN" \
+    --os "$PROVISIONER_OS_ID" \
+    --label "$PROVISIONER_LABEL" \
+    --host "$PROVISIONER_LABEL" \
+    --ipv6 \
+    "${ssh_key_args[@]}" \
+    "${vpc_args[@]}" \
+    -o json)"
+
+  PROVISIONER_ID="$(echo "$output" | jq -r '.instance.id')"
   echo "$PROVISIONER_ID" > "$PROVISIONER_STATE_FILE"
   log "Created provisioner VM: $PROVISIONER_ID"
 
@@ -141,12 +150,12 @@ create_provisioner() {
   log "Waiting for IP assignment..."
   local attempts=0
   while (( attempts < 60 )); do
-    PROVISIONER_IP="$(vultr_api GET "/instances/$PROVISIONER_ID" | jq -r '.instance.main_ip')"
+    PROVISIONER_IP="$(vultr instance get "$PROVISIONER_ID" -o json | jq -r '.instance.main_ip')"
     if [[ "$PROVISIONER_IP" != "0.0.0.0" && "$PROVISIONER_IP" != "null" && -n "$PROVISIONER_IP" ]]; then
       break
     fi
     sleep 5
-    (( attempts++ ))
+    attempts=$(( attempts + 1 ))
   done
   [[ "$PROVISIONER_IP" != "0.0.0.0" ]] || err "Provisioner IP not assigned after 5 minutes"
   log "Provisioner IP: $PROVISIONER_IP"
@@ -158,8 +167,7 @@ wait_for_ssh() {
   local deadline=$(( $(date +%s) + timeout ))
 
   while (( $(date +%s) < deadline )); do
-    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-       -o ConnectTimeout=5 "$user@$ip" true 2>/dev/null; then
+    if ssh "${ssh_opts[@]}" -o ConnectTimeout=5 "$user@$ip" true 2>/dev/null; then
       log "SSH available at $user@$ip"
       return 0
     fi
@@ -173,11 +181,13 @@ provision_provisioner() {
 
   wait_for_ssh "$PROVISIONER_IP" root 300
 
-  # nixos-anywhere --build-on local: build the provisioner's closure on signi
-  # (it's a small closure — basic NixOS + tools, tolerable over Starlink)
+  # nixos-anywhere --build-on remote: the provisioner VM (8c/64GB) builds its own
+  # closure. The kexec phase sends a small NixOS installer from signi (~1GB), then
+  # the VM builds everything from cache.nixos.org. Avoids sending the full closure
+  # through signi's slow uplink.
   nixos-anywhere \
     --flake "$PROVISIONER_FLAKE" \
-    --build-on local \
+    --build-on remote \
     --phases kexec,disko,install,reboot \
     "root@$PROVISIONER_IP"
 
@@ -189,48 +199,39 @@ provision_provisioner() {
 
 setup_provisioner() {
   local user="ada"
-  local ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
   log "Setting up provisioner environment"
 
-  # Create workspace on provisioner
-  $ssh_cmd "$user@$PROVISIONER_IP" "mkdir -p /tmp/workspace /tmp/pulumi-state"
+  # Clean + create workspace on provisioner (idempotent re-runs)
+  remote_ssh "$user" "$PROVISIONER_IP" "rm -rf /tmp/workspace && mkdir -p /tmp/workspace /tmp/pulumi-state"
 
   # Clone repos from GitHub on the provisioner (fast — in-datacenter to GitHub)
   log "Cloning repos on provisioner..."
-  $ssh_cmd "$user@$PROVISIONER_IP" "git clone --depth 1 https://github.com/joshperry/mynix /tmp/workspace/mynix"
-  $ssh_cmd "$user@$PROVISIONER_IP" "git clone https://github.com/loomtex/seed /tmp/workspace/seed"
+  remote_ssh "$user" "$PROVISIONER_IP" "git clone --depth 1 https://github.com/joshperry/mynix /tmp/workspace/mynix"
+  remote_ssh "$user" "$PROVISIONER_IP" "git clone https://github.com/loomtex/seed /tmp/workspace/seed"
 
   # Copy Pulumi state (local backend)
   log "Copying Pulumi state..."
-  rsync -az -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+  rsync -az -e "ssh ${ssh_opts[*]}" \
     "$SCRIPT_DIR/.pulumi-state/" "$user@$PROVISIONER_IP:/tmp/pulumi-state/"
 
   # Copy age key for sops decryption
   log "Copying age key..."
-  $ssh_cmd "$user@$PROVISIONER_IP" "mkdir -p /tmp/workspace/.config/sops/age"
-  scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    "$AGE_KEY_FILE" "$user@$PROVISIONER_IP:/tmp/workspace/.config/sops/age/keys.txt"
+  remote_ssh "$user" "$PROVISIONER_IP" "mkdir -p /tmp/workspace/.config/sops/age"
+  remote_scp "$AGE_KEY_FILE" "$user@$PROVISIONER_IP:/tmp/workspace/.config/sops/age/keys.txt"
 
-  # Copy SSH key for connecting to targets
-  log "Copying SSH key..."
-  $ssh_cmd "$user@$PROVISIONER_IP" "mkdir -p ~/.ssh && chmod 700 ~/.ssh"
-  scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    "$HOME/.ssh/id_ed25519" "$user@$PROVISIONER_IP:~/.ssh/id_ed25519"
-  scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    "$HOME/.ssh/id_ed25519.pub" "$user@$PROVISIONER_IP:~/.ssh/id_ed25519.pub"
-  $ssh_cmd "$user@$PROVISIONER_IP" "chmod 600 ~/.ssh/id_ed25519"
+  # SSH agent forwarding (-A on remote_ssh) provides authentication for
+  # connecting to targets. No key copying needed.
 
   # Install npm dependencies for Pulumi project
   log "Installing npm dependencies..."
-  $ssh_cmd "$user@$PROVISIONER_IP" "cd /tmp/workspace/seed/infra && npm install"
+  remote_ssh "$user" "$PROVISIONER_IP" "cd /tmp/workspace/seed/infra && npm install"
 
   log "Provisioner environment ready"
 }
 
 run_pulumi() {
   local user="ada"
-  local ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
   log "Running Pulumi on provisioner..."
 
@@ -238,7 +239,7 @@ run_pulumi() {
   # SOPS_AGE_KEY_FILE points to the copied age key.
   # MYNIX_DIR points to the cloned mynix repo on the provisioner.
   # Pulumi uses local file backend at /tmp/pulumi-state.
-  $ssh_cmd "$user@$PROVISIONER_IP" "
+  remote_ssh "$user" "$PROVISIONER_IP" "
     set -euo pipefail
     export PULUMI_BACKEND_URL='file:///tmp/pulumi-state'
     export PULUMI_HOME='/tmp/pulumi-state/.home'
@@ -251,6 +252,10 @@ run_pulumi() {
 
     pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
     pulumi stack select prod 2>/dev/null || true
+
+    # Override mynixDir to point to the cloned repo on the provisioner
+    pulumi config set seed-infra:mynixDir /tmp/workspace/mynix -s prod
+
     pulumi up -s prod -y --skip-preview
   "
 
@@ -262,7 +267,7 @@ copy_state_back() {
 
   log "Copying Pulumi state back to signi..."
 
-  rsync -az -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+  rsync -az -e "ssh ${ssh_opts[*]}" \
     "$user@$PROVISIONER_IP:/tmp/pulumi-state/" "$SCRIPT_DIR/.pulumi-state/"
 
   log "Pulumi state synced"
@@ -278,7 +283,7 @@ destroy_provisioner() {
   id="$(cat "$PROVISIONER_STATE_FILE")"
   log "Destroying provisioner VM: $id"
 
-  vultr_api DELETE "/instances/$id" || log "Warning: destroy API call failed (VM may already be gone)"
+  vultr instance delete "$id" || log "Warning: destroy failed (VM may already be gone)"
   rm -f "$PROVISIONER_STATE_FILE"
   log "Provisioner destroyed"
 }
@@ -309,8 +314,7 @@ main() {
   # If provisioner was just created (Debian), install NixOS.
   # If reusing an existing NixOS provisioner, skip.
   local needs_provision=true
-  if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-     -o ConnectTimeout=5 "ada@$PROVISIONER_IP" "test -f /etc/NIXOS" 2>/dev/null; then
+  if ssh "${ssh_opts[@]}" -o ConnectTimeout=5 "ada@$PROVISIONER_IP" "test -f /etc/NIXOS" 2>/dev/null; then
     log "Provisioner already running NixOS, skipping nixos-anywhere"
     needs_provision=false
   fi
