@@ -335,7 +335,7 @@ run_pulumi_infra() {
     set -euo pipefail
     source /tmp/workspace/pulumi.env
     cd /tmp/workspace/seed/infra
-    pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
+    pulumi login "$PULUMI_BACKEND_URL" >/dev/null 2>&1
     pulumi stack output vpcId -s prod
   ')"
 
