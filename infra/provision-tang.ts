@@ -16,9 +16,6 @@ export interface TangProvisionConfig {
   flakeRef: string; // e.g. "github:joshperry/mynix#seed-tang-atl"
   mynixDir: string;
   vultrApiKeyFile?: string; // path to plaintext Vultr API key (for creating tang's sops secrets)
-  cacheBucket?: string;
-  cacheEndpoint?: string;
-  cachePublicKey?: string;
 }
 
 interface SSHKeyPair {

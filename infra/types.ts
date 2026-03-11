@@ -143,9 +143,6 @@ export interface NodeConfig {
   serverAddr?: string;
   initNodeIp?: string; // IP of the init node (for fetching k3s token on joining nodes)
   sshProxy?: string; // SSH host to proxy Tang/target connections through (e.g. "root@seed-dfw-1")
-  cacheBucket?: string;   // S3 bucket name for binary cache (e.g. "seed-nix-cache")
-  cacheEndpoint?: string; // S3 endpoint hostname (e.g. "atl2.vultrobjects.com")
-  cachePublicKey?: string; // nix public key for the cache (e.g. "seed-cache-1:...")
   reservedIpv4?: string;  // Cluster's reserved IPv4 (for controller ConfigMap + joining node serverAddr)
   reservedIpv6?: string;  // Cluster's reserved IPv6 block (for controller ConfigMap)
   vultrBmId?: string;     // Vultr bare metal ID (for triggering reinstall on PXE boot failure)
