@@ -111,8 +111,11 @@ create_stake() {
     status="$(vultr instance get "$existing_id" -o json 2>/dev/null | jq -r '.instance.status' 2>/dev/null || echo "gone")"
     if [[ "$status" != "gone" ]]; then
       STAKE_ID="$existing_id"
-      STAKE_IP="$(vultr instance get "$existing_id" -o json | jq -r '.instance.main_ip')"
-      log "Reusing existing stake at $STAKE_IP (status: $status)"
+      local instance_json
+      instance_json="$(vultr instance get "$existing_id" -o json)"
+      STAKE_IP="$(echo "$instance_json" | jq -r '.instance.main_ip')"
+      STAKE_VPC_IP="$(echo "$instance_json" | jq -r '.instance.internal_ip')"
+      log "Reusing existing stake at $STAKE_IP (VPC IP: $STAKE_VPC_IP, status: $status)"
       return 0
     else
       log "Stale state file — VM is gone, creating new one"
@@ -128,15 +131,7 @@ create_stake() {
     [[ -n "$key_id" ]] && ssh_key_args+=(--ssh-keys "$key_id")
   done < <(vultr ssh-key list -o json | jq -r '.ssh_keys[].id')
 
-  # Find VPC ID
-  local vpc_args=()
-  local vpc_id
-  vpc_id="$(vultr vpc list -o json | jq -r '.vpcs[] | select(.description == "Seed cluster internal network") | .id' | head -1)"
-  if [[ -n "$vpc_id" ]]; then
-    vpc_args=(--vpc-ids "$vpc_id" --vpc-enable)
-  fi
-
-  # Create instance
+  # Create instance (no VPC yet — Pulumi creates VPC, then we attach)
   local output
   output="$(vultr instance create \
     --region "$STAKE_REGION" \
@@ -146,14 +141,13 @@ create_stake() {
     --host "$STAKE_LABEL" \
     --ipv6 \
     "${ssh_key_args[@]}" \
-    "${vpc_args[@]}" \
     -o json)"
 
   STAKE_ID="$(echo "$output" | jq -r '.instance.id')"
   echo "$STAKE_ID" > "$STAKE_STATE_FILE"
   log "Created stake VM: $STAKE_ID"
 
-  # Wait for IP assignment
+  # Wait for public IP assignment (used for SSH from signi)
   log "Waiting for IP assignment..."
   local attempts=0
   while (( attempts < 60 )); do
@@ -165,7 +159,52 @@ create_stake() {
     attempts=$(( attempts + 1 ))
   done
   [[ "$STAKE_IP" != "0.0.0.0" ]] || err "Stake IP not assigned after 5 minutes"
-  log "Stake IP: $STAKE_IP"
+  log "Stake public IP: $STAKE_IP"
+}
+
+# Attach stake to Pulumi's VPC and get its VPC IP.
+# Called between the two Pulumi phases.
+attach_stake_to_vpc() {
+  local vpc_id="$1"
+
+  # Check if already attached
+  local current_internal
+  current_internal="$(vultr instance get "$STAKE_ID" -o json | jq -r '.instance.internal_ip')"
+  if [[ -n "$current_internal" && "$current_internal" != "null" && "$current_internal" != "" ]]; then
+    STAKE_VPC_IP="$current_internal"
+    log "Stake already on VPC (IP: $STAKE_VPC_IP)"
+    return 0
+  fi
+
+  log "Attaching stake to VPC $vpc_id..."
+  curl -sf -X POST "https://api.vultr.com/v2/instances/$STAKE_ID/vpcs/attach" \
+    -H "Authorization: Bearer $VULTR_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"vpc_id\":\"$vpc_id\"}"
+
+  # Wait for Vultr to assign VPC IP (API-side, not yet on the instance's OS)
+  log "Waiting for VPC IP assignment..."
+  local attempts=0
+  while (( attempts < 30 )); do
+    STAKE_VPC_IP="$(vultr instance get "$STAKE_ID" -o json | jq -r '.instance.internal_ip')"
+    if [[ -n "$STAKE_VPC_IP" && "$STAKE_VPC_IP" != "null" && "$STAKE_VPC_IP" != "" ]]; then
+      break
+    fi
+    sleep 5
+    attempts=$(( attempts + 1 ))
+  done
+  [[ -n "$STAKE_VPC_IP" && "$STAKE_VPC_IP" != "null" ]] || err "Stake VPC IP not assigned"
+  log "Stake VPC IP: $STAKE_VPC_IP"
+
+  # Hot-added VPC interface needs OS-side configuration.
+  # Restart dhcpcd to pick up the new interface via DHCP.
+  log "Configuring VPC interface on stake..."
+  remote_ssh ada "$STAKE_IP" "sudo systemctl restart dhcpcd && sleep 5"
+
+  # Verify the VPC IP is reachable from the stake itself
+  remote_ssh ada "$STAKE_IP" "ip addr show | grep -q '$STAKE_VPC_IP'" \
+    || err "VPC IP $STAKE_VPC_IP not found on stake after network restart"
+  log "VPC interface configured"
 }
 
 wait_for_ssh() {
@@ -246,32 +285,71 @@ chmod 600 ~/.aws/credentials"
   log "Stake environment ready"
 }
 
-run_pulumi() {
-  local user="ada"
-
-  log "Running Pulumi on stake..."
-
-  # Set the stakeIp config before running Pulumi.
-  # This tells Pulumi to point iPXE boot scripts at this stake VM.
-  remote_ssh "$user" "$STAKE_IP" "
-    set -euo pipefail
+pulumi_env() {
+  # Common Pulumi env vars for remote commands
+  cat <<ENVEOF
     export PULUMI_BACKEND_URL='$PULUMI_BACKEND_URL'
     export PULUMI_CONFIG_PASSPHRASE='$PULUMI_PASSPHRASE'
     export NIX_CONFIG='experimental-features = nix-command flakes'
+ENVEOF
+}
+
+# Phase 1: create VPC, SSH keys, reserved IPs. No stakeIp yet.
+run_pulumi_infra() {
+  local user="ada"
+
+  log "Pulumi phase 1: creating VPC + infrastructure..."
+
+  remote_ssh "$user" "$STAKE_IP" "
+    set -euo pipefail
+$(pulumi_env)
 
     cd /tmp/workspace/seed/infra
 
     pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
     pulumi stack select prod 2>/dev/null || pulumi stack init prod
 
-    # Override settings for this run
     pulumi config set seed-infra:mynixDir /tmp/workspace/mynix -s prod
-    pulumi config set seed-infra:stakeIp '$STAKE_IP' -s prod
+
+    # No stakeIp set — Pulumi only creates VPC, SSH keys, reserved IPs
+    pulumi config rm seed-infra:stakeIp -s prod 2>/dev/null || true
 
     pulumi up -s prod -y --skip-preview
   "
 
-  log "Pulumi completed"
+  # Read VPC ID from Pulumi outputs
+  PULUMI_VPC_ID="$(remote_ssh "$user" "$STAKE_IP" "
+    set -euo pipefail
+$(pulumi_env)
+    cd /tmp/workspace/seed/infra
+    pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
+    pulumi stack output vpcId -s prod
+  ")"
+
+  log "Pulumi phase 1 complete — VPC: $PULUMI_VPC_ID"
+}
+
+# Phase 2: create boot script, puncher, BM nodes (stakeIp is now set).
+run_pulumi_machines() {
+  local user="ada"
+
+  log "Pulumi phase 2: creating machines (stakeIp=$STAKE_VPC_IP)..."
+
+  remote_ssh "$user" "$STAKE_IP" "
+    set -euo pipefail
+$(pulumi_env)
+
+    cd /tmp/workspace/seed/infra
+
+    pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
+    pulumi stack select prod 2>/dev/null
+
+    pulumi config set seed-infra:stakeIp '$STAKE_VPC_IP' -s prod
+
+    pulumi up -s prod -y --skip-preview
+  "
+
+  log "Pulumi phase 2 complete"
 }
 
 run_provision() {
@@ -358,32 +436,24 @@ main() {
   if $setup_only; then
     log "Stake ready at $STAKE_IP"
     log ""
-    log "SSH in and run Pulumi manually:"
+    log "To continue automated provisioning:"
+    log "  ./provision.sh --skip-destroy"
+    log ""
+    log "Or SSH in and run manually:"
     log "  ssh -A ${ssh_opts[*]} ada@$STAKE_IP"
-    log ""
-    log "Then on the stake:"
-    log "  export PULUMI_BACKEND_URL='$PULUMI_BACKEND_URL'"
-    log "  export PULUMI_CONFIG_PASSPHRASE='<passphrase>'"
-    log "  export SOPS_AGE_KEY_FILE='/tmp/workspace/.config/sops/age/keys.txt'"
-    log "  export MYNIX_DIR='/tmp/workspace/mynix'"
-    log "  export NIX_CONFIG='experimental-features = nix-command flakes'"
-    log "  cd /tmp/workspace/seed/infra"
-    log "  pulumi login \$PULUMI_BACKEND_URL"
-    log "  pulumi stack select prod"
-    log "  pulumi config set seed-infra:mynixDir /tmp/workspace/mynix -s prod"
-    log "  pulumi config set seed-infra:stakeIp $STAKE_IP -s prod"
-    log "  pulumi up -s prod -y --skip-preview"
-    log ""
-    log "Then run provisioning:"
-    log "  pulumi stack output manifest --json -s prod > /tmp/manifest.json"
-    log "  npx tsx provision-cluster.ts --manifest /tmp/manifest.json"
-    log ""
-    log "When done:"
-    log "  ./provision.sh --destroy-only"
     exit 0
   fi
 
-  run_pulumi
+  # Phase 1: Pulumi creates VPC + infrastructure (no machines yet)
+  run_pulumi_infra
+
+  # Attach stake to the VPC so it can serve netboot to targets
+  attach_stake_to_vpc "$PULUMI_VPC_ID"
+
+  # Phase 2: Pulumi creates boot script + machines (using stake's VPC IP)
+  run_pulumi_machines
+
+  # Event-driven provisioning
   run_provision
 
   if $skip_destroy; then
