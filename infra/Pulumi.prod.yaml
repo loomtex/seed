@@ -2,7 +2,7 @@ config:
   seed-infra:region: atl
   seed-infra:plan: bm-6c-32gb
   seed-infra:flakeUri: github:joshperry/mynix
-  seed-infra:tangPort: "7654"
+  seed-infra:puncherPort: "7654"
   seed-infra:cacheBucket: seed-nix-cache
   seed-infra:cacheEndpoint: atl2.vultrobjects.com
   seed-infra:sshPubKeys:

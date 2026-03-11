@@ -3,12 +3,10 @@ import {
   mkdirSync,
   mkdtempSync,
   writeFileSync,
-  readFileSync,
   rmSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import * as pulumi from "@pulumi/pulumi";
 import type { NodeConfig } from "./types.ts";
 import {
   sshToAge,
@@ -112,7 +110,7 @@ function waitForSSHDown(
       return;
     }
   }
-  pulumi.log.warn(`SSH to ${ip} did not go down within ${timeout}s`);
+  console.warn(`SSH to ${ip} did not go down within ${timeout}s`);
 }
 
 // Prepare the extra-files directory for nixos-anywhere.
@@ -178,7 +176,7 @@ function verifyNodeHealth(ip: string, label: string): void {
   // Check hostname
   const hostname = sshCmd("hostname");
   if (hostname !== label) {
-    pulumi.log.warn(`Expected hostname ${label}, got ${hostname}`);
+    console.warn(`Expected hostname ${label}, got ${hostname}`);
   }
 
   // Check LUKS is active
@@ -191,80 +189,7 @@ function verifyNodeHealth(ip: string, label: string): void {
   const fingerprint = sshCmd(
     "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"
   );
-  pulumi.log.info(`${label} SSH fingerprint: ${fingerprint}`);
-}
-
-// Compute the /23 CIDR for an IPv4 address (Vultr bare metal subnets).
-function ipToSubnet23(ip: string): string {
-  const parts = ip.split(".").map(Number);
-  // /23 means the third octet's LSB is masked out
-  parts[2] = parts[2] & 0xfe;
-  parts[3] = 0;
-  return `${parts.join(".")}/23`;
-}
-
-// Add a node's subnet to the Tang allowlist (node-subnets.nix).
-// Idempotent: skips if the subnet is already listed.
-function addTangSubnet(mynixDir: string, ip: string, comment: string): void {
-  const subnetsFile = join(mynixDir, "machines", "seed-tang-1", "node-subnets.nix");
-  const content = readFileSync(subnetsFile, "utf-8");
-  const subnet = ipToSubnet23(ip);
-
-  if (content.includes(subnet)) {
-    return; // Already listed
-  }
-
-  // Insert before the closing bracket
-  const newLine = `  "${subnet}"   # ${comment}`;
-  const updated = content.replace(/\n\]/, `\n${newLine}\n]`);
-  writeFileSync(subnetsFile, updated);
-}
-
-// Update Tang's runtime IPAddressAllow to include a new subnet.
-// SSHes to tang-1 and adds a systemd drop-in so the change takes effect
-// immediately without rebuilding tang-1.
-function updateTangRuntime(tangUrl: string, nodeIp: string, sshProxy?: string): void {
-  const subnet = ipToSubnet23(nodeIp);
-  const tangHost = new URL(tangUrl).hostname;
-  const user = userInfo().username;
-
-  // SSH to tang-1 to add a runtime drop-in.
-  // If sshProxy is set, jump through it (tang may be firewalled from signi).
-  const dropinDir = "/run/systemd/system/tangd.socket.d";
-  const safeName = subnet.replace(/[./]/g, "-");
-  const dropinContent = `[Socket]\\nIPAddressAllow=${subnet}`;
-
-  const sshBase = [
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-  ];
-  if (sshProxy) {
-    sshBase.push("-J", sshProxy);
-  }
-  const sshTarget = `${user}@${tangHost}`;
-
-  // Check if the subnet is already allowed (skip if so)
-  try {
-    const existing = execFileSync("ssh", [
-      ...sshBase,
-      sshTarget,
-      `sudo systemctl show tangd.socket -p IPAddressAllow`,
-    ], { encoding: "utf-8", timeout: 15_000 }).trim();
-
-    if (existing.includes(subnet.split("/")[0])) {
-      pulumi.log.info(`Tang already allows ${subnet}, skipping runtime update`);
-      return;
-    }
-  } catch {
-    // Can't check — proceed with the update anyway
-  }
-
-  execFileSync("ssh", [
-    ...sshBase,
-    sshTarget,
-    `sudo mkdir -p ${dropinDir} && printf '${dropinContent}' | sudo tee ${dropinDir}/${safeName}.conf > /dev/null && sudo systemctl daemon-reload && sudo systemctl restart tangd.socket`,
-  ], { stdio: "pipe", timeout: 30_000 });
-  pulumi.log.info(`Tang updated: ${subnet} now allowed (runtime drop-in)`);
+  console.log(`${label} SSH fingerprint: ${fingerprint}`);
 }
 
 // Attempt LUKS unlock via initrd SSH (port 2222).
@@ -276,7 +201,7 @@ function unlockLuksViaInitrd(ip: string, passphrase: string): void {
     "-p", "2222",
   ];
 
-  pulumi.log.info(`Attempting LUKS unlock via initrd SSH at ${ip}:2222`);
+  console.log(`Attempting LUKS unlock via initrd SSH at ${ip}:2222`);
 
   // systemd-tty-ask-password-agent in --watch mode reads from stdin
   // We pipe the passphrase to it
@@ -284,7 +209,7 @@ function unlockLuksViaInitrd(ip: string, passphrase: string): void {
     `echo -n ${shellQuote(passphrase)} | ssh ${sshBase.join(" ")} root@${ip} "systemd-tty-ask-password-agent"`,
     { stdio: "pipe", timeout: 30_000 }
   );
-  pulumi.log.info(`LUKS passphrase sent via initrd SSH`);
+  console.log(`LUKS passphrase sent via initrd SSH`);
 }
 
 // Wait for k3s API server to be ready on a node.
@@ -338,7 +263,7 @@ function generateK3sToken(): string {
 // This re-PXE-boots the server from its startup script. Vultr BMs only PXE boot
 // on initial creation or after a reinstall — a plain reboot won't re-PXE.
 function reinstallBareMetal(apiKey: string, bmId: string): void {
-  pulumi.log.info(`Triggering Vultr reinstall for bare metal ${bmId}`);
+  console.log(`Triggering Vultr reinstall for bare metal ${bmId}`);
   execFileSync("curl", [
     "-sf", "-X", "POST",
     `https://api.vultr.com/v2/bare-metals/${bmId}/reinstall`,
@@ -360,7 +285,7 @@ function waitForSSHWithReinstall(
     waitForSSH(ip, { timeout: initialTimeout, sshProxy });
   } catch {
     if (config.vultrBmId && vultrApiKey) {
-      pulumi.log.info(`${config.name}: SSH timeout after ${initialTimeout}s — triggering Vultr reinstall (re-PXE boot)`);
+      console.log(`${config.name}: SSH timeout after ${initialTimeout}s — triggering Vultr reinstall (re-PXE boot)`);
       reinstallBareMetal(vultrApiKey, config.vultrBmId);
       waitForSSH(ip, { timeout: reinstallTimeout, sshProxy });
     } else {
@@ -370,19 +295,19 @@ function waitForSSHWithReinstall(
 }
 
 // Full provisioning workflow for a single node.
-// Runs synchronously (called inside pulumi.output.apply).
+// Runs synchronously.
 export function provisionNode(
   ip: string,
   config: NodeConfig,
   vultrApiKey?: string,
 ): ProvisionResult {
-  pulumi.log.info(`Provisioning ${config.name} at ${ip}...`);
+  console.log(`Provisioning ${config.name} at ${ip}...`);
 
   // Check if node is already provisioned and healthy — skip if so.
   // This makes the provisioner idempotent (safe to re-run after failures).
   try {
     verifyNodeHealth(ip, config.name);
-    pulumi.log.info(`${config.name}: already provisioned and healthy, skipping`);
+    console.log(`${config.name}: already provisioned and healthy, skipping`);
     const user = userInfo().username;
     const existingPubKey = execFileSync(
       "ssh",
@@ -397,38 +322,33 @@ export function provisionNode(
     const agePublicKey = sshToAge(existingPubKey);
     return { luksPassphrase: "", agePublicKey };
   } catch {
-    pulumi.log.info(`${config.name}: not yet provisioned, proceeding`);
+    console.log(`${config.name}: not yet provisioned, proceeding`);
   }
 
-  // 0. Add node's subnet to Tang allowlist (permanent + runtime)
-  pulumi.log.info(`${config.name}: updating Tang allowlist with ${ip}`);
-  addTangSubnet(config.mynixDir, ip, config.name);
-  updateTangRuntime(config.tangUrl, ip, config.sshProxy);
-
   // 1. Generate SSH host keys
-  pulumi.log.info(`${config.name}: generating SSH host keys`);
+  console.log(`${config.name}: generating SSH host keys`);
   const hostEd25519 = generateSSHKeys(`root@${config.name}`, "ed25519");
   const hostRsa = generateSSHKeys(`root@${config.name}`, "rsa");
   const initrdKey = generateSSHKeys(`initrd@${config.name}`, "ed25519");
 
   // 2. Derive age public key from ed25519 host key
   const agePublicKey = sshToAge(hostEd25519.publicKey);
-  pulumi.log.info(`${config.name}: age key = ${agePublicKey}`);
+  console.log(`${config.name}: age key = ${agePublicKey}`);
 
   // 3. Update .sops.yaml with node's age key
-  pulumi.log.info(`${config.name}: updating sops configuration`);
+  console.log(`${config.name}: updating sops configuration`);
   const sopsYamlPath = join(config.mynixDir, ".sops.yaml");
   addNodeToSops(sopsYamlPath, config.name, agePublicKey);
 
   // 4. Get or generate k3s token + create per-node secrets file
-  pulumi.log.info(`${config.name}: creating node secrets`);
+  console.log(`${config.name}: creating node secrets`);
   let k3sToken: string;
   if (config.clusterInit) {
     k3sToken = generateK3sToken();
-    pulumi.log.info(`${config.name}: generated new k3s cluster token`);
+    console.log(`${config.name}: generated new k3s cluster token`);
   } else if (config.initNodeIp) {
     k3sToken = fetchK3sToken(config.initNodeIp);
-    pulumi.log.info(`${config.name}: fetched k3s token from init node ${config.initNodeIp}`);
+    console.log(`${config.name}: fetched k3s token from init node ${config.initNodeIp}`);
   } else {
     throw new Error(`${config.name}: joining node requires initNodeIp to fetch k3s token`);
   }
@@ -437,24 +357,24 @@ export function provisionNode(
   });
 
   // 5. Re-encrypt seed-system.yaml so the new node can decrypt shared secrets
-  pulumi.log.info(`${config.name}: re-encrypting seed-system.yaml`);
+  console.log(`${config.name}: re-encrypting seed-system.yaml`);
   reencryptSecrets(config.mynixDir, "secrets/seed-system.yaml");
 
   // 6. Generate LUKS passphrase + Clevis JWE
-  pulumi.log.info(`${config.name}: creating LUKS passphrase + Clevis JWE`);
+  console.log(`${config.name}: creating LUKS passphrase + Clevis JWE`);
   const luksPassphrase = generateLuksPassphrase();
   const clevisJWE = createClevisJWE(luksPassphrase, config.tangUrl, config.sshProxy);
 
   // 7. Store LUKS passphrase in sops-encrypted recovery file + commit all secrets
-  pulumi.log.info(`${config.name}: storing LUKS recovery passphrase`);
+  console.log(`${config.name}: storing LUKS recovery passphrase`);
   updateLuksRecovery(config.mynixDir, config.name, luksPassphrase);
   execSync(
-    `cd ${shellQuote(config.mynixDir)} && git add .sops.yaml secrets/ machines/seed-tang-1/node-subnets.nix && git commit -m "infra: add secrets + sops config for ${config.name}" && git push`,
+    `cd ${shellQuote(config.mynixDir)} && git add .sops.yaml secrets/ && git commit -m "infra: add secrets + sops config for ${config.name}" && git push`,
     { stdio: "pipe", timeout: 30_000 }
   );
 
   // 8. Prepare extra-files
-  pulumi.log.info(`${config.name}: preparing extra-files`);
+  console.log(`${config.name}: preparing extra-files`);
 
   // Joining nodes: write server-addr so k3s knows which server to join.
   // Uses the init node's actual IP (not the reserved IP, which may not be
@@ -478,11 +398,11 @@ export function provisionNode(
   writeFileSync(passFile, luksPassphrase, { mode: 0o600 });
 
   // 9. Wait for iPXE instance SSH (with reinstall fallback for PXE failures)
-  pulumi.log.info(`${config.name}: waiting for iPXE instance SSH at ${ip}`);
+  console.log(`${config.name}: waiting for iPXE instance SSH at ${ip}`);
   waitForSSHWithReinstall(ip, config, vultrApiKey, { sshProxy: config.sshProxy });
 
   // 10. Run nixos-anywhere
-  pulumi.log.info(`${config.name}: running nixos-anywhere`);
+  console.log(`${config.name}: running nixos-anywhere`);
   execSync(
     [
       "nixos-anywhere",
@@ -511,9 +431,9 @@ export function provisionNode(
   );
 
   // 11. Wait for reboot + verify (with initrd LUKS fallback)
-  pulumi.log.info(`${config.name}: waiting for reboot`);
+  console.log(`${config.name}: waiting for reboot`);
   waitForSSHDown(ip, { timeout: 120 });
-  pulumi.log.info(`${config.name}: waiting for post-install SSH`);
+  console.log(`${config.name}: waiting for post-install SSH`);
   try {
     // First, try waiting for normal SSH (port 22) — if Clevis auto-unlock
     // worked, the system boots fully and SSH comes up directly.
@@ -521,24 +441,24 @@ export function provisionNode(
   } catch {
     // Normal SSH didn't come up — likely stuck at LUKS prompt in initrd.
     // Fall back to unlocking via initrd SSH (port 2222).
-    pulumi.log.info(`${config.name}: normal SSH timeout, trying initrd LUKS unlock`);
+    console.log(`${config.name}: normal SSH timeout, trying initrd LUKS unlock`);
     try {
       waitForSSH(ip, { timeout: 120, port: 2222, user: "root" });
       unlockLuksViaInitrd(ip, luksPassphrase);
-      pulumi.log.info(`${config.name}: LUKS unlocked via initrd, waiting for full boot`);
+      console.log(`${config.name}: LUKS unlocked via initrd, waiting for full boot`);
     } catch (e) {
-      pulumi.log.warn(`${config.name}: initrd SSH also failed — may need manual LUKS unlock`);
+      console.warn(`${config.name}: initrd SSH also failed — may need manual LUKS unlock`);
     }
     waitForSSH(ip, { timeout: 300, user: userInfo().username });
   }
 
-  pulumi.log.info(`${config.name}: verifying health`);
+  console.log(`${config.name}: verifying health`);
   verifyNodeHealth(ip, config.name);
 
   // 12. For init node: wait for k3s API and create seed-cluster-config ConfigMap
   //     with reserved IPs so the controller can configure MetalLB.
   if (config.clusterInit && (config.reservedIpv4 || config.reservedIpv6)) {
-    pulumi.log.info(`${config.name}: waiting for k3s API`);
+    console.log(`${config.name}: waiting for k3s API`);
     waitForK3s(ip, 300);
 
     const user = userInfo().username;
@@ -563,13 +483,13 @@ export function provisionNode(
     } catch {
       // Controller deployment may not exist yet — that's fine, it'll pick up the ConfigMap on first start
     }
-    pulumi.log.info(`${config.name}: seed-cluster-config ConfigMap created`);
+    console.log(`${config.name}: seed-cluster-config ConfigMap created`);
   }
 
   // Cleanup
   rmSync(extraDir, { recursive: true });
 
-  pulumi.log.info(`${config.name}: provisioning complete`);
+  console.log(`${config.name}: provisioning complete`);
 
   return { luksPassphrase, agePublicKey };
 }

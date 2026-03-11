@@ -47,6 +47,7 @@ export interface VMArgs {
   sshKeyIds?: pulumi.Input<string>[];
   vpcId?: pulumi.Input<string>;
   tags?: string[];
+  bootScriptId?: pulumi.Input<string>; // iPXE boot script (uses osId 159 when set)
 }
 
 export interface VM {
@@ -146,4 +147,30 @@ export interface NodeConfig {
   reservedIpv4?: string;  // Cluster's reserved IPv4 (for controller ConfigMap + joining node serverAddr)
   reservedIpv6?: string;  // Cluster's reserved IPv6 block (for controller ConfigMap)
   vultrBmId?: string;     // Vultr bare metal ID (for triggering reinstall on PXE boot failure)
+}
+
+// --- Cluster Manifest ---
+// Output by Pulumi for the provision-cluster script.
+// For physical racks, write by hand.
+
+export interface ClusterManifest {
+  puncher: {
+    name: string;          // "seed-puncher-1"
+    ip: string;            // public IP (for matching registrations)
+    internalIp: string;    // VPC IP
+    flakeRef: string;      // "github:joshperry/mynix#seed-puncher-1"
+  };
+  nodes: {
+    name: string;          // "seed-atl-1"
+    ip: string;            // public IP
+    internalIp: string;    // VPC IP
+    clusterInit?: boolean;
+    bmId?: string;         // Vultr BM ID (for reinstall)
+    flakeRef: string;      // "github:joshperry/mynix#seed-atl-1"
+  }[];
+  reservedIpv4: string;
+  reservedIpv6: string;
+  puncherPort: number;     // Tang port (7654)
+  mynixDir: string;
+  sopsFile: string;
 }

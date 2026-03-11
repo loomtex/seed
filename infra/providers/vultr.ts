@@ -70,7 +70,9 @@ export class VultrProvider implements SeedProvider {
       plan,
       label: args.label,
       hostname: args.label,
-      osId: args.osId,
+      // When bootScriptId is set, use OS 159 (Custom) for iPXE boot
+      osId: args.bootScriptId ? 159 : args.osId,
+      scriptId: args.bootScriptId,
       enableIpv6: args.enableIPv6,
       sshKeyIds: args.sshKeyIds,
       vpcIds: args.vpcId ? [args.vpcId] : undefined,

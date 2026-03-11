@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import * as pulumi from "@pulumi/pulumi";
 import { sshToAge, addNodeToSops, encryptSecrets, reencryptSecrets } from "./sops.ts";
 
 export interface TangProvisionConfig {
@@ -94,7 +93,7 @@ function waitForSSHDown(
       return;
     }
   }
-  pulumi.log.warn(`SSH to ${ip} did not go down within ${timeout}s`);
+  console.warn(`SSH to ${ip} did not go down within ${timeout}s`);
 }
 
 function shellQuote(s: string): string {
@@ -106,7 +105,7 @@ export function provisionTang(
   ip: string,
   config: TangProvisionConfig
 ): { agePublicKey: string } {
-  pulumi.log.info(`Provisioning tang ${config.name} at ${ip}...`);
+  console.log(`Provisioning tang ${config.name} at ${ip}...`);
 
   // Check if already provisioned
   const user = userInfo().username;
@@ -119,7 +118,7 @@ export function provisionTang(
     ], { encoding: "utf-8", timeout: 15_000 }).trim();
 
     if (hostname === config.name) {
-      pulumi.log.info(`${config.name}: already provisioned, skipping`);
+      console.log(`${config.name}: already provisioned, skipping`);
       const existingPubKey = execFileSync("ssh", [
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
@@ -129,26 +128,26 @@ export function provisionTang(
       return { agePublicKey: sshToAge(existingPubKey) };
     }
   } catch {
-    pulumi.log.info(`${config.name}: not yet provisioned, proceeding`);
+    console.log(`${config.name}: not yet provisioned, proceeding`);
   }
 
   // 1. Generate SSH host keys
-  pulumi.log.info(`${config.name}: generating SSH host keys`);
+  console.log(`${config.name}: generating SSH host keys`);
   const hostEd25519 = generateSSHKeys(`root@${config.name}`, "ed25519");
   const hostRsa = generateSSHKeys(`root@${config.name}`, "rsa");
 
   // 2. Derive age key
   const agePublicKey = sshToAge(hostEd25519.publicKey);
-  pulumi.log.info(`${config.name}: age key = ${agePublicKey}`);
+  console.log(`${config.name}: age key = ${agePublicKey}`);
 
   // 3. Update .sops.yaml
-  pulumi.log.info(`${config.name}: updating sops configuration`);
+  console.log(`${config.name}: updating sops configuration`);
   const sopsYamlPath = join(config.mynixDir, ".sops.yaml");
   addNodeToSops(sopsYamlPath, config.name, agePublicKey);
 
   // 4. Create per-tang secrets file (vultr-api-key for DNS sync)
   if (config.vultrApiKeyFile) {
-    pulumi.log.info(`${config.name}: creating secrets file`);
+    console.log(`${config.name}: creating secrets file`);
     const vultrApiKey = readFileSync(config.vultrApiKeyFile, "utf-8").trim();
     encryptSecrets(config.mynixDir, `secrets/${config.name}.yaml`, {
       "vultr-api-key": vultrApiKey,
@@ -156,7 +155,7 @@ export function provisionTang(
   }
 
   // 5. Re-encrypt shared secrets
-  pulumi.log.info(`${config.name}: re-encrypting seed-system.yaml`);
+  console.log(`${config.name}: re-encrypting seed-system.yaml`);
   reencryptSecrets(config.mynixDir, "secrets/seed-system.yaml");
 
   // 6. Commit + push sops changes
@@ -166,7 +165,7 @@ export function provisionTang(
   );
 
   // 7. Prepare extra-files (SSH host keys only — no LUKS, no Clevis)
-  pulumi.log.info(`${config.name}: preparing extra-files`);
+  console.log(`${config.name}: preparing extra-files`);
   const extraDir = mkdtempSync(join(tmpdir(), "tang-extra-"));
   const sshDir = join(extraDir, "etc", "ssh");
   mkdirSync(sshDir, { recursive: true });
@@ -176,12 +175,12 @@ export function provisionTang(
   writeFileSync(join(sshDir, "ssh_host_rsa_key.pub"), hostRsa.publicKey + "\n", { mode: 0o644 });
 
   // 8. Wait for Debian SSH
-  pulumi.log.info(`${config.name}: waiting for SSH at ${ip}`);
+  console.log(`${config.name}: waiting for SSH at ${ip}`);
   waitForSSH(ip, { timeout: 300 });
 
   // 9. Run nixos-anywhere (no disk encryption, simple install)
   // kexec phase boots into NixOS installer (Debian doesn't have nix-daemon).
-  pulumi.log.info(`${config.name}: running nixos-anywhere`);
+  console.log(`${config.name}: running nixos-anywhere`);
   execSync(
     [
       "nixos-anywhere",
@@ -205,9 +204,9 @@ export function provisionTang(
   );
 
   // 10. Wait for reboot + verify
-  pulumi.log.info(`${config.name}: waiting for reboot`);
+  console.log(`${config.name}: waiting for reboot`);
   waitForSSHDown(ip, { timeout: 120 });
-  pulumi.log.info(`${config.name}: waiting for post-install SSH`);
+  console.log(`${config.name}: waiting for post-install SSH`);
   waitForSSH(ip, { timeout: 300, user });
 
   const hostname = execFileSync("ssh", [
@@ -218,12 +217,12 @@ export function provisionTang(
   ], { encoding: "utf-8", timeout: 15_000 }).trim();
 
   if (hostname !== config.name) {
-    pulumi.log.warn(`Expected hostname ${config.name}, got ${hostname}`);
+    console.warn(`Expected hostname ${config.name}, got ${hostname}`);
   }
 
   // Cleanup
   rmSync(extraDir, { recursive: true });
 
-  pulumi.log.info(`${config.name}: provisioning complete`);
+  console.log(`${config.name}: provisioning complete`);
   return { agePublicKey };
 }
