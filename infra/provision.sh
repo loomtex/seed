@@ -291,20 +291,20 @@ aws_secret_access_key=$S3_SECRET_KEY
 AWSEOF
 chmod 600 ~/.aws/credentials"
 
+  # Write Pulumi env file (sourced by remote commands — avoids quoting issues over SSH)
+  log "Writing Pulumi env..."
+  remote_ssh "$user" "$STAKE_IP" "cat > /tmp/workspace/pulumi.env << 'ENVEOF'
+export PULUMI_BACKEND_URL='$PULUMI_BACKEND_URL'
+export PULUMI_CONFIG_PASSPHRASE='$PULUMI_PASSPHRASE'
+export NIX_CONFIG='experimental-features = nix-command flakes'
+ENVEOF
+chmod 600 /tmp/workspace/pulumi.env"
+
   # Install npm dependencies for Pulumi project
   log "Installing npm dependencies..."
   remote_ssh "$user" "$STAKE_IP" "cd /tmp/workspace/seed/infra && npm install"
 
   log "Stake environment ready"
-}
-
-pulumi_env() {
-  # Common Pulumi env vars for remote commands
-  cat <<ENVEOF
-    export PULUMI_BACKEND_URL='$PULUMI_BACKEND_URL'
-    export PULUMI_CONFIG_PASSPHRASE='$PULUMI_PASSPHRASE'
-    export NIX_CONFIG='experimental-features = nix-command flakes'
-ENVEOF
 }
 
 # Phase 1: create VPC, SSH keys, reserved IPs. No stakeIp yet.
@@ -313,13 +313,13 @@ run_pulumi_infra() {
 
   log "Pulumi phase 1: creating VPC + infrastructure..."
 
-  remote_ssh "$user" "$STAKE_IP" "
+  remote_ssh "$user" "$STAKE_IP" '
     set -euo pipefail
-$(pulumi_env)
+    source /tmp/workspace/pulumi.env
 
     cd /tmp/workspace/seed/infra
 
-    pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
+    pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
     pulumi stack select prod 2>/dev/null || pulumi stack init prod
 
     pulumi config set seed-infra:mynixDir /tmp/workspace/mynix -s prod
@@ -328,16 +328,16 @@ $(pulumi_env)
     pulumi config rm seed-infra:stakeIp -s prod 2>/dev/null || true
 
     pulumi up -s prod -y --skip-preview
-  "
+  '
 
   # Read VPC ID from Pulumi outputs
-  PULUMI_VPC_ID="$(remote_ssh "$user" "$STAKE_IP" "
+  PULUMI_VPC_ID="$(remote_ssh "$user" "$STAKE_IP" '
     set -euo pipefail
-$(pulumi_env)
+    source /tmp/workspace/pulumi.env
     cd /tmp/workspace/seed/infra
-    pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
+    pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
     pulumi stack output vpcId -s prod
-  ")"
+  ')"
 
   log "Pulumi phase 1 complete — VPC: $PULUMI_VPC_ID"
 }
@@ -350,7 +350,7 @@ run_pulumi_machines() {
 
   remote_ssh "$user" "$STAKE_IP" "
     set -euo pipefail
-$(pulumi_env)
+    source /tmp/workspace/pulumi.env
 
     cd /tmp/workspace/seed/infra
 
@@ -370,24 +370,22 @@ run_provision() {
 
   log "Running provision-cluster on stake..."
 
-  remote_ssh "$user" "$STAKE_IP" "
+  remote_ssh "$user" "$STAKE_IP" '
     set -euo pipefail
-    export PULUMI_BACKEND_URL='$PULUMI_BACKEND_URL'
-    export PULUMI_CONFIG_PASSPHRASE='$PULUMI_PASSPHRASE'
-    export SOPS_AGE_KEY_FILE='/tmp/workspace/.config/sops/age/keys.txt'
-    export MYNIX_DIR='/tmp/workspace/mynix'
-    export NIX_CONFIG='experimental-features = nix-command flakes'
-    export VULTR_API_KEY=\"\$(cat /tmp/workspace/vultr-api-key)\"
+    source /tmp/workspace/pulumi.env
+    export SOPS_AGE_KEY_FILE="/tmp/workspace/.config/sops/age/keys.txt"
+    export MYNIX_DIR="/tmp/workspace/mynix"
+    export VULTR_API_KEY="$(cat /tmp/workspace/vultr-api-key)"
 
     cd /tmp/workspace/seed/infra
 
-    pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
+    pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
     pulumi stack select prod 2>/dev/null || pulumi stack init prod
 
     # Export manifest, then run the event-driven provisioner
     pulumi stack output manifest --json -s prod > /tmp/manifest.json
     npx tsx provision-cluster.ts --manifest /tmp/manifest.json
-  "
+  '
 
   log "Provision-cluster completed"
 }
