@@ -196,15 +196,28 @@ attach_stake_to_vpc() {
   [[ -n "$STAKE_VPC_IP" && "$STAKE_VPC_IP" != "null" ]] || err "Stake VPC IP not assigned"
   log "Stake VPC IP: $STAKE_VPC_IP"
 
-  # Hot-added VPC interface needs OS-side configuration.
-  # Restart dhcpcd to pick up the new interface via DHCP.
+  # Hot-added VPC interface needs OS-side static IP configuration.
+  # Vultr VPC v1 assigns IPs API-side but doesn't provide DHCP for the host OS.
+  # Find the unconfigured interface and assign the VPC IP.
   log "Configuring VPC interface on stake..."
-  remote_ssh ada "$STAKE_IP" "sudo systemctl restart dhcpcd && sleep 5"
+  remote_ssh ada "$STAKE_IP" "
+    # Find the interface without an IPv4 address (the newly attached VPC NIC)
+    VPC_DEV=\$(ip -4 -o addr show | awk '{print \$2}' | sort -u | comm -23 <(ls /sys/class/net/ | grep -v lo | sort) - | head -1)
+    if [ -z \"\$VPC_DEV\" ]; then
+      echo 'All interfaces already have IPs, checking for VPC IP...'
+      ip addr show | grep -q '$STAKE_VPC_IP' && exit 0
+      echo 'ERROR: No unconfigured interface found and VPC IP not present' >&2
+      exit 1
+    fi
+    echo \"Assigning $STAKE_VPC_IP/24 to \$VPC_DEV\"
+    sudo ip addr add $STAKE_VPC_IP/24 dev \$VPC_DEV
+    sudo ip link set \$VPC_DEV up
+  "
 
   # Verify the VPC IP is reachable from the stake itself
   remote_ssh ada "$STAKE_IP" "ip addr show | grep -q '$STAKE_VPC_IP'" \
-    || err "VPC IP $STAKE_VPC_IP not found on stake after network restart"
-  log "VPC interface configured"
+    || err "VPC IP $STAKE_VPC_IP not found on stake after configuration"
+  log "VPC interface configured (${STAKE_VPC_IP})"
 }
 
 wait_for_ssh() {

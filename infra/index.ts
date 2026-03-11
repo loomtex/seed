@@ -95,7 +95,8 @@ function createMachines(stakeIp: string) {
   // phone_home= tells the netboot installer where to register itself.
 
   const ipxeScript = `#!ipxe
-dhcp
+dhcp net0
+dhcp net1
 set base http://${stakeIp}:8080
 kernel \${base}/bzImage init=${initPath} phone_home=http://${stakeIp}:8081/register initrd=initrd nohibernate loglevel=4
 initrd \${base}/initrd
