@@ -398,10 +398,22 @@ setup_stake() {
   # Clean + create workspace on stake (idempotent re-runs)
   remote_ssh "$user" "$STAKE_IP" "rm -rf /tmp/workspace && mkdir -p /tmp/workspace"
 
-  # Clone repos from GitHub on the stake (fast — in-datacenter to GitHub)
+  # Add GitHub SSH host key (git push needs it for host verification)
+  remote_ssh "$user" "$STAKE_IP" "ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null"
+
+  # Clone repos via SSH (uses agent-forwarded keys for both clone and push)
   log "Cloning repos on stake..."
-  remote_ssh "$user" "$STAKE_IP" "git clone --depth 1 https://github.com/joshperry/mynix /tmp/workspace/mynix"
-  remote_ssh "$user" "$STAKE_IP" "git clone https://github.com/loomtex/seed /tmp/workspace/seed"
+  remote_ssh "$user" "$STAKE_IP" "git clone --depth 1 git@github.com:joshperry/mynix.git /tmp/workspace/mynix"
+  remote_ssh "$user" "$STAKE_IP" "git clone git@github.com:loomtex/seed.git /tmp/workspace/seed"
+
+  # Git identity (provision-tang commits sops changes to mynix)
+  log "Setting up git identity..."
+  remote_ssh "$user" "$STAKE_IP" "git config --global user.email 'ada@6bit.com' && git config --global user.name 'Ada'"
+
+  # Export josh's GPG public key (sops creation rules require PGP encryption)
+  log "Exporting GPG public key to stake..."
+  gpg --export --armor 2EE325D71601671696EBF687E45953D34C8829ED \
+    | remote_ssh "$user" "$STAKE_IP" "gpg --import 2>/dev/null && echo '2EE325D71601671696EBF687E45953D34C8829ED:6:' | gpg --import-ownertrust 2>/dev/null"
 
   # Copy age key for sops decryption
   log "Copying age key..."
