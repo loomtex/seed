@@ -14,6 +14,7 @@
 #   ./provision.sh --setup-only     # Stop after setup, print SSH instructions
 #   ./provision.sh --skip-destroy   # Keep stake alive for debugging
 #   ./provision.sh --destroy-only   # Just destroy an existing stake
+#   ./provision.sh --teardown       # Full teardown: detach stake, pulumi destroy, destroy stake
 #
 # Prerequisites:
 #   - Vultr API key at /run/secrets/ada/vultr-api-key (signi sops)
@@ -25,12 +26,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Re-exec inside nix shell with required tools if nixos-anywhere isn't on PATH
+# Re-exec inside the infra flake devshell if nixos-anywhere isn't on PATH
 if ! command -v nixos-anywhere &>/dev/null; then
-  exec nix shell \
-    nixpkgs#nixos-anywhere nixpkgs#sops nixpkgs#jq \
-    nixpkgs#openssh nixpkgs#vultr-cli \
-    -c bash "$0" "$@"
+  exec nix develop "$SCRIPT_DIR#ci" -c bash "$0" "$@"
 fi
 
 SEED_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -537,6 +535,85 @@ run_provision() {
   log "Provision-cluster completed"
 }
 
+detach_stake_from_vpc() {
+  # Detach stake from VPC before destroying Pulumi resources.
+  # Pulumi's VPC delete blocks while instances are still attached.
+  if [[ ! -f "$STAKE_STATE_FILE" ]]; then
+    return 0
+  fi
+
+  local stake_id
+  stake_id="$(cat "$STAKE_STATE_FILE")"
+
+  # Get stake's VPC attachments
+  local vpcs
+  vpcs="$(curl -sf "https://api.vultr.com/v2/instances/$stake_id/vpcs" \
+    -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null || echo '{"vpcs":[]}')"
+
+  local vpc_ids
+  vpc_ids="$(echo "$vpcs" | jq -r '.vpcs[].id // empty' 2>/dev/null)"
+
+  if [[ -z "$vpc_ids" ]]; then
+    log "Stake not attached to any VPC"
+    return 0
+  fi
+
+  for vpc_id in $vpc_ids; do
+    log "Detaching stake from VPC $vpc_id..."
+    curl -sf -X POST "https://api.vultr.com/v2/instances/$stake_id/vpcs/detach" \
+      -H "Authorization: Bearer $VULTR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "{\"vpc_id\":\"$vpc_id\"}" || log "Warning: detach failed (may already be detached)"
+  done
+
+  # Wait a moment for Vultr to process the detach
+  sleep 5
+  log "Stake detached from VPC(s)"
+}
+
+destroy_pulumi_resources() {
+  # Destroy all Pulumi-managed resources (VPC, VMs, IPs, etc.)
+  # Requires stake to be running (runs Pulumi on stake) OR S3 creds available locally.
+  local user="ada"
+
+  if [[ -f "$STAKE_STATE_FILE" ]]; then
+    local stake_id
+    stake_id="$(cat "$STAKE_STATE_FILE")"
+    local stake_ip
+    stake_ip="$(vultr instance get "$stake_id" -o json 2>/dev/null | jq -r '.instance.main_ip' 2>/dev/null || echo "")"
+
+    if [[ -n "$stake_ip" && "$stake_ip" != "null" && "$stake_ip" != "0.0.0.0" ]]; then
+      # Try running pulumi destroy on the stake
+      if ssh "${ssh_opts[@]}" -o ConnectTimeout=5 "$user@$stake_ip" "test -f /tmp/workspace/pulumi.env" 2>/dev/null; then
+        log "Running pulumi destroy on stake..."
+        remote_ssh "$user" "$stake_ip" '
+          set -euo pipefail
+          source /tmp/workspace/pulumi.env
+          cd /tmp/workspace/seed/infra
+          pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
+          pulumi destroy -s prod -y --skip-preview 2>&1
+        ' && return 0
+        log "Warning: pulumi destroy on stake failed, trying local..."
+      fi
+    fi
+  fi
+
+  # Fallback: run pulumi destroy locally (we're in the flake devshell)
+  log "Running pulumi destroy locally..."
+  (
+    cd "$SCRIPT_DIR"
+    export PULUMI_BACKEND_URL="$PULUMI_BACKEND_URL"
+    export PULUMI_CONFIG_PASSPHRASE="$PULUMI_PASSPHRASE"
+    export VULTR_API_KEY
+    if [[ ! -d node_modules ]]; then
+      npm install --silent 2>/dev/null
+    fi
+    pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
+    pulumi stack select prod 2>/dev/null || true
+    pulumi destroy -s prod -y --skip-preview 2>&1
+  )
+}
+
 destroy_stake() {
   if [[ ! -f "$STAKE_STATE_FILE" ]]; then
     log "No stake state file — nothing to destroy"
@@ -552,23 +629,50 @@ destroy_stake() {
   log "Stake destroyed"
 }
 
+teardown() {
+  # Full teardown: detach stake from VPC → pulumi destroy → destroy stake.
+  # Order matters: VPC deletion blocks while stake is attached.
+  log "=== Tearing down cluster ==="
+
+  # Step 1: detach stake from VPC (unblocks Pulumi's VPC delete)
+  detach_stake_from_vpc
+
+  # Step 2: destroy Pulumi resources (VPC, puncher, IPs, etc.)
+  destroy_pulumi_resources
+
+  # Step 3: destroy the stake VM itself (outside Pulumi)
+  destroy_stake
+
+  # Step 4: clean up provisioner ID file
+  rm -f "$SCRIPT_DIR/.provisioner-id"
+
+  log "=== Teardown complete ==="
+}
+
 # --- Main ---
 
 main() {
   local skip_destroy=false
   local destroy_only=false
   local setup_only=false
+  local do_teardown=false
 
   for arg in "$@"; do
     case "$arg" in
       --setup-only) setup_only=true ;;
       --skip-destroy) skip_destroy=true ;;
       --destroy-only) destroy_only=true ;;
+      --teardown) do_teardown=true ;;
       *) err "Unknown argument: $arg" ;;
     esac
   done
 
   preflight
+
+  if $do_teardown; then
+    teardown
+    exit 0
+  fi
 
   if $destroy_only; then
     destroy_stake

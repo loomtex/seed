@@ -62,6 +62,8 @@
       pkgs.openssh
       pkgs.ssh-to-age
       pkgs.nixos-anywhere
+      pkgs.jq
+      pkgs.vultr-cli
       pulumiWrapper
     ];
 
