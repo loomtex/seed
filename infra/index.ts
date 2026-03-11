@@ -110,14 +110,14 @@ boot
 
   // --- Puncher VM ---
   //
-  // Tang NBDE + DNS + management host on VPC. iPXE boots from stake like BMs.
-  // OS ID 159 = Custom (iPXE boot via bootScriptId).
+  // Tang NBDE + DNS + management host on VPC. Boots Debian, then
+  // provision-cluster.ts runs nixos-anywhere to install NixOS.
+  // (iPXE boot with our ~500MB initrd doesn't work on Vultr BIOS VMs)
   const puncherVm = provider.createVM("seed-puncher-1", {
     region,
-    plan: "vm-2c-4gb",
+    plan: "vm-1c-2gb",
     label: "seed-puncher-1",
-    osId: 159,
-    bootScriptId: bootScript.id,
+    osId: 2136, // Debian 12
     enableIPv6: true,
     sshKeyIds,
     vpcId: vpc.id,
