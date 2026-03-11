@@ -262,7 +262,7 @@ run_pulumi() {
     cd /tmp/workspace/seed/infra
 
     pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
-    pulumi stack select prod 2>/dev/null || true
+    pulumi stack select prod 2>/dev/null || pulumi stack init prod
 
     # Override settings for this run
     pulumi config set seed-infra:mynixDir /tmp/workspace/mynix -s prod
@@ -291,7 +291,7 @@ run_provision() {
     cd /tmp/workspace/seed/infra
 
     pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
-    pulumi stack select prod 2>/dev/null || true
+    pulumi stack select prod 2>/dev/null || pulumi stack init prod
 
     # Export manifest, then run the event-driven provisioner
     pulumi stack output manifest --json -s prod > /tmp/manifest.json
