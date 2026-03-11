@@ -190,7 +190,7 @@ export function provisionTang(
       "nixos-anywhere",
       "--flake",
       config.flakeRef,
-      "--build-on", "remote",
+      "--build-on", "local",
       "--extra-files",
       extraDir,
       "--phases",
