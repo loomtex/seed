@@ -273,6 +273,13 @@ configure_installer_cache() {
   # of rebuilding everything from source. This is the difference between a 30-min
   # install and a <1-min install. Also configures push so newly built derivations
   # (like the netboot initrd) get cached for future stakes.
+  #
+  # Key NixOS installer constraints:
+  #   - /etc/nix/nix.conf is a symlink to the nix store (read-only)
+  #   - /etc/systemd/system/ entries are nix store symlinks (read-only)
+  #   - /root/.config/nix/nix.conf is user-level config (writable)
+  #   - root is trusted-user, so daemon accepts extra-substituters from client config
+  #   - systemctl set-environment injects env vars into all systemd services
   log "Configuring S3 binary cache in installer..."
 
   remote_ssh root "$STAKE_IP" "
@@ -304,23 +311,18 @@ fi
 HOOKEOF
     chmod +x /root/upload-to-cache.sh
 
-    # Point nix-daemon at the credentials and disable Vultr IMDS
-    mkdir -p /etc/systemd/system/nix-daemon.service.d
-    cat > /etc/systemd/system/nix-daemon.service.d/s3-cache.conf << 'EOF'
-[Service]
-Environment=\"AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials\"
-Environment=\"AWS_EC2_METADATA_DISABLED=true\"
-EOF
-    systemctl daemon-reload
+    # Inject AWS credentials into nix-daemon via systemd environment
+    systemctl set-environment AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials
+    systemctl set-environment AWS_EC2_METADATA_DISABLED=true
     systemctl restart nix-daemon
 
-    # Add S3 substituter + post-build-hook to nix.conf
-    cat >> /etc/nix/nix.conf << 'EOF'
+    # User-level nix config: root is trusted-user so daemon accepts extra-substituters
+    mkdir -p /root/.config/nix
+    cat > /root/.config/nix/nix.conf << 'NIXEOF'
 extra-substituters = $S3_CACHE_SUBSTITUTER
 extra-trusted-public-keys = $S3_CACHE_PUBKEY
 post-build-hook = /root/upload-to-cache.sh
-EOF
-    systemctl restart nix-daemon
+NIXEOF
   "
   log "S3 binary cache configured in installer (pull + push)"
 }
