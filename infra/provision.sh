@@ -406,6 +406,11 @@ provision_stake() {
       --no-link --print-out-paths --refresh)
     echo \"system: \$SYSTEM_PATH\"
 
+    # Mask the kexec installer's nix store mount units so switch-to-configuration
+    # doesn't unmount our disk-backed overlay when transitioning to the new config.
+    echo '==> Masking kexec nix store mount units...'
+    systemctl mask nix-store.mount 'nix-.ro\\x2dstore.mount' 'nix-.rw\\x2dstore.mount' 2>/dev/null || true
+
     echo '==> Activating in place (switch-to-configuration test)...'
     \$SYSTEM_PATH/bin/switch-to-configuration test
     nix-env -p /nix/var/nix/profiles/system --set \$SYSTEM_PATH 2>/dev/null || true
