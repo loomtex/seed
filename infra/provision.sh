@@ -306,15 +306,16 @@ SIGNEOF
     chmod 600 /root/.cache-signing-key
 
     # Post-build-hook: sign + upload every build to S3
+    # Uses set -u (but NOT set -e) so upload failures don't kill the build.
     cat > /root/upload-to-cache.sh << 'HOOKEOF'
 #!/bin/sh
-set -eu
+set -u
 set -f
 export AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials
 export AWS_EC2_METADATA_DISABLED=true
 if [ -f /root/.cache-signing-key ]; then
-  nix store sign --key-file /root/.cache-signing-key \$OUT_PATHS
-  nix copy --to '$S3_CACHE_SUBSTITUTER' \$OUT_PATHS
+  nix store sign --key-file /root/.cache-signing-key \$OUT_PATHS 2>/dev/null || true
+  nix copy --to '$S3_CACHE_SUBSTITUTER' \$OUT_PATHS 2>/dev/null || true
 fi
 HOOKEOF
     chmod +x /root/upload-to-cache.sh
@@ -421,9 +422,15 @@ provision_stake() {
     # Set hostname
     hostname seed-stake
 
-    # Start core infrastructure services first
-    systemctl start systemd-resolved || true
-    systemctl restart systemd-networkd || true
+    # Fix DNS: activation replaces resolv.conf with systemd-resolved stub
+    # (127.0.0.53) but systemd-resolved doesn't exist on the kexec installer.
+    # Write real nameservers so nix-daemon (post-build-hook S3 uploads) works.
+    rm -f /etc/resolv.conf
+    echo 'nameserver 1.1.1.1' > /etc/resolv.conf
+    echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
+
+    # Restart nix-daemon so it picks up the fixed resolv.conf
+    systemctl restart nix-daemon.socket nix-daemon.service || true
 
     # Install setuid/setgid wrappers (sudo, su, etc.)
     # NixOS manages wrappers via a systemd service, not activation scripts.
