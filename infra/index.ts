@@ -79,7 +79,7 @@ function createMachines(stakeIp: string, stakePublicIp: string) {
   const seedFlake = resolve(process.cwd(), "..");
   const netbootPath = execSync(
     `nix build "path:${seedFlake}#netboot" --print-out-paths --no-link`,
-    { encoding: "utf8", timeout: 600_000 }
+    { encoding: "utf8", timeout: 1_800_000 }
   ).trim();
 
   const ipxeContent = readFileSync(`${netbootPath}/netboot.ipxe`, "utf8");
