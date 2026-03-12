@@ -102,6 +102,29 @@ preflight() {
 
   # Decrypt cache signing key (for pushing built derivations to S3)
   S3_SIGNING_KEY="$(sops --decrypt --extract '["seed"]["cache-signing-key"]' "$MYNIX_DIR/secrets/seed-system.yaml")"
+
+  # Warn about uncommitted/unpushed changes — the stake clones from GitHub,
+  # so local-only changes silently won't be included.
+  local dirty=false
+  for repo_label_dir in "seed:$SEED_DIR" "mynix:$MYNIX_DIR"; do
+    local label="${repo_label_dir%%:*}" dir="${repo_label_dir#*:}"
+    local status unpushed
+    status="$(git -C "$dir" status --porcelain 2>/dev/null || true)"
+    unpushed="$(git -C "$dir" log --oneline '@{u}..HEAD' 2>/dev/null || true)"
+    if [[ -n "$status" ]]; then
+      echo "WARNING: $label has uncommitted changes:" >&2
+      echo "$status" | sed 's/^/  /' >&2
+      dirty=true
+    fi
+    if [[ -n "$unpushed" ]]; then
+      echo "WARNING: $label has unpushed commits:" >&2
+      echo "$unpushed" | sed 's/^/  /' >&2
+      dirty=true
+    fi
+  done
+  if $dirty; then
+    echo "WARNING: The stake clones from GitHub — local changes won't be included." >&2
+  fi
 }
 
 # --- Stake VM lifecycle ---
