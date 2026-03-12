@@ -20,7 +20,7 @@ import { provisionNode } from "./orchestrate.ts";
 import { provisionTang } from "./provision-tang.ts";
 import type { ClusterManifest, NodeConfig } from "./types.ts";
 
-function waitForSSH(ip: string, timeout = 600): void {
+function waitForSSH(ip: string, timeout = 600, users = ["root"]): void {
   const deadline = Date.now() + timeout * 1000;
   const baseOpts = [
     "-o", "StrictHostKeyChecking=no",
@@ -28,15 +28,18 @@ function waitForSSH(ip: string, timeout = 600): void {
     "-o", "ConnectTimeout=5",
   ];
   while (Date.now() < deadline) {
-    try {
-      execFileSync("ssh", [...baseOpts, `root@${ip}`, "true"], {
-        stdio: "pipe",
-        timeout: 15_000,
-      });
-      return;
-    } catch {
-      execFileSync("sleep", ["5"]);
+    for (const user of users) {
+      try {
+        execFileSync("ssh", [...baseOpts, `${user}@${ip}`, "true"], {
+          stdio: "pipe",
+          timeout: 15_000,
+        });
+        return;
+      } catch {
+        // try next user or sleep
+      }
     }
+    execFileSync("sleep", ["5"]);
   }
   throw new Error(`SSH to ${ip} not available after ${timeout}s`);
 }
@@ -200,7 +203,7 @@ async function main(): Promise<void> {
 
   if (!puncherDone) {
     log(`Waiting for puncher SSH at ${manifest.puncher.ip}...`);
-    waitForSSH(manifest.puncher.ip, 600);
+    waitForSSH(manifest.puncher.ip, 600, ["root", "ada"]);
     log(`Puncher SSH available — provisioning`);
     provisionPuncher(manifest, vultrApiKey ? vultrApiKeyFile : undefined);
     puncherDone = true;
