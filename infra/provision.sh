@@ -531,6 +531,9 @@ run_pulumi_infra() {
     pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
     pulumi stack select prod 2>/dev/null || pulumi stack init prod
 
+    # Clear stale locks from previous failed runs
+    pulumi cancel -s prod -y 2>/dev/null || true
+
     pulumi config set seed-infra:mynixDir /tmp/workspace/mynix -s prod
 
     # No stakeIp set — Pulumi only creates VPC, SSH keys, reserved IPs
@@ -565,6 +568,9 @@ run_pulumi_machines() {
 
     pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
     pulumi stack select prod 2>/dev/null
+
+    # Clear stale locks from previous failed runs
+    pulumi cancel -s prod -y 2>/dev/null || true
 
     pulumi config set seed-infra:stakeIp '$STAKE_IP' -s prod
     pulumi config set seed-infra:stakePublicIp '$STAKE_IP' -s prod
