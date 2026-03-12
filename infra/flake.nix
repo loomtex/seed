@@ -3,6 +3,11 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    nixpkgs-unstable.url = "github:nixos/nixpkgs/nixos-unstable";
+    home-manager = {
+      url = "github:nix-community/home-manager/release-25.11";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     disko = {
       url = "github:nix-community/disko/latest";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -12,6 +17,12 @@
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nuketown = {
+      url = "github:joshperry/nuketown/cloud-design";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.home-manager.follows = "home-manager";
+      inputs.impermanence.follows = "impermanence";
+    };
     seed = {
       url = "github:loomtex/seed";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -19,7 +30,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, disko, impermanence, sops-nix, seed, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, home-manager, nuketown, disko, impermanence, sops-nix, seed, ... }:
   let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
@@ -48,10 +59,25 @@
       seed-stake = mkMachine "seed-stake" ./machines/infra/seed-stake [
         ./machines/infra/seed-stake/disks.nix
         ./profiles/seed-cache.nix
+        nuketown.nixosModules.default
+        home-manager.nixosModules.home-manager
         {
+          home-manager.useGlobalPkgs = true;
+          home-manager.useUserPackages = true;
           seed.netbootPath = seed.packages.${system}.netboot;
           sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
         }
+        # Unstable overlay for claude-code
+        ({ config, ... }: {
+          nixpkgs.overlays = [
+            (final: prev: {
+              unstable = import nixpkgs-unstable {
+                inherit system;
+                config.allowUnfreePredicate = config.nixpkgs.config.allowUnfreePredicate;
+              };
+            })
+          ];
+        })
       ];
 
       seed-puncher-1 = mkMachine "seed-puncher-1" ./machines/infra/seed-puncher-1 [

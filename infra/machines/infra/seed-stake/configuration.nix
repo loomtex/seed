@@ -17,16 +17,64 @@
     boot.loader.systemd-boot.enable = true;
     boot.loader.efi.canTouchEfiVariables = true;
 
-    # Stake runs nixos-anywhere + helpers to provision cluster nodes.
+    # System-wide packages for provisioning (ada gets her own via nuketown).
     environment.systemPackages = with pkgs; [
-      nodejs_22       # Registration server + provisioning scripts
-      nixos-anywhere  # Remote NixOS installation
-      sops            # Secret decryption
-      age             # age encryption (sops backend)
-      ssh-to-age      # SSH key -> age key conversion
-      jq              # JSON processing
-      git             # Clone repos
+      nodejs_22       # Registration server
     ];
+
+    # --- Nuketown: ada as provisioning agent ---
+
+    nuketown = {
+      enable = true;
+      domain = "6bit.com";
+      humanUser = "josh";
+
+      agents.ada = {
+        enable = true;
+        uid = 1100;
+        role = "provisioner";
+        description = "Cluster provisioning agent — manages seed infrastructure";
+
+        portal.enable = true;
+        sudo.enable = true;
+
+        packages = with pkgs; [
+          unstable.claude-code
+          nixos-anywhere
+          sops age ssh-to-age
+          jq git curl
+          clevis jose
+          vultr-cli
+        ];
+
+        git = {
+          name = "Ada";
+          email = "ada@6bit.com";
+        };
+
+        # Secrets added after stake host key enrollment:
+        # secrets.sshKey = "ada/ssh-key";
+        # secrets.gpgKey = "ada/gpg-key";
+      };
+    };
+
+    # Headless auto-approve: no zenity on a server VM.
+    # All of ada's sudo calls are automatically approved.
+    systemd.services.nuketown-autoapprove = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
+      script = ''
+        mkdir -p /run/nuketown-broker
+        echo "MOCK_APPROVED" > /run/nuketown-broker/mode
+      '';
+    };
+
+    # ada on signi can SSH in to start provisioning sessions
+    users.users.ada.openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi"
+    ];
+
+    # --- Services ---
 
     # Serve netboot artifacts (kernel + initrd) over plain HTTP for iPXE.
     services.nginx = lib.mkIf (config.seed.netbootPath != null) {
@@ -52,6 +100,8 @@
         StateDirectory = "seed-register";
       };
     };
+
+    # --- Networking ---
 
     networking = {
       hostName = "seed-stake";
@@ -87,22 +137,6 @@
       ];
     };
     users.groups.josh = { gid = 1000; };
-
-    users.users.ada = {
-      uid = 1100;
-      group = "ada";
-      isNormalUser = true;
-      hashedPassword = "!";
-      openssh.authorizedKeys.keys = [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi"
-      ];
-    };
-    users.groups.ada = { gid = 1100; };
-
-    security.sudo.extraRules = [{
-      users = [ "ada" ];
-      commands = [{ command = "ALL"; options = [ "NOPASSWD" ]; }];
-    }];
 
     system.stateVersion = "25.11";
   };
