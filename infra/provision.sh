@@ -361,15 +361,17 @@ provision_stake() {
     mount /dev/vda /mnt/disk
     mkdir -p /mnt/disk/nix-upper /mnt/disk/nix-work /mnt/disk/workspace
 
-    # Find current overlay upper and lower dirs (head -1 in case of duplicate mounts)
-    OVERLAY_LINE=$(mount | grep "^overlay on /nix/store " | head -1)
-    UPPER=$(echo "$OVERLAY_LINE" | grep -oP "upperdir=\K[^,)]+")
-    LOWER=$(echo "$OVERLAY_LINE" | grep -oP "lowerdir=\K[^,)]+")
-    if [ -n "$UPPER" ]; then
+    # The kexec installer overlay uses initrd paths (/sysroot/nix/...) in mount
+    # output, but after pivot_root those paths are empty. Use the actual paths:
+    #   /nix/.ro-store  = squashfs (read-only nix store base)
+    #   /nix/.rw-store/store = tmpfs overlay upper (writable layer)
+    LOWER=/nix/.ro-store
+    UPPER=/nix/.rw-store/store
+
+    if [ -d "$UPPER" ]; then
       echo "Copying overlay upper ($UPPER) to disk..."
       cp -a "$UPPER"/. /mnt/disk/nix-upper/ 2>/dev/null || true
     fi
-    echo "Lower: $LOWER, Upper was: $UPPER"
 
     # Stop nix-daemon, swap overlay, restart
     systemctl stop nix-daemon.socket nix-daemon.service
