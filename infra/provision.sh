@@ -690,23 +690,8 @@ detach_managed_from_vpcs() {
     fi
   fi
 
-  # If stake is unavailable, try reading Pulumi state locally
   if [[ -z "$pulumi_output" ]]; then
-    pulumi_output="$(
-      cd "$SCRIPT_DIR"
-      export PULUMI_BACKEND_URL="$PULUMI_BACKEND_URL"
-      export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
-      export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
-      pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
-      echo "VPC_ID=$(pulumi stack output vpcId -s prod 2>/dev/null || true)"
-      echo "PUNCHER_ID=$(pulumi stack output puncherId -s prod 2>/dev/null || true)"
-      echo "BM_IDS=$(pulumi stack output bmIds --json -s prod 2>/dev/null || echo "{}")"
-    )" 2>/dev/null || true
-  fi
-
-  if [[ -z "$pulumi_output" ]]; then
-    log "Could not read Pulumi state — skipping VPC detachment"
-    return 0
+    log "Could not read Pulumi state from stake — skipping Pulumi resource detachment"
   fi
 
   # Parse resource IDs from Pulumi output
