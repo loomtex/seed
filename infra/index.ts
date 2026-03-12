@@ -23,6 +23,7 @@ const sshPubKeys = config.requireObject<string[]>("sshPubKeys");
 const mynixDir = config.get("mynixDir") ?? "/agents/ada/projects/mynix";
 const stakeIp = config.get("stakeIp"); // Optional — VPC IP, set after stake joins VPC
 const stakePublicIp = config.get("stakePublicIp"); // Optional — public IP for iPXE netboot
+const puncherVpcIp = config.get("puncherVpcIp"); // Deterministic VPC IP for puncher (Vultr VPC v1 has no DHCP)
 
 // --- SSH Keys ---
 
@@ -115,6 +116,7 @@ chain http://${stakePublicIp}:8080/netboot.ipxe
     name: string;
     clusterInit?: boolean;
     serverAddr?: string;
+    vpcIp?: string;
   }
 
   const nodes = config.getObject<NodeDef[]>("nodes") ?? [];
@@ -160,13 +162,13 @@ chain http://${stakePublicIp}:8080/netboot.ipxe
       puncher: {
         name: "seed-puncher-1",
         ip: puncherIp,
-        internalIp: puncherInternalIp,
+        internalIp: puncherVpcIp ?? puncherInternalIp, // Prefer deterministic VPC IP over Vultr-assigned
         flakeRef: `${flakeUri}#seed-puncher-1`,
       },
       nodes: nodes.map((n, i) => ({
         name: n.name,
         ip: nodeIps[i],
-        internalIp: nodeIps[i],
+        internalIp: n.vpcIp ?? nodeIps[i], // Prefer deterministic VPC IP over public IP
         clusterInit: n.clusterInit,
         bmId: nodeIds[i],
         flakeRef: `${flakeUri}#${n.name}`,
