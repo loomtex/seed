@@ -1,6 +1,3 @@
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import * as pulumi from "@pulumi/pulumi";
 import { VultrProvider } from "./providers/vultr.ts";
 import type { ClusterManifest } from "./types.ts";
@@ -70,38 +67,25 @@ export const vpcId = vpc.id;
 // --- Phase 2: machines (only when stakeIp is set) ---
 
 function createMachines(stakeIp: string, stakePublicIp: string) {
-  // --- Netboot init= path ---
-  //
-  // The netboot derivation is served from stake's nix store via nginx (port 8080).
-  // We only need the init= kernel parameter, which we extract from the nix-built
-  // iPXE script. This runs at Pulumi eval time (not in a dynamic provider).
-
-  const seedFlake = resolve(process.cwd(), "..");
-  const netbootPath = execSync(
-    `nix build "path:${seedFlake}#netboot" --print-out-paths --no-link`,
-    { encoding: "utf8", timeout: 1_800_000 }
-  ).trim();
-
-  const ipxeContent = readFileSync(`${netbootPath}/netboot.ipxe`, "utf8");
-  const initMatch = ipxeContent.match(/init=(\S+)/);
-  if (!initMatch) {
-    throw new Error("Could not parse init= path from netboot.ipxe");
-  }
-  const initPath = initMatch[1];
-
   // --- iPXE Boot Script ---
   //
-  // Chain-loads the NixOS netboot image from the stake VM.
+  // Chainloads the netboot.ipxe served by the stake's nginx (port 8080).
+  // The stake's NixOS config builds the netboot derivation (kernel, initrd,
+  // netboot.ipxe with the correct init= path) as a single unit. By chainloading
+  // instead of extracting init= from a separate nix build, we guarantee the
+  // kernel, initrd, and init= all come from the same derivation.
+  //
+  // The netboot.ipxe template includes ${cmdline} on the kernel line, which
+  // picks up the phone_home= parameter we set here.
+  //
   // Both the PXE download and phone_home use the public IP because the NixOS
   // installer doesn't have the VPC interface configured (Vultr VPC v1 has no DHCP,
   // and the installer can't statically assign VPC IPs).
 
   const ipxeScript = `#!ipxe
 dhcp
-set base http://${stakePublicIp}:8080
-kernel \${base}/bzImage init=${initPath} phone_home=http://${stakePublicIp}:8081/register initrd=initrd nohibernate loglevel=4
-initrd \${base}/initrd
-boot
+set cmdline phone_home=http://${stakePublicIp}:8081/register
+chain http://${stakePublicIp}:8080/netboot.ipxe
 `;
 
   const bootScript = provider.createBootScript("nixos-netboot", {
