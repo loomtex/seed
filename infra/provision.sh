@@ -411,17 +411,29 @@ provision_stake() {
     echo 'Running activation scripts...'
     \$TOPLEVEL/activate
 
-    # Reload systemd to pick up new unit files
+    # Reload systemd to pick up new unit files deployed by activation
     systemctl daemon-reload
 
     # Set hostname
     hostname seed-stake
 
-    # Start key services (sshd should already be running from the installer,
-    # but the activation may have changed its config)
-    systemctl restart sshd || true
+    # Start core infrastructure services first
+    systemctl start systemd-resolved || true
+    systemctl restart systemd-networkd || true
+
+    # Install setuid/setgid wrappers (sudo, su, etc.)
+    # NixOS manages wrappers via a systemd service, not activation scripts.
+    # Must run after daemon-reload so systemd sees the new unit files.
+    echo 'Installing security wrappers...'
+    systemctl start suid-sgid-wrappers.service
+
+    # Start application services
     systemctl start nginx || true
     systemctl start seed-register || true
+
+    # Restart sshd last — this changes auth config (disables root login).
+    # Must be after DNS and wrappers are working so ada can SSH in.
+    systemctl restart sshd || true
 
     echo 'Activation complete'
   "
