@@ -7,7 +7,7 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| ID | *(to be recorded)* |
+| ID | 835f9059-98bc-404a-8693-52e4c9847b3b |
 | State | **active** |
 | Subnet | 10.0.0.0/24 |
 | Region | atl |
