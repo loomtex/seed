@@ -133,6 +133,7 @@ function provisionBmNode(
     plan: "",
     flakeRef: n.flakeRef,
     tangUrl,
+    sshProxy: `ada@${manifest.puncher.ip}`, // Proxy Tang adv fetch through puncher (stake not in VPC)
     sopsFile: manifest.sopsFile,
     mynixDir: manifest.mynixDir,
     clusterInit: n.clusterInit,
