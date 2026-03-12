@@ -402,6 +402,9 @@ provision_stake() {
   log "Phase 3: swapping nix store overlay to disk..."
   remote_ssh root "$STAKE_IP" '
     set -euo pipefail
+    # Unmount /dev/vda if mounted from a previous interrupted install
+    umount -f /dev/vda 2>/dev/null || true
+    umount -f /mnt/disk 2>/dev/null || true
     mkfs.ext4 -q -F /dev/vda
     mkdir -p /mnt/disk
     mount /dev/vda /mnt/disk
