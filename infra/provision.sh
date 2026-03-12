@@ -15,6 +15,7 @@
 #   ./provision.sh --skip-destroy   # Keep stake alive for debugging
 #   ./provision.sh --destroy-only   # Just destroy an existing stake
 #   ./provision.sh --teardown       # Full teardown: detach stake, pulumi destroy, destroy stake
+#   ./provision.sh --force          # Bypass preflight warnings (dirty tree, stale flake.lock)
 #
 # Prerequisites:
 #   - Vultr API key at /run/secrets/ada/vultr-api-key (signi sops)
@@ -124,6 +125,10 @@ preflight() {
   done
   if $dirty; then
     echo "WARNING: The stake clones from GitHub — local changes won't be included." >&2
+    if ! $FORCE_PROVISION; then
+      err "Preflight warnings detected. Fix the issues above or re-run with --force to proceed."
+    fi
+    echo "WARNING: Continuing due to --force flag." >&2
   fi
 
   # Check that mynix's locked seed version matches the current seed HEAD.
@@ -813,6 +818,7 @@ main() {
   local destroy_only=false
   local setup_only=false
   local do_teardown=false
+  local force=false
 
   for arg in "$@"; do
     case "$arg" in
@@ -820,10 +826,12 @@ main() {
       --skip-destroy) skip_destroy=true ;;
       --destroy-only) destroy_only=true ;;
       --teardown) do_teardown=true ;;
+      --force) force=true ;;
       *) err "Unknown argument: $arg" ;;
     esac
   done
 
+  FORCE_PROVISION=$force
   preflight
 
   if $do_teardown; then
