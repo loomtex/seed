@@ -15,22 +15,24 @@
 
 import { watch, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execSync, execFileSync } from "node:child_process";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { provisionNode } from "./orchestrate.ts";
 import { provisionTang } from "./provision-tang.ts";
 import type { ClusterManifest, NodeConfig } from "./types.ts";
 
+const SSH_OPTS = [
+  "-o", "StrictHostKeyChecking=no",
+  "-o", "UserKnownHostsFile=/dev/null",
+  "-o", "ConnectTimeout=5",
+];
+
 function waitForSSH(ip: string, timeout = 600, users = ["root"]): void {
   const deadline = Date.now() + timeout * 1000;
-  const baseOpts = [
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "ConnectTimeout=5",
-  ];
   while (Date.now() < deadline) {
     for (const user of users) {
       try {
-        execFileSync("ssh", [...baseOpts, `${user}@${ip}`, "true"], {
+        execFileSync("ssh", [...SSH_OPTS, `${user}@${ip}`, "true"], {
           stdio: "pipe",
           timeout: 15_000,
         });
@@ -42,6 +44,32 @@ function waitForSSH(ip: string, timeout = 600, users = ["root"]): void {
     execFileSync("sleep", ["5"]);
   }
   throw new Error(`SSH to ${ip} not available after ${timeout}s`);
+}
+
+// Quick SSH probe — returns the user that succeeded, or null.
+function probeSSH(ip: string, users: string[]): string | null {
+  for (const user of users) {
+    try {
+      execFileSync("ssh", [...SSH_OPTS, `${user}@${ip}`, "true"], {
+        stdio: "pipe",
+        timeout: 10_000,
+      });
+      return user;
+    } catch {
+      // try next user
+    }
+  }
+  return null;
+}
+
+function reinstallBareMetal(apiKey: string, bmId: string): void {
+  log(`Triggering Vultr reinstall for bare metal ${bmId}`);
+  execFileSync("curl", [
+    "-sf", "-X", "POST",
+    `https://api.vultr.com/v2/bare-metals/${bmId}/reinstall`,
+    "-H", `Authorization: Bearer ${apiKey}`,
+    "-H", "Content-Type: application/json",
+  ], { stdio: "pipe", timeout: 30_000 });
 }
 
 const REGISTER_DIR = "/var/lib/seed-register";
@@ -260,6 +288,36 @@ async function main(): Promise<void> {
   log(`Scanning existing registrations in ${REGISTER_DIR}...`);
   for (const reg of scanExistingRegistrations()) {
     processRegistration(reg);
+  }
+
+  if (nodesDone.size >= manifest.nodes.length) {
+    log("All machines provisioned");
+    return;
+  }
+
+  // Probe pending BM nodes via SSH to handle restarts after partial failures.
+  // If the node is already provisioned (SSH as current user) or still in kexec
+  // (SSH as root), we can proceed without waiting for a phone-home.
+  const currentUser = userInfo().username;
+  for (let i = 0; i < manifest.nodes.length; i++) {
+    if (nodesDone.has(i)) continue;
+    const n = manifest.nodes[i];
+    log(`Probing ${n.name} at ${n.ip}...`);
+    const user = probeSSH(n.ip, [currentUser, "root"]);
+    if (user) {
+      log(`${n.name}: SSH reachable as ${user} — proceeding`);
+      // Create a synthetic registration so processRegistration handles dependency ordering
+      processRegistration({ mac: "probe", ip: n.ip, serial: "probe" });
+    } else if (n.bmId && vultrApiKey) {
+      log(`${n.name}: unreachable — triggering Vultr reinstall`);
+      try {
+        reinstallBareMetal(vultrApiKey, n.bmId);
+      } catch (err) {
+        log(`${n.name}: reinstall failed (may already be in progress): ${err}`);
+      }
+    } else {
+      log(`${n.name}: unreachable, waiting for phone-home`);
+    }
   }
 
   if (nodesDone.size >= manifest.nodes.length) {
