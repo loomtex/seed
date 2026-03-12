@@ -4,6 +4,7 @@
 {
   subnet = "10.0.0.0/24";
   hosts = {
+    "seed-stake"     = { ip = "10.0.0.2"; publicNic = "enp1s0"; };   # VM: virtio NIC
     "seed-puncher-1" = { ip = "10.0.0.1"; publicNic = "enp1s0"; };  # VM: virtio NIC
     "seed-atl-1"     = { ip = "10.0.0.10"; };  # BM: default publicNic = enp1s0f0
     "seed-atl-2"     = { ip = "10.0.0.11"; };

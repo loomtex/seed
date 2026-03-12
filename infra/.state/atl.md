@@ -17,19 +17,19 @@ Updated by the provisioning agent after each transition.
 | Field | Value |
 |-------|-------|
 | ID | *(to be recorded)* |
-| IP | 45.76.62.103 |
+| IP | *(to be recorded)* |
 | VPC IP | 10.0.0.2 |
-| State | **ready** |
+| State | **absent** |
 
 ## Puncher (seed-puncher-1)
 
 | Field | Value |
 |-------|-------|
 | ID | *(to be recorded)* |
-| IP | 155.138.200.63 |
+| IP | *(to be recorded)* |
 | VPC IP | 10.0.0.1 |
 | Tang port | 7654 |
-| State | **tang-ready** |
+| State | **absent** |
 
 ## Nodes
 

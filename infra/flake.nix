@@ -59,6 +59,7 @@
       seed-stake = mkMachine "seed-stake" ./machines/infra/seed-stake [
         ./machines/infra/seed-stake/disks.nix
         ./profiles/seed-cache.nix
+        ./profiles/seed-vpc.nix
         nuketown.nixosModules.default
         home-manager.nixosModules.home-manager
         {
@@ -68,16 +69,16 @@
           sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
         }
         # Unstable overlay for claude-code
-        ({ config, ... }: {
+        {
           nixpkgs.overlays = [
             (final: prev: {
               unstable = import nixpkgs-unstable {
                 inherit system;
-                config.allowUnfreePredicate = config.nixpkgs.config.allowUnfreePredicate;
+                config.allowUnfree = true;
               };
             })
           ];
-        })
+        }
       ];
 
       seed-puncher-1 = mkMachine "seed-puncher-1" ./machines/infra/seed-puncher-1 [

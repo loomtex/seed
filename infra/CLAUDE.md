@@ -156,16 +156,24 @@ From `cluster.nix`:
 | seed-atl-2 | BM | vbm-6c-32gb | 10.0.0.11 | k3s server |
 | seed-atl-3 | BM | vbm-6c-32gb | 10.0.0.12 | k3s server |
 
-## Observable Provisioning
+## Orchestration Model
 
-Josh can watch provisioning by SSHing to the stake and attaching to
-the tmux session. The agent should communicate clearly in its output
-so a human observer can follow along.
+Provisioning is orchestrated from **signi** (the workstation), not from the
+stake. The agent runs locally and uses SSH to reach remote machines. This
+approach is simpler and more resilient:
+
+- **No agent setup on stake** — the stake just serves iPXE + registration
+- **Parallel provisioning** — spin up parallel agents on signi that each SSH
+  to different nodes for concurrent provisioning
+- **Resilient** — if the stake has issues, the orchestration context survives
+- **All tooling available** — nixos-anywhere, sops, age, clevis all run locally
+
+The stake's role is purely infrastructure: nginx for iPXE netboot (:8080)
+and the registration endpoint for phone-home (:8081).
 
 ## What NOT to do
 
 - Don't use Pulumi (it's in `legacy/` for reference only)
-- Don't build NixOS closures on signi — build on stake or on the target
 - Don't hardcode IPs — read from `cluster.nix` and `data/vpc.nix`
 - Don't hot-add VPC NICs — create VMs/BMs with VPC attached from the start
 - Don't skip Clevis binding — every LUKS node needs Tang auto-unlock
