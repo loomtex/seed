@@ -643,65 +643,56 @@ run_provision() {
 }
 
 detach_all_from_vpcs() {
-  # Detach ALL instances and bare metals from ALL VPCs before destroying.
+  # Detach our managed instances and bare metals from VPCs before destroying.
   # Vultr is flaky at cleaning up VPC attachments when instances are deleted,
   # so we explicitly detach everything first to unblock VPC deletion.
-  log "Detaching all instances from VPCs..."
+  #
+  # Only operates on resources we own (by tag/label) to avoid touching
+  # unrelated resources on the same Vultr account.
+  log "Detaching managed instances from VPCs..."
 
-  # Collect all VPC IDs
-  local vpc_ids
-  vpc_ids="$(curl -sf "https://api.vultr.com/v2/vpcs" \
-    -H "Authorization: Bearer $VULTR_API_KEY" | jq -r '.vpcs[].id // empty' 2>/dev/null)"
-
-  if [[ -z "$vpc_ids" ]]; then
-    log "No VPCs found"
-    return 0
-  fi
-
-  # Detach all instances from each VPC
+  # Find our managed instances: tagged "puncher" or labeled "seed-stake"
   local instance_ids
   instance_ids="$(curl -sf "https://api.vultr.com/v2/instances" \
-    -H "Authorization: Bearer $VULTR_API_KEY" | jq -r '.instances[].id // empty' 2>/dev/null)"
+    -H "Authorization: Bearer $VULTR_API_KEY" \
+    | jq -r '.instances[] | select((.tags | index("puncher")) or .label == "seed-stake") | .id' 2>/dev/null)"
 
   for instance_id in $instance_ids; do
-    for vpc_id in $vpc_ids; do
-      local attached
-      attached="$(curl -sf "https://api.vultr.com/v2/instances/$instance_id/vpcs" \
-        -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
-        | jq -r ".vpcs[] | select(.id == \"$vpc_id\") | .id" 2>/dev/null)"
-      if [[ -n "$attached" ]]; then
-        log "Detaching instance $instance_id from VPC $vpc_id"
-        curl -sf -X POST "https://api.vultr.com/v2/instances/$instance_id/vpcs/detach" \
-          -H "Authorization: Bearer $VULTR_API_KEY" \
-          -H "Content-Type: application/json" \
-          -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
-      fi
+    local vpcs
+    vpcs="$(curl -sf "https://api.vultr.com/v2/instances/$instance_id/vpcs" \
+      -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
+      | jq -r '.vpcs[].id // empty' 2>/dev/null)"
+    for vpc_id in $vpcs; do
+      log "Detaching instance $instance_id from VPC $vpc_id"
+      curl -sf -X POST "https://api.vultr.com/v2/instances/$instance_id/vpcs/detach" \
+        -H "Authorization: Bearer $VULTR_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
     done
   done
 
-  # Detach all bare metals from each VPC
+  # Find our managed bare metals: tagged "seed"
   local bm_ids
   bm_ids="$(curl -sf "https://api.vultr.com/v2/bare-metals" \
-    -H "Authorization: Bearer $VULTR_API_KEY" | jq -r '.bare_metals[].id // empty' 2>/dev/null)"
+    -H "Authorization: Bearer $VULTR_API_KEY" \
+    | jq -r '.bare_metals[] | select(.tags | index("seed")) | .id' 2>/dev/null)"
 
   for bm_id in $bm_ids; do
-    for vpc_id in $vpc_ids; do
-      local attached
-      attached="$(curl -sf "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs" \
-        -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
-        | jq -r ".vpcs[] | select(.id == \"$vpc_id\") | .id" 2>/dev/null)"
-      if [[ -n "$attached" ]]; then
-        log "Detaching BM $bm_id from VPC $vpc_id"
-        curl -sf -X POST "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs/detach" \
-          -H "Authorization: Bearer $VULTR_API_KEY" \
-          -H "Content-Type: application/json" \
-          -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
-      fi
+    local vpcs
+    vpcs="$(curl -sf "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs" \
+      -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
+      | jq -r '.vpcs[].id // empty' 2>/dev/null)"
+    for vpc_id in $vpcs; do
+      log "Detaching BM $bm_id from VPC $vpc_id"
+      curl -sf -X POST "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs/detach" \
+        -H "Authorization: Bearer $VULTR_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
     done
   done
 
   sleep 5
-  log "All VPC detachments complete"
+  log "VPC detachments complete"
 }
 
 destroy_pulumi_resources() {
