@@ -642,40 +642,66 @@ run_provision() {
   log "Provision-cluster completed"
 }
 
-detach_stake_from_vpc() {
-  # Detach stake from VPC before destroying Pulumi resources.
-  # Pulumi's VPC delete blocks while instances are still attached.
-  if [[ ! -f "$STAKE_STATE_FILE" ]]; then
-    return 0
-  fi
+detach_all_from_vpcs() {
+  # Detach ALL instances and bare metals from ALL VPCs before destroying.
+  # Vultr is flaky at cleaning up VPC attachments when instances are deleted,
+  # so we explicitly detach everything first to unblock VPC deletion.
+  log "Detaching all instances from VPCs..."
 
-  local stake_id
-  stake_id="$(cat "$STAKE_STATE_FILE")"
-
-  # Get stake's VPC attachments
-  local vpcs
-  vpcs="$(curl -sf "https://api.vultr.com/v2/instances/$stake_id/vpcs" \
-    -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null || echo '{"vpcs":[]}')"
-
+  # Collect all VPC IDs
   local vpc_ids
-  vpc_ids="$(echo "$vpcs" | jq -r '.vpcs[].id // empty' 2>/dev/null)"
+  vpc_ids="$(curl -sf "https://api.vultr.com/v2/vpcs" \
+    -H "Authorization: Bearer $VULTR_API_KEY" | jq -r '.vpcs[].id // empty' 2>/dev/null)"
 
   if [[ -z "$vpc_ids" ]]; then
-    log "Stake not attached to any VPC"
+    log "No VPCs found"
     return 0
   fi
 
-  for vpc_id in $vpc_ids; do
-    log "Detaching stake from VPC $vpc_id..."
-    curl -sf -X POST "https://api.vultr.com/v2/instances/$stake_id/vpcs/detach" \
-      -H "Authorization: Bearer $VULTR_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "{\"vpc_id\":\"$vpc_id\"}" || log "Warning: detach failed (may already be detached)"
+  # Detach all instances from each VPC
+  local instance_ids
+  instance_ids="$(curl -sf "https://api.vultr.com/v2/instances" \
+    -H "Authorization: Bearer $VULTR_API_KEY" | jq -r '.instances[].id // empty' 2>/dev/null)"
+
+  for instance_id in $instance_ids; do
+    for vpc_id in $vpc_ids; do
+      local attached
+      attached="$(curl -sf "https://api.vultr.com/v2/instances/$instance_id/vpcs" \
+        -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
+        | jq -r ".vpcs[] | select(.id == \"$vpc_id\") | .id" 2>/dev/null)"
+      if [[ -n "$attached" ]]; then
+        log "Detaching instance $instance_id from VPC $vpc_id"
+        curl -sf -X POST "https://api.vultr.com/v2/instances/$instance_id/vpcs/detach" \
+          -H "Authorization: Bearer $VULTR_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
+      fi
+    done
   done
 
-  # Wait a moment for Vultr to process the detach
+  # Detach all bare metals from each VPC
+  local bm_ids
+  bm_ids="$(curl -sf "https://api.vultr.com/v2/bare-metals" \
+    -H "Authorization: Bearer $VULTR_API_KEY" | jq -r '.bare_metals[].id // empty' 2>/dev/null)"
+
+  for bm_id in $bm_ids; do
+    for vpc_id in $vpc_ids; do
+      local attached
+      attached="$(curl -sf "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs" \
+        -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
+        | jq -r ".vpcs[] | select(.id == \"$vpc_id\") | .id" 2>/dev/null)"
+      if [[ -n "$attached" ]]; then
+        log "Detaching BM $bm_id from VPC $vpc_id"
+        curl -sf -X POST "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs/detach" \
+          -H "Authorization: Bearer $VULTR_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
+      fi
+    done
+  done
+
   sleep 5
-  log "Stake detached from VPC(s)"
+  log "All VPC detachments complete"
 }
 
 destroy_pulumi_resources() {
@@ -737,12 +763,13 @@ destroy_stake() {
 }
 
 teardown() {
-  # Full teardown: detach stake from VPC → pulumi destroy → destroy stake.
-  # Order matters: VPC deletion blocks while stake is attached.
+  # Full teardown: detach all from VPCs → pulumi destroy → destroy stake.
+  # VPC detachment must happen BEFORE instance/VPC destruction because Vultr
+  # doesn't reliably clean up VPC attachment records when instances are deleted.
   log "=== Tearing down cluster ==="
 
-  # Step 1: detach stake from VPC (unblocks Pulumi's VPC delete)
-  detach_stake_from_vpc
+  # Step 1: detach all instances/BMs from VPCs (unblocks VPC deletion)
+  detach_all_from_vpcs
 
   # Step 2: destroy Pulumi resources (VPC, puncher, IPs, etc.)
   destroy_pulumi_resources
