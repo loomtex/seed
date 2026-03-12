@@ -139,6 +139,15 @@
           text = builtins.readFile ./helpers/clevis-bind.sh;
         }}/bin/seed-clevis-bind";
       };
+
+      observe = {
+        type = "app";
+        program = "${pkgs.writeShellApplication {
+          name = "seed-observe";
+          runtimeInputs = with pkgs; [ openssh tmux ];
+          text = builtins.readFile ./helpers/observe.sh;
+        }}/bin/seed-observe";
+      };
     };
 
     # Devshell with all tooling
