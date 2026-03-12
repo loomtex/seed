@@ -815,13 +815,29 @@ main() {
     exit 0
   fi
 
-  # Phase 1: Pulumi creates VPC + infrastructure (no machines yet)
-  run_pulumi_infra
+  # Pulumi: two-phase on first run (VPC first, then machines), single-phase on re-run.
+  # Phase 1 removes stakeIp to create VPC/IPs without machines. Phase 2 adds stakeIp
+  # to create machines. On re-run, skipping phase 1 avoids destroying existing machines.
+  local stakeIp_configured
+  stakeIp_configured="$(remote_ssh ada "$STAKE_IP" '
+    source /tmp/workspace/pulumi.env
+    cd /tmp/workspace/seed/infra
+    pulumi login "$PULUMI_BACKEND_URL" >/dev/null 2>&1
+    pulumi config get seed-infra:stakeIp -s prod 2>/dev/null || true
+  ')" || true
 
-  # Phase 2: Pulumi creates boot script + machines.
-  # Stake doesn't need VPC — iPXE/phone-home use public IP, and stake SSHes
-  # into targets over public IPs too. VPC attachment disrupts kexec networking.
-  run_pulumi_machines
+  if [[ -n "$stakeIp_configured" && "$stakeIp_configured" != "null" ]]; then
+    log "Pulumi stakeIp already configured ($stakeIp_configured), running single-phase update..."
+    run_pulumi_machines
+  else
+    # Phase 1: Pulumi creates VPC + infrastructure (no machines yet)
+    run_pulumi_infra
+
+    # Phase 2: Pulumi creates boot script + machines.
+    # Stake doesn't need VPC — iPXE/phone-home use public IP, and stake SSHes
+    # into targets over public IPs too. VPC attachment disrupts kexec networking.
+    run_pulumi_machines
+  fi
 
   # Event-driven provisioning
   run_provision

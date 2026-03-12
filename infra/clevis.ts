@@ -5,20 +5,25 @@ import { join } from "node:path";
 
 // Fetch Tang server advertisement (public signing keys).
 // Returns the advertisement JSON for non-interactive JWE creation.
-// If sshProxy is set, fetches via SSH tunnel through that host
-// (needed when Tang is firewalled from the local machine).
+// If sshProxy is set, SSHes into that host (the Tang server itself) and
+// fetches via localhost. This avoids VPC interface issues — the sshProxy
+// host runs Tang but may not have its VPC IP configured (Vultr VPC v1
+// has no DHCP). The tangUrl's VPC address is preserved in the JWE for
+// BMs to use at boot time over the internal network.
 export function fetchTangAdvertisement(
   tangUrl: string,
   sshProxy?: string
 ): string {
   if (sshProxy) {
+    // Extract port from tangUrl (e.g. "http://10.0.0.3:7654" → "7654")
+    const port = new URL(tangUrl).port || "80";
     const result = execFileSync(
       "ssh",
       [
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         sshProxy,
-        `curl -sfS "${tangUrl}/adv"`,
+        `curl -sfS "http://localhost:${port}/adv"`,
       ],
       { encoding: "utf-8", timeout: 30_000 }
     );
