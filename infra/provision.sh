@@ -227,6 +227,10 @@ attach_stake_to_vpc() {
   [[ -n "$STAKE_VPC_IP" && "$STAKE_VPC_IP" != "null" ]] || err "Stake VPC IP not assigned"
   log "Stake VPC IP: $STAKE_VPC_IP"
 
+  # Hot-adding a VPC NIC can briefly disrupt networking on the VM.
+  # Wait for SSH to come back before trying to configure the interface.
+  wait_for_ssh "$STAKE_IP" ada 120
+
   # Hot-added VPC interface needs OS-side static IP configuration.
   # Vultr VPC v1 assigns IPs API-side but doesn't provide DHCP for the host OS.
   # The VPC NIC may already have a link-local (169.254.x.x) IP from DHCP fallback,
