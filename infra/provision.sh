@@ -125,6 +125,19 @@ preflight() {
   if $dirty; then
     echo "WARNING: The stake clones from GitHub — local changes won't be included." >&2
   fi
+
+  # Check that mynix's locked seed version matches the current seed HEAD.
+  # The stake builds the netboot image from mynix's flake lock, so a stale
+  # lock means the netboot image won't include recent seed changes (e.g.
+  # phone-home service, installer fixes).
+  local seed_head locked_rev
+  seed_head="$(git -C "$SEED_DIR" rev-parse HEAD 2>/dev/null || true)"
+  locked_rev="$(jq -r '.nodes.seed.locked.rev // empty' "$MYNIX_DIR/flake.lock" 2>/dev/null || true)"
+  if [[ -n "$seed_head" && -n "$locked_rev" && "$seed_head" != "$locked_rev" ]]; then
+    echo "WARNING: mynix flake.lock has seed at ${locked_rev:0:12} but seed HEAD is ${seed_head:0:12}" >&2
+    echo "  Run: cd $MYNIX_DIR && nix flake update seed && git commit -am 'flake: update seed' && git push" >&2
+    dirty=true
+  fi
 }
 
 # --- Stake VM lifecycle ---
