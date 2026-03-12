@@ -47,6 +47,7 @@ STAKE_REGION="${STAKE_REGION:-atl}"
 STAKE_PLAN="${STAKE_PLAN:-vc2-4c-8gb}"
 STAKE_LABEL="seed-stake"
 STAKE_FLAKE="github:joshperry/mynix#seed-stake"
+STAKE_KEXEC_FLAKE="github:joshperry/mynix#seed-stake-kexec"
 STAKE_OS_ID=2136  # Debian 12
 
 # S3 binary cache (same bucket as Pulumi state)
@@ -331,14 +332,17 @@ NIXEOF
 }
 
 provision_stake() {
-  log "Provisioning NixOS on stake VM at $STAKE_IP"
+  # Ephemeral infect: kexec into NixOS installer, swap nix store overlay to
+  # disk, build the system closure with S3 cache, then switch-to-configuration
+  # to activate in place — no disko, no nixos-install, no reboot.
+  log "Provisioning NixOS on stake VM at $STAKE_IP (ephemeral infect)"
 
   wait_for_ssh "$STAKE_IP" root 300
 
   # Phase 1: kexec into NixOS installer
   log "Phase 1: kexec into NixOS installer..."
   nixos-anywhere \
-    --flake "$STAKE_FLAKE" \
+    --flake "$STAKE_KEXEC_FLAKE" \
     --build-on remote \
     --phases kexec \
     "root@$STAKE_IP"
@@ -346,25 +350,56 @@ provision_stake() {
   sleep 10
   wait_for_ssh "$STAKE_IP" root 120
 
-  # Phase 2: Inject S3 binary cache before the full install.
-  # With cache configured, nixos-anywhere's remote build pulls pre-built
-  # derivations from S3 instead of rebuilding everything from source.
+  # Phase 2: Inject S3 binary cache so the build pulls pre-built derivations
+  # from S3 instead of rebuilding everything from source.
   configure_installer_cache
 
-  # Phase 3: disko + nixos-install + reboot.
-  # nixos-anywhere builds the system closure on the remote (using S3 cache),
-  # formats disk with disko, installs, and reboots.
-  log "Phase 3: disko + install..."
-  nixos-anywhere \
-    --flake "$STAKE_FLAKE" \
-    --build-on remote \
-    --phases disko install \
-    "root@$STAKE_IP"
+  # Phase 3: Swap nix store overlay from tmpfs to disk.
+  # The kexec installer uses squashfs (read-only) + tmpfs (writable) overlay
+  # for /nix/store. Replace the tmpfs upper with a disk-backed upper so we
+  # have enough space for the full system build (netboot images, custom kernel).
+  log "Phase 3: swapping nix store overlay to disk..."
+  remote_ssh root "$STAKE_IP" '
+    set -euo pipefail
+    mkfs.ext4 -q -F /dev/vda
+    mkdir -p /mnt/disk
+    mount /dev/vda /mnt/disk
+    mkdir -p /mnt/disk/nix-upper /mnt/disk/nix-work
 
-  # nixos-anywhere reboots after install
-  sleep 15
-  wait_for_ssh "$STAKE_IP" ada 300
-  log "Stake provisioned and rebooted"
+    LOWER=/nix/.ro-store
+    UPPER=/nix/.rw-store/store
+
+    if [ -d "$UPPER" ]; then
+      echo "Copying overlay upper ($UPPER) to disk..."
+      cp -a "$UPPER"/. /mnt/disk/nix-upper/ 2>/dev/null || true
+    fi
+
+    systemctl stop nix-daemon.socket nix-daemon.service
+    umount -l /nix/store
+    mount -t overlay overlay \
+      -o "lowerdir=$LOWER,upperdir=/mnt/disk/nix-upper,workdir=/mnt/disk/nix-work" \
+      /nix/store
+    systemctl start nix-daemon.socket
+
+    DISK_AVAIL=$(df -BG /mnt/disk | tail -1 | awk "{print \$4}")
+    echo "nix store overlay: disk-backed at /dev/vda, ${DISK_AVAIL} available"
+  '
+
+  # Phase 4: Build the stake system closure and activate in place.
+  # Uses seed-stake-kexec (no disko, no bootloader, declares /mnt/disk mount)
+  # to avoid systemd mount unit conflicts with the overlay setup.
+  log "Phase 4: building and activating stake system..."
+  remote_ssh root "$STAKE_IP" "
+    set -euo pipefail
+    TOPLEVEL=\$(nix build --no-link --print-out-paths --refresh \\
+      'github:joshperry/mynix#nixosConfigurations.seed-stake-kexec.config.system.build.toplevel')
+    echo \"Activating: \$TOPLEVEL\"
+    \$TOPLEVEL/bin/switch-to-configuration test
+  "
+
+  sleep 5
+  wait_for_ssh "$STAKE_IP" ada 120
+  log "Stake activated (ephemeral infect)"
 }
 
 setup_stake() {
