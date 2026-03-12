@@ -3,5 +3,5 @@ result-*
 .direnv
 node_modules/
 dist/
-infra/.stake-id
-infra/.provisioner-id
+infra/.pulumi-state/
+infra/legacy/node_modules/

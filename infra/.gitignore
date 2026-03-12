@@ -1,6 +1,5 @@
-node_modules/
-dist/
-*.js
-*.d.ts
-*.js.map
 .pulumi-state/
+node_modules/
+legacy/node_modules/
+result
+result-*

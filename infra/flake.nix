@@ -1,130 +1,126 @@
 {
-  description = "Seed cluster infrastructure — Pulumi IaC for bare metal provisioning";
+  description = "Seed infrastructure — self-contained cluster management";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    disko = {
+      url = "github:nix-community/disko/latest";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    impermanence.url = "github:nix-community/impermanence";
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    seed = {
+      url = "github:loomtex/seed";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.sops-nix.follows = "sops-nix";
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, disko, impermanence, sops-nix, seed, ... }:
   let
     system = "x86_64-linux";
-    pkgs = import nixpkgs { inherit system; };
+    pkgs = nixpkgs.legacyPackages.${system};
 
-    # Slim Vultr provider: statically-linked Go binary, no patching needed
-    pulumi-resource-vultr = pkgs.stdenv.mkDerivation rec {
-      pname = "pulumi-resource-vultr";
-      version = "2.27.1";
-      src = pkgs.fetchurl {
-        url = "https://github.com/dirien/pulumi-vultr/releases/download/v${version}/${pname}-v${version}-linux-amd64.tar.gz";
-        hash = "sha256-TGByHtGkrJuX9KTKacq1U6vUEUNOWo4w6YdotXJdkYY=";
-      };
-      sourceRoot = ".";
-      installPhase = ''
-        install -Dm755 pulumi-resource-vultr $out/bin/pulumi-resource-vultr
-      '';
+    cluster = import ./cluster.nix;
+
+    mkMachine = name: path: extraModules: nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        disko.nixosModules.disko
+        impermanence.nixosModules.impermanence
+        sops-nix.nixosModules.sops
+        (path + "/configuration.nix")
+      ] ++ extraModules;
     };
 
-    # Wrapper that handles sops passphrase + local backend
-    pulumiWrapper = pkgs.writeShellScriptBin "pu" ''
-      set -euo pipefail
-
-      SCRIPT_DIR="$(cd "$(dirname "''${BASH_SOURCE[0]}")" && pwd)"
-      INFRA_DIR="''${SEED_INFRA_DIR:-$(pwd)}"
-      MYNIX_DIR="''${MYNIX_DIR:-/agents/ada/projects/mynix}"
-      SOPS_FILE="$MYNIX_DIR/secrets/pulumi-passphrase.yaml"
-      STATE_DIR="$INFRA_DIR/.pulumi-state"
-
-      if [[ ! -f "$SOPS_FILE" ]]; then
-        echo "error: sops passphrase file not found: $SOPS_FILE" >&2
-        echo "hint: set MYNIX_DIR to your mynix repo root" >&2
-        exit 1
-      fi
-
-      # Find age key for sops decryption
-      export SOPS_AGE_KEY_FILE="''${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
-      if [[ ! -f "$SOPS_AGE_KEY_FILE" ]]; then
-        echo "error: age key not found: $SOPS_AGE_KEY_FILE" >&2
-        echo "hint: set SOPS_AGE_KEY_FILE or place your key at ~/.config/sops/age/keys.txt" >&2
-        exit 1
-      fi
-
-      # Decrypt passphrase directly into env (never in shell history)
-      export PULUMI_CONFIG_PASSPHRASE
-      PULUMI_CONFIG_PASSPHRASE="$(${pkgs.sops}/bin/sops --decrypt --extract '["pulumi-passphrase"]' "$SOPS_FILE")"
-
-      export PULUMI_BACKEND_URL="file://$STATE_DIR"
-      export PULUMI_HOME="''${PULUMI_HOME:-$STATE_DIR/.home}"
-
-      mkdir -p "$STATE_DIR" "$PULUMI_HOME"
-
-      # Ensure Pulumi plugins + provisioning tools are on PATH
-      export PATH="${pkgs.pulumiPackages.pulumi-language-nodejs}/bin:${pkgs.nodejs_22}/bin:${pkgs.nixos-anywhere}/bin:${pkgs.sops}/bin:${pkgs.ssh-to-age}/bin:$PATH"
-
-      # Auto-login to local backend and select stack
-      ${pkgs.pulumi}/bin/pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
-      ${pkgs.pulumi}/bin/pulumi stack select prod 2>/dev/null || true
-
-      cd "$INFRA_DIR"
-      exec ${pkgs.pulumi}/bin/pulumi "$@"
-    '';
-    infraPackages = [
-      pkgs.pulumi
-      pkgs.pulumiPackages.pulumi-language-nodejs
-      pulumi-resource-vultr
-      pkgs.nodejs_22
-      pkgs.sops
-      pkgs.awscli2
-      pkgs.openssh
-      pkgs.ssh-to-age
-      pkgs.nixos-anywhere
-      pkgs.jq
-      pkgs.vultr-cli
-      pulumiWrapper
-    ];
-
-    infraShellHook = ''
-      export PULUMI_BACKEND_URL="file://$(pwd)/.pulumi-state"
-      export PULUMI_HOME="$(pwd)/.pulumi-state/.home"
-      mkdir -p .pulumi-state/.home
-    '';
+    # ATL nodes get full seed module stack
+    mkSeedNode = name: path: extraModules: mkMachine name path ([
+      seed.nixosModules.default
+      seed.nixosModules.persistence
+    ] ++ extraModules);
   in {
-    devShells.${system} = {
-      default = pkgs.mkShell {
-        packages = infraPackages;
-        shellHook = infraShellHook + ''
-          echo "Seed infra devshell"
-          echo "  pu preview   — preview changes"
-          echo "  pu up        — apply changes"
-          echo "  pu destroy   — tear down"
-          echo "  pu config    — manage config"
-        '';
-      };
+    nixosConfigurations = {
+      # --- Infrastructure machines ---
 
-      # Quiet shell for scripted use (no banner to contaminate stdout)
-      ci = pkgs.mkShell {
-        packages = infraPackages;
-        shellHook = infraShellHook;
-      };
+      seed-stake = mkMachine "seed-stake" ./machines/infra/seed-stake [
+        ./machines/infra/seed-stake/disks.nix
+        ./profiles/seed-cache.nix
+        {
+          seed.netbootPath = seed.packages.${system}.netboot;
+          sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
+        }
+      ];
+
+      seed-puncher-1 = mkMachine "seed-puncher-1" ./machines/infra/seed-puncher-1 [
+        { seed.vpcSubnets = [ "10.0.0.0/24" ]; }
+      ];
+
+      seed-tang-1 = mkMachine "seed-tang-1" ./machines/infra/seed-tang-1 [
+        { seed.netbootPath = seed.packages.${system}.netboot; }
+      ];
+
+      # --- ATL cluster nodes ---
+
+      seed-atl-1 = mkSeedNode "seed-atl-1" ./machines/atl/seed-atl-1 [
+        seed.nixosModules.controller
+        {
+          seed.controller.controllerImage = "${seed.packages.${system}.controllerImage}";
+          seed.controller.hostAgentImage = "${seed.packages.${system}.hostAgentImage}";
+          seed.controller.poolManager = {
+            enable = true;
+            poolSize = 4;
+            image = "${seed.packages.${system}.poolManagerImage}";
+          };
+        }
+      ];
+
+      seed-atl-2 = mkSeedNode "seed-atl-2" ./machines/atl/seed-atl-2 [];
+
+      seed-atl-3 = mkSeedNode "seed-atl-3" ./machines/atl/seed-atl-3 [];
     };
 
-    # Standalone scripts (usable without entering devshell)
-    packages.${system} = {
-      pu = pulumiWrapper;
-    };
+    # Expose cluster inventory for nix eval
+    inherit cluster;
 
+    # Helper scripts as flake apps
     apps.${system} = {
-      preview = {
+      vultr = {
         type = "app";
-        program = "${pkgs.writeShellScript "preview" ''
-          exec ${pulumiWrapper}/bin/pu preview "$@"
-        ''}";
+        program = "${pkgs.writeShellApplication {
+          name = "seed-vultr";
+          runtimeInputs = with pkgs; [ curl jq ];
+          text = builtins.readFile ./helpers/vultr.sh;
+        }}/bin/seed-vultr";
       };
-      up = {
+
+      sops-enroll = {
         type = "app";
-        program = "${pkgs.writeShellScript "up" ''
-          exec ${pulumiWrapper}/bin/pu up "$@"
-        ''}";
+        program = "${pkgs.writeShellApplication {
+          name = "seed-sops-enroll";
+          runtimeInputs = with pkgs; [ ssh-to-age sops age yq-go ];
+          text = builtins.readFile ./helpers/sops-enroll.sh;
+        }}/bin/seed-sops-enroll";
       };
+
+      clevis-bind = {
+        type = "app";
+        program = "${pkgs.writeShellApplication {
+          name = "seed-clevis-bind";
+          runtimeInputs = with pkgs; [ clevis curl jose ];
+          text = builtins.readFile ./helpers/clevis-bind.sh;
+        }}/bin/seed-clevis-bind";
+      };
+    };
+
+    # Devshell with all tooling
+    devShells.${system}.default = pkgs.mkShell {
+      packages = with pkgs; [
+        nixos-anywhere sops age ssh-to-age jq git
+        curl clevis jose yq-go vultr-cli
+      ];
     };
   };
 }
