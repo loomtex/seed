@@ -184,6 +184,10 @@ chain http://${stakePublicIp}:8080/netboot.ipxe
 
   return {
     manifest,
+    puncherId: puncherVm.id,
+    bmIds: Object.fromEntries(
+      Object.entries(bmOutputs).map(([name, out]) => [name, out.id])
+    ),
     clusterInfo: {
       puncherPublicIp: puncherVm.ipv4,
       puncherVpcIp: puncherVm.internalIp,
@@ -200,5 +204,7 @@ chain http://${stakePublicIp}:8080/netboot.ipxe
 // Phase 2 outputs — only populated when stakeIp is set
 const machines = stakeIp ? createMachines(stakeIp, stakePublicIp ?? stakeIp) : undefined;
 export const manifest = machines?.manifest;
+export const puncherId = machines?.puncherId;
+export const bmIds = machines?.bmIds;
 export const clusterInfo = machines?.clusterInfo;
 export const nodeIPs = machines?.nodeIPs;

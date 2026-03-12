@@ -642,54 +642,98 @@ run_provision() {
   log "Provision-cluster completed"
 }
 
-detach_all_from_vpcs() {
-  # Detach our managed instances and bare metals from VPCs before destroying.
-  # Vultr is flaky at cleaning up VPC attachments when instances are deleted,
-  # so we explicitly detach everything first to unblock VPC deletion.
-  #
-  # Only operates on resources we own (by tag/label) to avoid touching
-  # unrelated resources on the same Vultr account.
-  log "Detaching managed instances from VPCs..."
+detach_instance_from_vpcs() {
+  # Detach a specific Vultr instance (by ID) from all its VPCs.
+  local instance_id="$1"
+  local api_path="$2"  # "instances" or "bare-metals"
 
-  # Find our managed instances: tagged "puncher" or labeled "seed-stake"
-  local instance_ids
-  instance_ids="$(curl -sf "https://api.vultr.com/v2/instances" \
-    -H "Authorization: Bearer $VULTR_API_KEY" \
-    | jq -r '.instances[] | select((.tags | index("puncher")) or .label == "seed-stake") | .id' 2>/dev/null)"
-
-  for instance_id in $instance_ids; do
-    local vpcs
-    vpcs="$(curl -sf "https://api.vultr.com/v2/instances/$instance_id/vpcs" \
-      -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
-      | jq -r '.vpcs[].id // empty' 2>/dev/null)"
-    for vpc_id in $vpcs; do
-      log "Detaching instance $instance_id from VPC $vpc_id"
-      curl -sf -X POST "https://api.vultr.com/v2/instances/$instance_id/vpcs/detach" \
-        -H "Authorization: Bearer $VULTR_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
-    done
+  local vpcs
+  vpcs="$(curl -sf "https://api.vultr.com/v2/${api_path}/${instance_id}/vpcs" \
+    -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
+    | jq -r '.vpcs[].id // empty' 2>/dev/null)"
+  for vpc_id in $vpcs; do
+    log "Detaching ${api_path} $instance_id from VPC $vpc_id"
+    curl -sf -X POST "https://api.vultr.com/v2/${api_path}/${instance_id}/vpcs/detach" \
+      -H "Authorization: Bearer $VULTR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
   done
+}
 
-  # Find our managed bare metals: tagged "seed"
-  local bm_ids
-  bm_ids="$(curl -sf "https://api.vultr.com/v2/bare-metals" \
-    -H "Authorization: Bearer $VULTR_API_KEY" \
-    | jq -r '.bare_metals[] | select(.tags | index("seed")) | .id' 2>/dev/null)"
+detach_managed_from_vpcs() {
+  # Detach Pulumi-managed resources from VPCs before destroying.
+  # Uses Pulumi stack outputs to get specific resource IDs — never scans
+  # the Vultr API by tags/names (avoids conflation with orphaned resources).
+  log "Detaching managed resources from VPCs..."
 
-  for bm_id in $bm_ids; do
-    local vpcs
-    vpcs="$(curl -sf "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs" \
-      -H "Authorization: Bearer $VULTR_API_KEY" 2>/dev/null \
-      | jq -r '.vpcs[].id // empty' 2>/dev/null)"
-    for vpc_id in $vpcs; do
-      log "Detaching BM $bm_id from VPC $vpc_id"
-      curl -sf -X POST "https://api.vultr.com/v2/bare-metals/$bm_id/vpcs/detach" \
-        -H "Authorization: Bearer $VULTR_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d "{\"vpc_id\":\"$vpc_id\"}" 2>/dev/null || true
+  local user="ada"
+  local pulumi_output=""
+
+  # Try to read resource IDs from Pulumi stack outputs
+  if [[ -f "$STAKE_STATE_FILE" ]]; then
+    local stake_id
+    stake_id="$(cat "$STAKE_STATE_FILE")"
+    local stake_ip
+    stake_ip="$(vultr instance get "$stake_id" -o json 2>/dev/null | jq -r '.instance.main_ip' 2>/dev/null || echo "")"
+
+    if [[ -n "$stake_ip" && "$stake_ip" != "null" && "$stake_ip" != "0.0.0.0" ]]; then
+      # Read Pulumi outputs from stake
+      pulumi_output="$(remote_ssh "$user" "$stake_ip" '
+        set -euo pipefail
+        source /tmp/workspace/pulumi.env 2>/dev/null || true
+        cd /tmp/workspace/seed/infra 2>/dev/null || exit 1
+        pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
+        echo "VPC_ID=$(pulumi stack output vpcId -s prod 2>/dev/null || true)"
+        echo "PUNCHER_ID=$(pulumi stack output puncherId -s prod 2>/dev/null || true)"
+        echo "BM_IDS=$(pulumi stack output bmIds --json -s prod 2>/dev/null || echo "{}")"
+      ' 2>/dev/null)" || true
+    fi
+  fi
+
+  # If stake is unavailable, try reading Pulumi state locally
+  if [[ -z "$pulumi_output" ]]; then
+    pulumi_output="$(
+      cd "$SCRIPT_DIR"
+      export PULUMI_BACKEND_URL="$PULUMI_BACKEND_URL"
+      export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
+      export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
+      pulumi login "$PULUMI_BACKEND_URL" 2>/dev/null
+      echo "VPC_ID=$(pulumi stack output vpcId -s prod 2>/dev/null || true)"
+      echo "PUNCHER_ID=$(pulumi stack output puncherId -s prod 2>/dev/null || true)"
+      echo "BM_IDS=$(pulumi stack output bmIds --json -s prod 2>/dev/null || echo "{}")"
+    )" 2>/dev/null || true
+  fi
+
+  if [[ -z "$pulumi_output" ]]; then
+    log "Could not read Pulumi state — skipping VPC detachment"
+    return 0
+  fi
+
+  # Parse resource IDs from Pulumi output
+  local vpc_id puncher_id bm_ids_json
+  vpc_id="$(echo "$pulumi_output" | grep '^VPC_ID=' | cut -d= -f2-)"
+  puncher_id="$(echo "$pulumi_output" | grep '^PUNCHER_ID=' | cut -d= -f2-)"
+  bm_ids_json="$(echo "$pulumi_output" | grep '^BM_IDS=' | cut -d= -f2-)"
+
+  # Detach stake from VPC (tracked via .stake-id, not Pulumi)
+  if [[ -f "$STAKE_STATE_FILE" ]]; then
+    local stake_id
+    stake_id="$(cat "$STAKE_STATE_FILE")"
+    detach_instance_from_vpcs "$stake_id" "instances"
+  fi
+
+  # Detach puncher from VPC
+  if [[ -n "$puncher_id" ]]; then
+    detach_instance_from_vpcs "$puncher_id" "instances"
+  fi
+
+  # Detach BM nodes from VPC
+  if [[ -n "$bm_ids_json" && "$bm_ids_json" != "{}" ]]; then
+    local bm_id
+    for bm_id in $(echo "$bm_ids_json" | jq -r '.[]' 2>/dev/null); do
+      detach_instance_from_vpcs "$bm_id" "bare-metals"
     done
-  done
+  fi
 
   sleep 5
   log "VPC detachments complete"
@@ -759,8 +803,8 @@ teardown() {
   # doesn't reliably clean up VPC attachment records when instances are deleted.
   log "=== Tearing down cluster ==="
 
-  # Step 1: detach all instances/BMs from VPCs (unblocks VPC deletion)
-  detach_all_from_vpcs
+  # Step 1: detach managed instances/BMs from VPCs (unblocks VPC deletion)
+  detach_managed_from_vpcs
 
   # Step 2: destroy Pulumi resources (VPC, puncher, IPs, etc.)
   destroy_pulumi_resources
