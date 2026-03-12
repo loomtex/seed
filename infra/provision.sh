@@ -388,13 +388,42 @@ provision_stake() {
   # Phase 4: Build the stake system closure and activate in place.
   # Uses seed-stake-kexec (no disko, no bootloader, declares /mnt/disk mount)
   # to avoid systemd mount unit conflicts with the overlay setup.
+  #
+  # NOTE: We bypass switch-to-configuration entirely. The NixOS 25.11 Rust
+  # rewrite (switch-to-configuration-0.1.0) hangs at 100% CPU when run on
+  # a kexec installer — likely due to the massive delta between the
+  # installer's systemd state and the target config. Instead we run the
+  # activation scripts directly and start services manually.
   log "Phase 4: building and activating stake system..."
   remote_ssh root "$STAKE_IP" "
     set -euo pipefail
     TOPLEVEL=\$(nix build --no-link --print-out-paths --refresh \\
       'github:joshperry/mynix#nixosConfigurations.seed-stake-kexec.config.system.build.toplevel')
-    echo \"Activating: \$TOPLEVEL\"
-    \$TOPLEVEL/bin/switch-to-configuration test
+    echo \"Built: \$TOPLEVEL\"
+
+    # Point /run/current-system at the new closure
+    ln -sfn \$TOPLEVEL /run/current-system
+
+    # Source the new system's PATH so activation scripts find the right tools
+    export PATH=\$TOPLEVEL/sw/bin:\$TOPLEVEL/sw/sbin:\$PATH
+
+    # Run NixOS activation scripts (creates users, groups, /etc, tmpfiles, etc.)
+    echo 'Running activation scripts...'
+    \$TOPLEVEL/activate
+
+    # Reload systemd to pick up new unit files
+    systemctl daemon-reload
+
+    # Set hostname
+    hostname seed-stake
+
+    # Start key services (sshd should already be running from the installer,
+    # but the activation may have changed its config)
+    systemctl restart sshd || true
+    systemctl start nginx || true
+    systemctl start seed-register || true
+
+    echo 'Activation complete'
   "
 
   sleep 5
