@@ -548,7 +548,7 @@ run_pulumi_infra() {
 run_pulumi_machines() {
   local user="ada"
 
-  log "Pulumi phase 2: creating machines (stakeIp=$STAKE_VPC_IP)..."
+  log "Pulumi phase 2: creating machines (stakeIp=$STAKE_IP)..."
 
   remote_ssh "$user" "$STAKE_IP" "
     set -euo pipefail
@@ -559,7 +559,7 @@ run_pulumi_machines() {
     pulumi login \"\$PULUMI_BACKEND_URL\" 2>/dev/null
     pulumi stack select prod 2>/dev/null
 
-    pulumi config set seed-infra:stakeIp '$STAKE_VPC_IP' -s prod
+    pulumi config set seed-infra:stakeIp '$STAKE_IP' -s prod
     pulumi config set seed-infra:stakePublicIp '$STAKE_IP' -s prod
 
     pulumi up -s prod -y --skip-preview
@@ -769,10 +769,9 @@ main() {
   # Phase 1: Pulumi creates VPC + infrastructure (no machines yet)
   run_pulumi_infra
 
-  # Attach stake to the VPC so it can serve netboot to targets
-  attach_stake_to_vpc "$PULUMI_VPC_ID"
-
-  # Phase 2: Pulumi creates boot script + machines (using stake's VPC IP)
+  # Phase 2: Pulumi creates boot script + machines.
+  # Stake doesn't need VPC — iPXE/phone-home use public IP, and stake SSHes
+  # into targets over public IPs too. VPC attachment disrupts kexec networking.
   run_pulumi_machines
 
   # Event-driven provisioning
