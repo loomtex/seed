@@ -299,10 +299,12 @@ in {
                     ${pkgs.iproute2}/bin/ip link set "$VPC_IFACE" up
 
                     # Use VPC IP as node-ip, public IPs as external
-                    echo "node-ip: \"$VPC_IP\"" > /run/k3s/node-config.yaml
+                    # Dual-stack requires both IPv4+IPv6 in node-ip for flannel
                     if [ -n "$IPV6" ]; then
+                      echo "node-ip: \"$VPC_IP,$IPV6\"" > /run/k3s/node-config.yaml
                       echo "node-external-ip: \"$IPV4,$IPV6\"" >> /run/k3s/node-config.yaml
                     else
+                      echo "node-ip: \"$VPC_IP\"" > /run/k3s/node-config.yaml
                       echo "node-external-ip: \"$IPV4\"" >> /run/k3s/node-config.yaml
                     fi
 
