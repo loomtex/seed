@@ -27,11 +27,12 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| ID | *(to be recorded)* |
-| IP | *(to be recorded)* |
+| ID | 3d5be8cb-798f-4406-bbcb-213b6a45abc9 |
+| IP | 108.61.193.135 |
 | VPC IP | 10.0.0.1 |
 | Tang port | 7654 |
-| State | **absent** |
+| State | **tang-ready** |
+| Notes | Tang + Unbound + PowerDNS active |
 
 ## Nodes
 
