@@ -41,6 +41,7 @@ in
   ];
 
   # Bind-mount PVC acme dir to /var/lib/acme so certs persist across restarts.
+  # Then generate a self-signed cert if none exists, so Caddy can start immediately.
   system.activationScripts.acmeMount = {
     deps = [];
     text = ''
@@ -48,12 +49,23 @@ in
       if ! mountpoint -q /var/lib/acme; then
         mount --bind /seed/storage/data/acme /var/lib/acme
       fi
+
+      # Bootstrap: generate self-signed cert so Caddy can start before ACME completes
+      mkdir -p ${certDir}
+      if [ ! -f "${certDir}/fullchain.pem" ]; then
+        ${pkgs.openssl}/bin/openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+          -keyout "${certDir}/key.pem" -out "${certDir}/fullchain.pem" \
+          -days 1 -nodes -subj "/CN=self-signed" 2>/dev/null
+        chgrp caddy "${certDir}/fullchain.pem" "${certDir}/key.pem"
+        chmod 640 "${certDir}/fullchain.pem" "${certDir}/key.pem"
+      fi
     '';
   };
 
   # ACME cert service with retry (eventual consistency).
+  # Runs independently of Caddy — does not block Caddy startup.
   # On failure (e.g. dns instance not ready yet), systemd retries every 60s.
-  # On success, stays stopped until the daily timer fires for renewal checks.
+  # On success, reloads Caddy and stays stopped until the daily timer fires.
   systemd.services.seed-acme = {
     description = "ACME certificate (DNS-01 via pdns)";
     after = [ "network-online.target" ];
@@ -85,16 +97,6 @@ in
         fi
       fi
 
-      # Generate self-signed cert if none exists (so Caddy can start immediately)
-      if [ ! -f "${certDir}/fullchain.pem" ]; then
-        echo "Generating self-signed certificate for initial startup"
-        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-          -keyout "${certDir}/key.pem" -out "${certDir}/fullchain.pem" \
-          -days 1 -nodes -subj "/CN=self-signed" 2>/dev/null
-        chgrp caddy "${certDir}/fullchain.pem" "${certDir}/key.pem"
-        chmod 640 "${certDir}/fullchain.pem" "${certDir}/key.pem"
-      fi
-
       # Request or renew ACME cert
       LEGO_ARGS=(
         --accept-tos
@@ -122,18 +124,12 @@ in
       chgrp caddy "${certDir}/fullchain.pem" "${certDir}/key.pem"
       chmod 640 "${certDir}/fullchain.pem" "${certDir}/key.pem"
 
-      # Reload Caddy to pick up new cert (only if already running).
-      # On initial boot, Caddy starts after seed-acme finishes and reads the cert.
-      # "systemctl reload" without --no-block would deadlock: caddy waits for
-      # seed-acme (After=), seed-acme waits for caddy to be running to reload it.
-      if systemctl is-active --quiet caddy; then
-        systemctl reload caddy
-      fi
+      # Reload Caddy to pick up new cert
+      systemctl reload caddy 2>/dev/null || true
 
       echo "Certificate installed successfully"
     '';
   };
-
 
   # Daily renewal check
   systemd.timers.seed-acme = {
@@ -180,11 +176,4 @@ in
   };
 
   networking.firewall.allowedTCPPorts = [ 80 443 22 ];
-
-  # Caddy starts after seed-acme's first run (which creates self-signed cert).
-  # seed-acme retries in the background until real cert is obtained.
-  systemd.services.caddy = {
-    after = [ "seed-acme.service" ];
-    wants = [ "seed-acme.service" ];
-  };
 }
