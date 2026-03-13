@@ -132,15 +132,19 @@ created → ssh-ready
 
 ssh-ready → nixos-installed
   needs: SSH as root, stake ready
-  action: FROM STAKE — SSH to stake, then run:
-    nix run nixpkgs#nixos-anywhere -- \
-      --flake github:loomtex/seed?dir=infra#seed-puncher-1 \
+  action: FROM STAKE (via agent forwarding) — SSH to stake with -A, then run:
+    ssh -A ada@<stake>
+    sudo SSH_AUTH_SOCK=$SSH_AUTH_SOCK nix run nixpkgs#nixos-anywhere -- \
+      --flake 'github:loomtex/seed?dir=infra#seed-puncher-1' \
       --target-host root@<ip> --build-on local
   notes: --build-on local means stake builds (16GB RAM, S3 cache), then
          pushes the closure to the puncher. The puncher only has 2GB RAM
          and CANNOT build — Go compilation (sops-install-secrets) will OOM.
          NEVER run nixos-anywhere from signi (Starlink upstream too slow).
          NEVER use --build-on-remote for the puncher (OOM).
+         Agent forwarding (-A) is required because the stake's own SSH key
+         is not authorized on newly created Debian VMs — only signi's keys
+         are registered with Vultr.
 
 nixos-installed → tang-ready
   needs: VPC interface configured (seed-vpc service)
@@ -190,12 +194,13 @@ phone-homed → keys-enrolled
 
 keys-enrolled → nixos-installed
   needs: Node SSH (installer), secrets committed, puncher tang-ready
-  action: FROM STAKE — SSH to stake, then run:
+  action: FROM STAKE (via agent forwarding) — SSH to stake with -A, then:
+    ssh -A ada@<stake>
     1. Generate LUKS passphrase, write to /tmp/disk-password on stake
     2. Generate initrd SSH host key on stake
     3. Pre-build on stake (populates S3 cache):
        sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.<hostname>.config.system.build.toplevel"
-    4. nix run nixpkgs#nixos-anywhere -- \
+    4. sudo SSH_AUTH_SOCK=$SSH_AUTH_SOCK nix run nixpkgs#nixos-anywhere -- \
          --flake "github:loomtex/seed?dir=infra#<hostname>" \
          --target-host root@<ip> --build-on-remote \
          --disk-encryption-keys /tmp/disk-password /tmp/disk-password \
@@ -203,6 +208,7 @@ keys-enrolled → nixos-installed
   notes: --build-on-remote for BMs is OK (32GB RAM). Pre-build on stake
          populates S3 cache so BM pulls from S3 instead of rebuilding.
          ALWAYS run nixos-anywhere FROM the stake, never from signi.
+         Agent forwarding (-A) required — stake's SSH key not on targets.
          extra-files must include /persist/secrets/initrd/ssh_host_ed25519_key
          Node reboots into LUKS-encrypted NixOS
 
