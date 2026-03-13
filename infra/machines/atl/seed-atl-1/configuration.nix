@@ -50,6 +50,8 @@
       flakePaths = [
         "github:loomtex/seed"
       ];
+      ipv4Address = "96.30.193.227";
+      ipv6Block = "2001:19f0:5400:20a7::/64";
       webhook = {
         enable = true;
         secretFile = config.sops.secrets."seed/controller/gh-webhook-secret".path;

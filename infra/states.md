@@ -48,6 +48,39 @@ absent → active
   notes: Create BEFORE stake — stake must be born with VPC NIC
 ```
 
+### Reserved IPs
+
+| State | Detection |
+|-------|-----------|
+| `absent` | No reserved IPs for this region in Vultr API |
+| `allocated` | IPs exist in Vultr API, recorded in state file |
+| `attached` | IPv4 attached to a BM in the cluster |
+
+**Transitions:**
+```
+absent → allocated
+  needs: Region from cluster.nix
+  action:
+    1. Reserve IPv4: nix run .#vultr -- reserve-ipv4 <region>
+    2. Reserve IPv6 /64: nix run .#vultr -- reserve-ipv6 <region>
+    3. Record IPs in state file
+    4. Update source files with allocated IPs:
+       - instances/dns.nix: NS/A/AAAA glue records
+       - flake.nix: seed.ipv6.block
+       - infra/machines/atl/seed-atl-1/configuration.nix: controller.ipv4Address, controller.ipv6Block
+    5. Commit and push (IPs must be in configs BEFORE node builds)
+  notes: Reserve IPs BEFORE building any node closures — the controller
+         config references these IPs, and DNS zone records include them.
+         The IPv6 block from Vultr is a /64 — record the full CIDR.
+
+allocated → attached
+  needs: At least one node running
+  action: Attach IPv4 to a BM via Vultr API (any node — MetalLB L2 manages announcement)
+  notes: IPv6 /64 doesn't need explicit attachment — MetalLB announces via NDP.
+         The attached instance is just the "anchor" — MetalLB can ARP-respond
+         from any node with a speaker pod.
+```
+
 ### Stake
 
 The stake is **ephemeral kexec-only** — no disk install, no bootloader.
@@ -314,27 +347,37 @@ running → k3s-joined
          VPC connectivity required for etcd peering.
 
 k3s-joined → healthy
-  needs: All seed-system pods scheduled and running
-  action: Verify via kubectl:
+  needs: All seed-system pods scheduled and running, reserved IPs attached
+  action: Verify via kubectl + network probes:
     - seed-controller pod running (on controller nodes)
     - seed-host-agent pod running (DaemonSet, all nodes)
     - seed-pool-manager pod running (on controller nodes)
     - MetalLB speaker running (DaemonSet, all nodes)
-  notes: May take a few minutes for all pods to schedule and pull images
+    - IPAddressPool exists with both IPv4 and IPv6 ranges
+    - LoadBalancer services have external IPs (not <pending>)
+    - dig @<reserved-ipv4> loom.farm SOA returns valid response
+    - dig @<reserved-ipv6>::1 loom.farm SOA returns valid response
+  notes: May take a few minutes for all pods to schedule and pull images.
+         LoadBalancer services won't get IPs until MetalLB is configured
+         AND the reserved IPv4 is attached to a node in the cluster.
+         IPv6 /64 doesn't need attachment — MetalLB announces via NDP.
 ```
 
 ## Dependency Order
 
 ```
-VPC ─→ Stake(+VPC) ─→ Puncher ─→ Node(clusterInit=true) ─→ Node(others)
-                                                            ↗
-                                                 (parallel)
+VPC ─→ Reserved IPs ─→ Stake(+VPC) ─→ Puncher ─→ Node(clusterInit=true) ─→ Node(others)
+                                                                             ↗
+                                                                  (parallel)
 ```
 
 VPC is created first so stake is born with its VPC NIC.
+Reserved IPs go after VPC because the allocated addresses must be committed
+to source files before node closures are built (controller config + DNS records).
 Puncher needs to be tang-ready before nodes can be installed (Clevis binding).
 The clusterInit node must be running before others can join.
 Non-init nodes can be provisioned in parallel.
+After the first node is healthy, attach the reserved IPv4 to it.
 
 ## Tools Available
 

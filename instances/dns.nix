@@ -13,37 +13,37 @@ let
 
   rrsets = [
     { name = zone; type = "SOA"; ttl = 300;
-      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026031001 10800 3600 604800 300"; }]; }
+      records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026031301 10800 3600 604800 300"; }]; }
     { name = zone; type = "NS"; ttl = 300;
       records = [{ content = "ns1.loom.farm."; } { content = "ns2.loom.farm."; }]; }
     { name = "ns1.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "155.138.175.181"; }]; }
+      records = [{ content = "96.30.193.227"; }]; }
     { name = "ns1.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5401:1c16::1"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::1"; }]; }
     { name = "ns2.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "155.138.175.181"; }]; }
+      records = [{ content = "96.30.193.227"; }]; }
     { name = "ns2.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5401:1c16::2"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::2"; }]; }
 
     # Namespace wildcard — all instances in our namespace
     { name = "*.s-gaydazldmnsg.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "155.138.175.181"; }]; }
+      records = [{ content = "96.30.193.227"; }]; }
     { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5401:1c16::3"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
 
     # seed-demo namespace wildcard — IPv6 only
     { name = "*.s-mezggnjsgq4t.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5401:1c16::4"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::4"; }]; }
 
     # Silo — routed through web pod (Caddy for HTTPS, socat for SSH), IPv6 only
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5401:1c16::3"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
 
     # Zone apex — can't CNAME at apex, use A/AAAA
     { name = zone; type = "A"; ttl = 300;
-      records = [{ content = "155.138.175.181"; }]; }
+      records = [{ content = "96.30.193.227"; }]; }
     { name = zone; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5401:1c16::3"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
   ];
 
   zoneData = pkgs.writeText "loom-farm-zone.json" (builtins.toJSON {

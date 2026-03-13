@@ -12,6 +12,17 @@ Updated by the provisioning agent after each transition.
 | Subnet | 10.0.0.0/24 |
 | Region | atl |
 
+## Reserved IPs
+
+| Field | Value |
+|-------|-------|
+| IPv4 ID | 348bc22d-5a39-4181-b99b-9f5d3e305801 |
+| IPv4 | 96.30.193.227 |
+| IPv4 attached to | seed-atl-1 (81ebebdd-b672-45ec-b158-e410ec573ea0) |
+| IPv6 ID | 36e2fc9c-138d-467b-beca-57a599d89624 |
+| IPv6 block | 2001:19f0:5400:20a7::/64 |
+| State | **attached** |
+
 ## Stake
 
 | Field | Value |

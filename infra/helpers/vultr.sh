@@ -11,6 +11,10 @@
 #   get <type> <id>                  Get resource details
 #   attach-vpc <instance-id> <vpc-id>  Attach VPC to instance
 #   detach-vpc <instance-id> <vpc-id>  Detach VPC from instance
+#   reserve-ipv4 <region>              Reserve an IPv4 address
+#   reserve-ipv6 <region>              Reserve an IPv6 /64 block
+#   attach-reserved-ip <ip-id> <instance-id>  Attach reserved IP to instance
+#   list-reserved-ips                  List all reserved IPs
 
 VULTR_API="https://api.vultr.com/v2"
 
@@ -133,6 +137,33 @@ case "${1:-help}" in
     echo "Detached VPC $VPC_ID from instance $INSTANCE_ID"
     ;;
 
+  reserve-ipv4)
+    REGION="${2:?region required}"
+    vultr -X POST "$VULTR_API/reserved-ips" \
+      -H "Content-Type: application/json" \
+      -d "{\"region\":\"$REGION\",\"ip_type\":\"v4\",\"label\":\"seed-$REGION\"}" | jq .
+    ;;
+
+  reserve-ipv6)
+    REGION="${2:?region required}"
+    vultr -X POST "$VULTR_API/reserved-ips" \
+      -H "Content-Type: application/json" \
+      -d "{\"region\":\"$REGION\",\"ip_type\":\"v6\",\"label\":\"seed-$REGION-v6\",\"prefix_size\":64}" | jq .
+    ;;
+
+  attach-reserved-ip)
+    IP_ID="${2:?reserved-ip-id required}"
+    INSTANCE_ID="${3:?instance-id required}"
+    vultr -X POST "$VULTR_API/reserved-ips/$IP_ID/attach" \
+      -H "Content-Type: application/json" \
+      -d "{\"instance_id\":\"$INSTANCE_ID\"}"
+    echo "Attached reserved IP $IP_ID to instance $INSTANCE_ID"
+    ;;
+
+  list-reserved-ips)
+    vultr "$VULTR_API/reserved-ips?per_page=500" | jq '.reserved_ips[] | {id, region, ip_type, subnet, subnet_size, instance_id, label}'
+    ;;
+
   help|*)
     echo "Usage: seed-vultr <command> [args...]"
     echo ""
@@ -146,6 +177,10 @@ case "${1:-help}" in
     echo "  get <type:vm|bm|vpc> <id>"
     echo "  attach-vpc <instance-id> <vpc-id>"
     echo "  detach-vpc <instance-id> <vpc-id>"
+    echo "  reserve-ipv4 <region>"
+    echo "  reserve-ipv6 <region>"
+    echo "  attach-reserved-ip <reserved-ip-id> <instance-id>"
+    echo "  list-reserved-ips"
     echo ""
     echo "Environment: VULTR_API_KEY or VULTR_API_KEY_FILE"
     ;;

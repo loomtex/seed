@@ -461,7 +461,7 @@ INITEOF
 
       ipv6 = {
         enable = true;
-        block = "2001:19f0:5401:1c16::/64";
+        block = "2001:19f0:5400:20a7::/64";
         routes = {
           dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
           dns2 = { host = "2"; port = 53; protocol = "dns"; instance = "dns"; };

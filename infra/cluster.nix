@@ -4,6 +4,8 @@
   clusters.atl = {
     region = "atl";
     vpc.subnet = "10.0.0.0/24";
+    reservedIpv4 = "96.30.193.227";
+    reservedIpv6 = "2001:19f0:5400:20a7::/64";
 
     stake = {
       plan = "vx1-g-4c-16g-240s";
