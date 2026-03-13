@@ -63,24 +63,30 @@ absent → active
 absent → created
   needs: VPC active
   action: Create VM via Vultr API with VPC attached at creation
+          MUST include sshkey_id for SSH key auth (Debian root uses password-only otherwise)
   notes: VPC NIC must be present at creation (not hot-added)
+         OS: Debian 12 (os_id 2136) — nixos-anywhere replaces it
+         SSH key IDs: e3845d1c (ada@signi), 75e78e5b (josh@6bit.com)
 
 created → ssh-ready
   needs: VM has public IP assigned
-  action: Poll SSH on root@<ip> until connection succeeds
-  notes: Vultr Debian images use root, password in API response
-         May take 2-5 minutes after creation
+  action: Poll SSH on root@<ip> until connection succeeds (key auth, not password)
+  notes: Takes 2-5 minutes. Use -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+         for first connection
 
 ssh-ready → nixos-active
   needs: SSH access as root
-  action: nixos-anywhere with --flake .#seed-stake to root@<ip>
-  notes: Uses kexec approach — no disko needed for stake
-         Stake reboots after install, SSH as ada (not root)
+  action: nixos-anywhere --flake .#seed-stake --target-host root@<ip> --build-on-remote
+  notes: ALWAYS use --build-on-remote. NEVER build on signi (Starlink upstream is slow).
+         The target pulls from cache.nixos.org directly with datacenter bandwidth.
+         nixos-anywhere handles: kexec → disko → build → install → reboot.
+         After reboot, SSH as ada (not root) on port 22.
 
 nixos-active → ready
   needs: SSH as ada, seed-cache profile active
   action: Verify nginx :8080 and registration :8081 responding
-  notes: Services start automatically from NixOS config
+  notes: Services start automatically from NixOS config.
+         S3 binary cache is available after sops secrets are enrolled.
 ```
 
 ### Puncher (seed-puncher-1)
@@ -105,8 +111,11 @@ created → ssh-ready
 
 ssh-ready → nixos-installed
   needs: SSH as root
-  action: nixos-anywhere --flake .#seed-puncher-1 root@<ip>
-  notes: Build on stake if available (in-DC bandwidth), else locally
+  action: nixos-anywhere --flake .#seed-puncher-1 --target-host root@<ip> --build-on-remote
+  notes: ALWAYS --build-on-remote. Target pulls from cache.nixos.org + S3 binary cache.
+         If stake is already provisioned and has S3 cache, pre-build on stake first:
+           ssh root@<stake> 'nix build github:loomtex/seed/infra#nixosConfigurations.seed-puncher-1.config.system.build.toplevel'
+         This populates S3 cache, then puncher pulls from S3 instead of rebuilding.
 
 nixos-installed → tang-ready
   needs: VPC interface configured (seed-vpc service)
@@ -159,8 +168,10 @@ keys-enrolled → nixos-installed
   action:
     1. Generate LUKS passphrase, write to /tmp/disk-password
     2. Generate initrd SSH host key
-    3. nixos-anywhere --flake .#<hostname> --disk-encryption-keys /tmp/disk-password /tmp/disk-password --extra-files <dir> root@<ip>
-  notes: Build on stake (or local with S3 cache)
+    3. Pre-build on stake: ssh root@<stake> 'nix build github:loomtex/seed/infra#nixosConfigurations.<hostname>.config.system.build.toplevel'
+    4. nixos-anywhere --flake .#<hostname> --target-host root@<ip> --build-on-remote --disk-encryption-keys /tmp/disk-password /tmp/disk-password --extra-files <dir>
+  notes: ALWAYS --build-on-remote. Pre-build on stake populates S3 cache, so the
+         target pulls from S3 instead of rebuilding (minutes vs hours).
          extra-files must include /persist/secrets/initrd/ssh_host_ed25519_key
          Node reboots into LUKS-encrypted NixOS
 

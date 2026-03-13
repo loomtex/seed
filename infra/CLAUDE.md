@@ -105,6 +105,60 @@ nix run .#clevis-bind -- http://10.0.0.1:7654 /tmp/passphrase
 Or use them directly — the agent has curl, jq, sops, age, ssh-to-age,
 clevis, etc. available in its environment.
 
+## Build Strategy
+
+**CRITICAL: Never build NixOS closures on signi.** signi is on Starlink —
+upstream bandwidth is severely limited. Always build on the target machine
+or on the stake (which has datacenter bandwidth + S3 binary cache).
+
+### Preferred: nixos-anywhere --build-on-remote
+
+For initial installs, always use `--build-on-remote`. The target pulls
+from cache.nixos.org and the S3 binary cache directly:
+
+```bash
+nixos-anywhere --flake .#seed-stake --target-host root@<ip> --build-on-remote
+```
+
+### Even better: kexec + build-on-target + switch
+
+For subsequent installs or when the stake is available:
+1. Kexec into NixOS installer on the target
+2. SSH into the kexec'd environment
+3. Build the derivation directly on the target:
+   ```bash
+   nix build github:loomtex/seed#nixosConfigurations.<host>.config.system.build.toplevel
+   ```
+4. Run nixos-install or switch-to-configuration from the built result
+
+This avoids copying derivations over the wire entirely — the target
+pulls everything from caches.
+
+### For rebuilds after initial install
+
+Build on the machine itself or on the stake via SSH:
+```bash
+ssh root@<target> 'nixos-rebuild build --flake github:loomtex/seed/infra#<host> --refresh'
+```
+
+### S3 Binary Cache
+
+The stake has `seed-cache.nix` profile with:
+- **Pull**: S3 substituter pulls pre-built paths from `seed-nix-cache`
+- **Push**: Post-build-hook signs + uploads every build to S3
+
+After the stake builds something, all other machines can pull it from S3
+instead of rebuilding. This is why the stake should do the heavy building.
+
+### Vultr VM SSH Keys
+
+When creating VMs via the Vultr API, always include SSH key IDs.
+Without them, Debian VMs only allow password auth and our key-based
+SSH polling won't connect. Use:
+```json
+"sshkey_id": ["e3845d1c-c452-41e0-ad23-03956e60fe95", "75e78e5b-8543-45ee-b0da-3515c0da8fd6"]
+```
+
 ## Key Patterns
 
 ### nixos-anywhere
@@ -112,10 +166,9 @@ clevis, etc. available in its environment.
 Used to install NixOS on Debian VMs and netbooted bare metal:
 
 ```bash
-nixos-anywhere --flake .#seed-atl-1 \
+nixos-anywhere --flake .#seed-atl-1 --target-host root@<ip> --build-on-remote \
   --disk-encryption-keys /tmp/disk-password /tmp/disk-password \
-  --extra-files /tmp/extra-files \
-  root@<ip>
+  --extra-files /tmp/extra-files
 ```
 
 The `--extra-files` directory should contain:

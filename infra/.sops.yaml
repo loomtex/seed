@@ -5,9 +5,17 @@ keys:
   - &seed_atl_2_age age19xq48wjmej07g6sl8kg86a64jsxe5gc47y2f6ghefjxeqhhcad7q4sm0vx
   - &seed_atl_3_age age1dql0yg48r4m6xsycwxf2dn3wrvdld6rrszgm2yaxud4jwamx7vgq59gxy9
   - &seed_tang_1_age age1s3qkxjd29dd6mvttvruf6mpzue2lun3qmyfnycgk8t6c7ftz7vpqa87flk
+  - &seed_stake_age age1uzdjpvu5ftf5um2veavl85r2hht89afk2l3sajxj3ehc7wa9ya5s9fqlrh
   - &seed_puncher_1_age age1ae83xwy93c4u9nrzu8gtdyr9ks9c3zu44p7dmc78penpenaysgnqq5xqgx
 
 creation_rules:
+  - path_regex: secrets/seed-stake\.yaml$
+    key_groups:
+      - pgp:
+          - *admin_josh
+        age:
+          - *seed_stake_age
+
   - path_regex: secrets/seed-atl-1\.yaml$
     key_groups:
       - pgp:
@@ -48,6 +56,7 @@ creation_rules:
       - pgp:
           - *admin_josh
         age:
+          - *seed_stake_age
           - *seed_atl_1_age
           - *seed_atl_2_age
           - *seed_atl_3_age

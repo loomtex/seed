@@ -16,10 +16,10 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| ID | *(to be recorded)* |
-| IP | *(to be recorded)* |
+| ID | 77c8fe0d-4b0c-4a83-897d-d49df12faa53 |
+| IP | 155.138.226.112 |
 | VPC IP | 10.0.0.2 |
-| State | **absent** |
+| State | **nixos-active** |
 
 ## Puncher (seed-puncher-1)
 
