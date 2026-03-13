@@ -69,7 +69,7 @@ absent → created
   needs: VPC active
   action: Create VM via Vultr API with VPC attached at creation.
           vultr.sh auto-includes all registered SSH keys.
-  notes: Plan: vc2-6c-16gb (16GB RAM, 320GB disk for nix store overlay)
+  notes: Plan: vx1-g-4c-16g-240s (dedicated AMD, 16GB RAM, 240GB disk)
          OS: Debian 12 (os_id 2136)
          VPC NIC must be present at creation (not hot-added)
 

@@ -213,7 +213,7 @@ From `cluster.nix`:
 
 | Machine | Type | Plan | VPC IP | Role |
 |---------|------|------|--------|------|
-| seed-stake | VM | vc2-6c-16gb | 10.0.0.2 | Provisioner (ephemeral, kexec) |
+| seed-stake | VM | vx1-g-4c-16g-240s | 10.0.0.2 | Provisioner (ephemeral, kexec) |
 | seed-puncher-1 | VM | vc2-1c-2gb | 10.0.0.1 | Tang + DNS |
 | seed-atl-1 | BM | vbm-6c-32gb | 10.0.0.10 | k3s init + controller |
 | seed-atl-2 | BM | vbm-6c-32gb | 10.0.0.11 | k3s server |
