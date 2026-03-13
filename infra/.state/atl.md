@@ -40,11 +40,12 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| BM ID | *(to be recorded)* |
-| IP | *(to be recorded)* |
+| BM ID | 81ebebdd-b672-45ec-b158-e410ec573ea0 |
+| IP | 104.156.255.96 |
 | VPC IP | 10.0.0.10 |
-| State | **absent** |
-| Age key | age1gcnvkfuptygecafugm5m54cfh2krnh95x023w9pjyj4uz2pu697qwv7knd |
+| State | **created** |
+| Age key | age1neey2tjnrka26dndtwp400y5auud86v92f09srdr3xun80exv5jqcnlq6t |
+| iPXE script | 7786b670-807e-4eb6-8a3d-7030f2032ab0 |
 | Notes | clusterInit, controller |
 
 ### seed-atl-2
