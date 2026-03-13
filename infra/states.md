@@ -229,6 +229,7 @@ keys-enrolled → nixos-installed
          aws_access_key_id = <from seed-system.yaml>
          aws_secret_access_key = <from seed-system.yaml>
       c. Write /root/.config/nix/nix.conf:
+         experimental-features = nix-command flakes
          extra-substituters = s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default
          extra-trusted-substituters = s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default
          extra-trusted-public-keys = seed-cache-1:HmHh2GMeZTBXufX8RRs30bBNVB75+QfkgFllazC365E=
@@ -256,10 +257,8 @@ keys-enrolled → nixos-installed
          - /persist/etc/ssh/ssh_host_rsa_key{,.pub}
          - /persist/seed/server-addr (for non-init nodes)
       c. Build on the BM (pulls from S3 cache):
-         ssh root@<ip> 'nix build --extra-experimental-features "nix-command flakes" \
-           --refresh --print-out-paths \
+         ssh root@<ip> 'nix build --refresh --print-out-paths \
            "github:loomtex/seed?dir=infra#nixosConfigurations.<hostname>.config.system.build.toplevel"'
-         Note: kexec installer needs --extra-experimental-features.
       d. Run disko:
          nixos-anywhere --phases disko --build-on remote \
            --flake "github:loomtex/seed?dir=infra#<hostname>" root@<ip> \

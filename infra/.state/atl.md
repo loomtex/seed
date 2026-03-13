@@ -57,9 +57,9 @@ Updated by the provisioning agent after each transition.
 | IP | 45.76.251.217 |
 | IPv6 | 2001:19f0:5400:22f6:3eec:efff:feb9:89ac |
 | VPC IP | 10.0.0.11 |
-| State | **phone-homed** |
+| State | **healthy** |
 | Age key | age16kvu4zv76gnuenewe3eaphx5uq5xd4hcw9qpf6x7ltgtlsm9kp2s05uvwy |
-| Notes | Reinstalled after failed build (tmpfs overflow), building closure |
+| Notes | k3s server, LUKS+Clevis (manual unlock on first boot), dual-stack |
 
 ### seed-atl-3
 
@@ -69,6 +69,6 @@ Updated by the provisioning agent after each transition.
 | IP | 155.138.221.136 |
 | IPv6 | 2001:19f0:5400:2244:3eec:efff:feb9:c554 |
 | VPC IP | 10.0.0.12 |
-| State | **phone-homed** |
+| State | **healthy** |
 | Age key | age1x6fmwskwxvacf9nnsafexvpgfdl9ugj9xf9fvpvfng3rkukc3yxskddr3p |
-| Notes | VPC hot-attached (not at creation), building closure |
+| Notes | k3s server, VPC hot-attached, LUKS+Clevis (manual unlock on first boot), dual-stack |
