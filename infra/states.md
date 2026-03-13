@@ -194,23 +194,70 @@ phone-homed → keys-enrolled
 
 keys-enrolled → nixos-installed
   needs: Node SSH (installer), secrets committed, puncher tang-ready
-  action: FROM STAKE (via agent forwarding) — SSH to stake with -A, then:
-    ssh -A ada@<stake>
-    1. Generate LUKS passphrase, write to /tmp/disk-password on stake
-    2. Generate initrd SSH host key on stake
-    3. Pre-build on stake (populates S3 cache):
-       sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.<hostname>.config.system.build.toplevel"
-    4. sudo SSH_AUTH_SOCK=$SSH_AUTH_SOCK nix run nixpkgs#nixos-anywhere -- \
-         --flake "github:loomtex/seed?dir=infra#<hostname>" \
-         --target-host root@<ip> --build-on-remote \
-         --disk-encryption-keys /tmp/disk-password /tmp/disk-password \
-         --extra-files <dir>
-  notes: --build-on-remote for BMs is OK (32GB RAM). Pre-build on stake
-         populates S3 cache so BM pulls from S3 instead of rebuilding.
-         ALWAYS run nixos-anywhere FROM the stake, never from signi.
-         Agent forwarding (-A) required — stake's SSH key not on targets.
+  action: Phased provisioning — kexec first, then S3 cache, then build+install.
+
+    Phase 1: Kexec into NixOS installer
+      nixos-anywhere --phases kexec --build-on remote \
+        --flake "github:loomtex/seed?dir=infra#<hostname>" root@<ip>
+      Wait for SSH to reconnect (installer boots, ~30s).
+
+    Phase 2: Configure S3 binary cache in installer
+      SSH to root@<ip>, then:
+      a. Write /root/.aws/credentials:
+         [default]
+         aws_access_key_id = <from seed-system.yaml>
+         aws_secret_access_key = <from seed-system.yaml>
+      b. Write /root/.config/nix/nix.conf:
+         extra-substituters = s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default
+         extra-trusted-substituters = s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default
+         extra-trusted-public-keys = seed-cache-1:HmHh2GMeZTBXufX8RRs30bBNVB75+QfkgFllazC365E=
+      c. Inject AWS env vars into nix-daemon:
+         systemctl set-environment \
+           AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials \
+           AWS_EC2_METADATA_DISABLED=true
+         systemctl restart nix-daemon
+      This lets the BM pull pre-built derivations from S3 instead of
+      compiling kata-guest-kernel and kata-runtime from source (~20min saved).
+
+    Phase 3: Pre-build on stake (populate S3 cache)
+      ssh -A ada@<stake>
+      sudo nix build --refresh "github:loomtex/seed?dir=infra#nixosConfigurations.<hostname>.config.system.build.toplevel"
+      Post-build-hook uploads all paths to S3 automatically.
+      This step only needs to be done once per unique closure — after the
+      first node is built, subsequent nodes pull from S3.
+
+    Phase 4: Build on target + disko + install
+      On signi (or stake via agent forwarding):
+      a. Generate LUKS passphrase, write to /tmp/disk-password
+      b. Prepare extra-files dir with:
+         - /persist/secrets/initrd/ssh_host_ed25519_key{,.pub}
+         - /persist/etc/ssh/ssh_host_ed25519_key{,.pub}
+         - /persist/etc/ssh/ssh_host_rsa_key{,.pub}
+         - /persist/seed/server-addr (for non-init nodes)
+      c. Build on the BM (pulls from S3 cache):
+         ssh root@<ip> 'nix build --refresh --print-out-paths \
+           "github:loomtex/seed?dir=infra#nixosConfigurations.<hostname>.config.system.build.toplevel"'
+      d. Run disko:
+         nixos-anywhere --phases disko --build-on remote \
+           --flake "github:loomtex/seed?dir=infra#<hostname>" root@<ip> \
+           --disk-encryption-keys /tmp/disk-password /tmp/disk-password
+      e. Create empty Clevis JWE placeholder (disko expects it):
+         ssh root@<ip> 'mkdir -p /mnt/persist/secrets && touch /mnt/persist/secrets/clevis-cryptroot.jwe'
+      f. Install:
+         ssh root@<ip> 'nixos-install --root /mnt --system <toplevel-path> --no-root-passwd'
+      g. Copy extra-files into /mnt:
+         scp -r /tmp/<hostname>-extra/* root@<ip>:/mnt/
+      h. Reboot (or kexec into installed kernel if iPXE reboot loops)
+
+  notes: ALWAYS inject S3 cache BEFORE building on the BM.
+         Without S3 cache, kata-guest-kernel + kata-runtime compile from
+         source (~20 minutes). With S3 cache, the build pulls pre-built
+         paths and finishes in ~2 minutes.
+         Phase 3 (pre-build on stake) can be skipped if the closure is
+         already in S3 from a previous node's build.
+         NEVER build on signi (Starlink upstream too slow).
          extra-files must include /persist/secrets/initrd/ssh_host_ed25519_key
-         Node reboots into LUKS-encrypted NixOS
+         Node reboots into LUKS-encrypted NixOS.
 
 nixos-installed → luks-locked
   needs: Node rebooted after nixos-anywhere
