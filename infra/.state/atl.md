@@ -53,18 +53,22 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| BM ID | *(to be recorded)* |
-| IP | *(to be recorded)* |
+| BM ID | e465a3c2-2034-42fc-ac97-c1f848a86764 |
+| IP | 45.76.251.217 |
+| IPv6 | 2001:19f0:5400:22f6:3eec:efff:feb9:89ac |
 | VPC IP | 10.0.0.11 |
-| State | **absent** |
-| Age key | age19xq48wjmej07g6sl8kg86a64jsxe5gc47y2f6ghefjxeqhhcad7q4sm0vx |
+| State | **phone-homed** |
+| Age key | age16kvu4zv76gnuenewe3eaphx5uq5xd4hcw9qpf6x7ltgtlsm9kp2s05uvwy |
+| Notes | Reinstalled after failed build (tmpfs overflow), building closure |
 
 ### seed-atl-3
 
 | Field | Value |
 |-------|-------|
-| BM ID | *(to be recorded)* |
-| IP | *(to be recorded)* |
+| BM ID | e0e7a0b7-1ace-4223-803c-8997014d6812 |
+| IP | 155.138.221.136 |
+| IPv6 | 2001:19f0:5400:2244:3eec:efff:feb9:c554 |
 | VPC IP | 10.0.0.12 |
-| State | **absent** |
-| Age key | age1dql0yg48r4m6xsycwxf2dn3wrvdld6rrszgm2yaxud4jwamx7vgq59gxy9 |
+| State | **phone-homed** |
+| Age key | age1x6fmwskwxvacf9nnsafexvpgfdl9ugj9xf9fvpvfng3rkukc3yxskddr3p |
+| Notes | VPC hot-attached (not at creation), building closure |

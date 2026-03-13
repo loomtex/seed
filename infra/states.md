@@ -71,7 +71,7 @@ absent → created
           vultr.sh auto-includes all registered SSH keys.
   notes: Plan: vx1-g-4c-16g-240s (dedicated AMD, 16GB RAM, 240GB disk)
          OS: Debian 12 (os_id 2136)
-         VPC NIC must be present at creation (not hot-added)
+         Prefer VPC at creation. Hot-attach works for VMs if needed.
 
 created → ssh-ready
   needs: VM has public IP assigned
@@ -174,6 +174,9 @@ absent → created
   action: Create BM via Vultr API with OS 159 (Custom/iPXE) + boot script
   notes: Boot script points to stake's netboot HTTP endpoint
          BM iPXE netboot is BIOS-only on Vultr
+         Prefer VPC at creation. Hot-attach works for BMs (verified):
+         NIC gets carrier, but only has link-local IP. Must manually
+         assign 10.0.0.x/24 for VPC connectivity. Tang reachable.
 
 created → phone-homed
   needs: BM boots into installer, gets DHCP, runs phone-home service

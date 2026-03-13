@@ -238,5 +238,5 @@ and the registration endpoint for phone-home (:8081).
 
 - Don't use Pulumi (it's in `legacy/` for reference only)
 - Don't hardcode IPs — read from `cluster.nix` and `data/vpc.nix`
-- Don't hot-add VPC NICs — create VMs/BMs with VPC attached from the start
+- Prefer VPC at creation, but hot-attach works for BMs if needed (verified)
 - Don't skip Clevis binding — every LUKS node needs Tang auto-unlock
