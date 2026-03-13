@@ -108,6 +108,7 @@ in
         -d "*.s-gaydazldmnsg.loom.farm"
         -d "loom.farm"
         -d "silo.loom.farm"
+        -d "seed.loom.farm"  # temporary: dodge LE duplicate cert rate limit
       )
 
       if [ -f "${certFile}" ]; then
