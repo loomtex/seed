@@ -71,7 +71,6 @@ in
 
     script = ''
       set -euo pipefail
-      trap 'echo "FAILED at line $LINENO (exit $?)" >&2' ERR
 
       mkdir -p "${certDir}" "${legoDir}"
 
@@ -123,40 +122,18 @@ in
       chgrp caddy "${certDir}/fullchain.pem" "${certDir}/key.pem"
       chmod 640 "${certDir}/fullchain.pem" "${certDir}/key.pem"
 
-      # Reload Caddy to pick up new cert
-      systemctl reload caddy 2>/dev/null || true
+      # Reload Caddy to pick up new cert (only if already running).
+      # On initial boot, Caddy starts after seed-acme finishes and reads the cert.
+      # "systemctl reload" without --no-block would deadlock: caddy waits for
+      # seed-acme (After=), seed-acme waits for caddy to be running to reload it.
+      if systemctl is-active --quiet caddy; then
+        systemctl reload caddy
+      fi
 
       echo "Certificate installed successfully"
     '';
   };
 
-  # Diagnostic: dump systemd state to PVC for debugging (Kata VM — no kubectl exec)
-  systemd.services.seed-diag = {
-    description = "Dump systemd state to PVC";
-    wantedBy = [ "multi-user.target" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
-    script = ''
-      sleep 45
-      {
-        echo "=== $(date) ==="
-        echo "--- seed-acme status ---"
-        systemctl status seed-acme.service 2>&1 || true
-        echo "--- caddy status ---"
-        systemctl status caddy.service 2>&1 || true
-        echo "--- caddy journal ---"
-        journalctl -u caddy.service --no-pager -n 50 2>&1 || true
-        echo "--- seed-acme journal ---"
-        journalctl -u seed-acme.service --no-pager -n 20 2>&1 || true
-        echo "--- cert files ---"
-        ls -la /var/lib/acme/ns-wildcard/ 2>&1 || true
-        echo "--- listening ports ---"
-        ss -tlnp 2>&1 || true
-      } > /seed/storage/data/diag.txt 2>&1
-    '';
-  };
 
   # Daily renewal check
   systemd.timers.seed-acme = {
