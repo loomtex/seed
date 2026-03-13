@@ -69,7 +69,7 @@
   boot.initrd.clevis = {
     enable = true;
     useTang = true;
-    devices.cryptroot.secretFile = "/persist/secrets/clevis-cryptroot.jwe";
+    devices.cryptroot.secretFile = "/boot/secrets/clevis-cryptroot.jwe";
   };
 
   fileSystems."/persist".neededForBoot = true;

@@ -5,8 +5,9 @@
 #   1. Generate initrd SSH host key into extra-files dir (as current user, 600 perms)
 #   2. Run nixos-anywhere with --extra-files and --disk-encryption-keys
 #   3. SSH into initrd (port 2222) for first boot to enter LUKS passphrase
-#   4. Create JWE: echo -n <passphrase> | clevis encrypt tang '{"url":"..."}' > /persist/secrets/clevis-cryptroot.jwe
-#   5. Enable boot.initrd.clevis in disks.nix, nixos-rebuild boot && reboot
+#   4. Create JWE: echo -n <passphrase> | clevis encrypt tang '{"url":"...","thp":"..."}' > /boot/secrets/clevis-cryptroot.jwe
+#   5. chmod 600 /boot/secrets/clevis-cryptroot.jwe
+#   6. nixos-rebuild boot && reboot (append-initrd-secrets embeds JWE into initrd)
 { config, lib, pkgs, ... }:
 
 {
