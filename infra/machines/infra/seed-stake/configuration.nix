@@ -14,8 +14,24 @@
 
   config = {
 
-    boot.loader.systemd-boot.enable = true;
-    boot.loader.efi.canTouchEfiVariables = true;
+    # Kexec activation: no bootloader, no installer — activated in-place
+    boot.loader.grub.enable = false;
+
+    # Filesystem declarations for kexec compatibility.
+    # Root is the squashfs+tmpfs overlay from kexec; /mnt/disk is the
+    # ext4 backing store for the nix store overlay swap.
+    fileSystems."/" = { device = "none"; fsType = "tmpfs"; };
+    fileSystems."/mnt/disk" = {
+      device = "/dev/vda";
+      fsType = "ext4";
+      options = [ "nofail" ];
+    };
+
+    # S3 binary cache (substituter only — credentials injected by provisioning agent)
+    nix.settings = {
+      substituters = [ "s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default" ];
+      trusted-public-keys = [ "seed-cache-1:HmHh2GMeZTBXufX8RRs30bBNVB75+QfkgFllazC365E=" ];
+    };
 
     # System-wide packages for provisioning
     environment.systemPackages = with pkgs; [

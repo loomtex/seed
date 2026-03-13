@@ -50,43 +50,64 @@ absent → active
 
 ### Stake
 
+The stake is **ephemeral kexec-only** — no disk install, no bootloader.
+It runs NixOS activated in-place on the kexec installer. If the VM
+reboots, it goes back to Debian and must be re-provisioned.
+
+The `provision-stake` helper automates the full flow.
+
 | State | Detection |
 |-------|-----------|
 | `absent` | No Vultr instance with this label/ID |
 | `created` | Instance exists, may not have IP yet |
 | `ssh-ready` | SSH to root@IP succeeds (Debian default OS) |
-| `nixos-active` | SSH as ada succeeds, `hostname` returns `seed-stake` |
-| `ready` | Netboot HTTP serving on :8080, registration endpoint on :8081 |
+| `ready` | SSH as ada, hostname=seed-stake, nginx :8080 + registration :8081 up |
 
 **Transitions:**
 ```
 absent → created
   needs: VPC active
-  action: Create VM via Vultr API with VPC attached at creation
-          MUST include sshkey_id for SSH key auth (Debian root uses password-only otherwise)
-  notes: VPC NIC must be present at creation (not hot-added)
-         OS: Debian 12 (os_id 2136) — nixos-anywhere replaces it
-         SSH key IDs: e3845d1c (ada@signi), 75e78e5b (josh@6bit.com)
+  action: Create VM via Vultr API with VPC attached at creation.
+          vultr.sh auto-includes all registered SSH keys.
+  notes: Plan: vx1-g-4c-16g-240s (16GB RAM for building netboot images)
+         OS: Debian 12 (os_id 2136)
+         VPC NIC must be present at creation (not hot-added)
 
 created → ssh-ready
   needs: VM has public IP assigned
-  action: Poll SSH on root@<ip> until connection succeeds (key auth, not password)
-  notes: Takes 2-5 minutes. Use -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-         for first connection
+  action: Poll SSH on root@<ip> until connection succeeds (key auth)
+  notes: Takes 2-5 minutes
 
-ssh-ready → nixos-active
-  needs: SSH access as root
-  action: nixos-anywhere --flake .#seed-stake --target-host root@<ip> --build-on-remote
-  notes: ALWAYS use --build-on-remote. NEVER build on signi (Starlink upstream is slow).
-         The target pulls from cache.nixos.org directly with datacenter bandwidth.
-         nixos-anywhere handles: kexec → disko → build → install → reboot.
-         After reboot, SSH as ada (not root) on port 22.
-
-nixos-active → ready
-  needs: SSH as ada, seed-cache profile active
-  action: Verify nginx :8080 and registration :8081 responding
-  notes: Services start automatically from NixOS config.
-         S3 binary cache is available after sops secrets are enrolled.
+ssh-ready → ready
+  needs: SSH as root, sops age key on signi (for decrypting S3 credentials)
+  action: Run `nix run .#provision-stake -- --ip <ip>` (or just `nix run .#provision-stake`
+          to create VM + provision in one shot). The helper does:
+    1. Kexec into NixOS installer:
+       nixos-anywhere --phases kexec --build-on remote --flake .#seed-stake root@<ip>
+    2. Wait for SSH to reconnect (NixOS installer boots)
+    3. Configure S3 binary cache in installer:
+       - Write /root/.aws/credentials and signing key
+       - Write post-build-hook script (sign + upload to S3)
+       - Inject AWS env vars into nix-daemon via systemctl set-environment
+       - Write /root/.config/nix/nix.conf (extra-substituters, post-build-hook)
+    4. Swap nix store overlay from tmpfs to disk:
+       - mkfs.ext4 /dev/vda, mount at /mnt/disk
+       - Copy existing overlay upper to disk
+       - Remount /nix/store with disk-backed upper
+    5. Build seed-stake closure ON the stake:
+       nix build "github:loomtex/seed?dir=infra#...seed-stake...toplevel"
+       (S3 cache provides pre-built derivations — minutes, not hours)
+    6. Activate in-place:
+       - $TOPLEVEL/activate (users, /etc, tmpfiles)
+       - systemctl daemon-reload
+       - Fix DNS (resolv.conf → real nameservers, not systemd-resolved)
+       - Start services: suid-sgid-wrappers, seed-vpc, nginx, seed-register, sshd
+    7. Re-inject S3 credentials (activation replaces /etc/nix/nix.conf)
+    8. Verify: hostname, VPC NIC, nginx :8080, registration :8081
+  notes: NEVER build on signi (Starlink upstream). Build ON the stake.
+         No disko, no nixos-install, no reboot — activated in-place.
+         Stake config has no sops secrets — credentials injected directly.
+         The kexec config has no bootloader and no disk layout.
 ```
 
 ### Puncher (seed-puncher-1)

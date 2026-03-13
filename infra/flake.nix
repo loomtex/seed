@@ -57,13 +57,8 @@
       # --- Infrastructure machines ---
 
       seed-stake = mkMachine "seed-stake" ./machines/infra/seed-stake [
-        ./machines/infra/seed-stake/disks.nix
-        ./profiles/seed-cache.nix
         ./profiles/seed-vpc.nix
-        {
-          seed.netbootPath = seed.packages.${system}.netboot;
-          sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
-        }
+        { seed.netbootPath = seed.packages.${system}.netboot; }
       ];
 
       seed-puncher-1 = mkMachine "seed-puncher-1" ./machines/infra/seed-puncher-1 [
@@ -133,6 +128,17 @@
           runtimeInputs = with pkgs; [ openssh tmux ];
           text = builtins.readFile ./helpers/observe.sh;
         }}/bin/seed-observe";
+      };
+
+      provision-stake = let
+        deps = with pkgs; [ openssh curl jq sops age nixos-anywhere nix coreutils gawk ];
+        script = pkgs.writeShellScript "seed-provision-stake" ''
+          export PATH="${pkgs.lib.makeBinPath deps}:$PATH"
+          exec ${pkgs.bash}/bin/bash ${./helpers/provision-stake.sh} "$@"
+        '';
+      in {
+        type = "app";
+        program = "${script}";
       };
     };
 

@@ -42,14 +42,16 @@ case "${1:-help}" in
     PLAN="${3:?plan required}"
     REGION="${4:?region required}"
     VPC_ID="${5:-}"
-    OS_ID="${6:-2284}"  # Debian 12
+    OS_ID="${6:-2136}"  # Debian 12
     ATTACH=""
     if [ -n "$VPC_ID" ]; then
       ATTACH=",\"attach_private_network\":[\"$VPC_ID\"]"
     fi
+    # Always include all registered SSH keys (key auth only)
+    SSH_KEYS=$(vultr "$VULTR_API/ssh-keys" | jq -c '[.ssh_keys[].id]')
     vultr -X POST "$VULTR_API/instances" \
       -H "Content-Type: application/json" \
-      -d "{\"label\":\"$LABEL\",\"plan\":\"$PLAN\",\"region\":\"$REGION\",\"os_id\":$OS_ID$ATTACH}" | jq .
+      -d "{\"label\":\"$LABEL\",\"plan\":\"$PLAN\",\"region\":\"$REGION\",\"os_id\":$OS_ID,\"sshkey_id\":$SSH_KEYS$ATTACH}" | jq .
     ;;
 
   create-bm)
@@ -66,9 +68,10 @@ case "${1:-help}" in
     if [ -n "$SCRIPT_ID" ]; then
       SCRIPT=",\"script_id\":\"$SCRIPT_ID\""
     fi
+    SSH_KEYS=$(vultr "$VULTR_API/ssh-keys" | jq -c '[.ssh_keys[].id]')
     vultr -X POST "$VULTR_API/bare-metals" \
       -H "Content-Type: application/json" \
-      -d "{\"label\":\"$LABEL\",\"plan\":\"$PLAN\",\"region\":\"$REGION\",\"os_id\":159$ATTACH$SCRIPT}" | jq .
+      -d "{\"label\":\"$LABEL\",\"plan\":\"$PLAN\",\"region\":\"$REGION\",\"os_id\":159,\"sshkey_id\":$SSH_KEYS$ATTACH$SCRIPT}" | jq .
     ;;
 
   create-boot-script)

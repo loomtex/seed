@@ -111,53 +111,63 @@ clevis, etc. available in its environment.
 upstream bandwidth is severely limited. Always build on the target machine
 or on the stake (which has datacenter bandwidth + S3 binary cache).
 
-### Preferred: nixos-anywhere --build-on-remote
+### Stake Provisioning (Ephemeral Kexec)
 
-For initial installs, always use `--build-on-remote`. The target pulls
-from cache.nixos.org and the S3 binary cache directly:
+The stake uses **ephemeral infect**: kexec into NixOS installer, swap
+nix store overlay to disk, build the system closure ON the stake, and
+activate in place. No disko, no nixos-install, no reboot.
 
 ```bash
-nixos-anywhere --flake .#seed-stake --target-host root@<ip> --build-on-remote
+nix run .#provision-stake              # Full: create VM + provision
+nix run .#provision-stake -- --ip <ip> # Provision existing Debian VM
 ```
 
-### Even better: kexec + build-on-target + switch
+The helper handles: VM creation → kexec → S3 cache setup → overlay swap
+→ build on target → in-place activation → credential injection → verify.
 
-For subsequent installs or when the stake is available:
-1. Kexec into NixOS installer on the target
-2. SSH into the kexec'd environment
-3. Build the derivation directly on the target:
-   ```bash
-   nix build github:loomtex/seed#nixosConfigurations.<host>.config.system.build.toplevel
-   ```
-4. Run nixos-install or switch-to-configuration from the built result
+The stake config has **no bootloader and no disk layout** — it's designed
+to run activated on top of the kexec installer. If the VM reboots, it
+goes back to Debian and must be re-provisioned (it's ephemeral).
 
-This avoids copying derivations over the wire entirely — the target
-pulls everything from caches.
+S3 credentials are injected directly by the provisioning agent (not sops),
+since the stake has no enrolled host key.
 
-### For rebuilds after initial install
+### Node Provisioning (Disko + Install)
 
-Build on the machine itself or on the stake via SSH:
+For permanent machines (puncher, ATL nodes), use disko + install:
+
+1. **Kexec only**: `nixos-anywhere --phases kexec --build-on remote --flake .#<host> root@<ip>`
+2. **Set up S3 cache** in kexec env (credentials + nix.conf substituter)
+3. **Swap nix store overlay to disk** (if tmpfs is too small)
+4. **Disko**: `nixos-anywhere --phases disko --build-on remote --flake .#<host> root@<ip>`
+5. **Build on target**: `nix build "github:loomtex/seed?dir=infra#nixosConfigurations.<host>.config.system.build.toplevel"`
+6. **Install**: `nixos-install --root /mnt --system <toplevel-path> --no-root-passwd`
+7. **Reboot**
+
+### Once stake is running: build everything on stake
+
+After the stake is provisioned, build ALL other machines' closures
+on the stake first. The post-build-hook uploads to S3, then the targets
+pull from S3 cache instead of rebuilding:
+
 ```bash
-ssh root@<target> 'nixos-rebuild build --flake github:loomtex/seed/infra#<host> --refresh'
+ssh ada@<stake> 'sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.seed-puncher-1.config.system.build.toplevel"'
+# S3 cache now has all paths. The target pulls from S3.
 ```
 
 ### S3 Binary Cache
 
-The stake has `seed-cache.nix` profile with:
+The stake has S3 binary cache configured by the provisioning helper:
 - **Pull**: S3 substituter pulls pre-built paths from `seed-nix-cache`
 - **Push**: Post-build-hook signs + uploads every build to S3
 
-After the stake builds something, all other machines can pull it from S3
-instead of rebuilding. This is why the stake should do the heavy building.
+Credentials are decrypted from `secrets/seed-system.yaml` on signi and
+injected into the stake's nix-daemon environment. No sops on the stake.
 
 ### Vultr VM SSH Keys
 
-When creating VMs via the Vultr API, always include SSH key IDs.
-Without them, Debian VMs only allow password auth and our key-based
-SSH polling won't connect. Use:
-```json
-"sshkey_id": ["e3845d1c-c452-41e0-ad23-03956e60fe95", "75e78e5b-8543-45ee-b0da-3515c0da8fd6"]
-```
+The `vultr.sh` helper auto-includes all registered SSH keys when creating
+VMs and bare metals. Without SSH keys, Debian VMs only allow password auth.
 
 ## Key Patterns
 
@@ -203,7 +213,7 @@ From `cluster.nix`:
 
 | Machine | Type | Plan | VPC IP | Role |
 |---------|------|------|--------|------|
-| seed-stake | VM | vc2-4c-8gb | 10.0.0.2 | Provisioner (ephemeral) |
+| seed-stake | VM | vx1-g-4c-16g-240s | 10.0.0.2 | Provisioner (ephemeral, kexec) |
 | seed-puncher-1 | VM | vc2-1c-2gb | 10.0.0.1 | Tang + DNS |
 | seed-atl-1 | BM | vbm-6c-32gb | 10.0.0.10 | k3s init + controller |
 | seed-atl-2 | BM | vbm-6c-32gb | 10.0.0.11 | k3s server |
