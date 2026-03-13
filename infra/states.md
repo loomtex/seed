@@ -191,6 +191,11 @@ phone-homed → keys-enrolled
     2. ssh-to-age to convert to age recipient
     3. Add to .sops.yaml (anchor + creation rule + seed-system rule)
     4. Create secrets/<hostname>.yaml with k3s-token
+       IMPORTANT: use nested YAML structure:
+         seed:
+             k3s-token: "<token>"
+       NOT flat key: seed/k3s-token: "<token>"
+       sops-install-secrets expects nested path (seed.k3s-token).
     5. Commit and push
   notes: The sops-enroll helper prints the .sops.yaml additions needed
          k3s-token must match the init node's token
@@ -204,21 +209,34 @@ keys-enrolled → nixos-installed
         --flake "github:loomtex/seed?dir=infra#<hostname>" root@<ip>
       Wait for SSH to reconnect (installer boots, ~30s).
 
-    Phase 2: Configure S3 binary cache in installer
+    Phase 2: Configure S3 binary cache + swap overlay to disk
       SSH to root@<ip>, then:
-      a. Write /root/.aws/credentials:
+      a. Swap nix store overlay from tmpfs to disk:
+         mkfs.ext4 -F /dev/sda
+         mount /dev/sda /mnt/disk
+         mkdir -p /mnt/disk/upper /mnt/disk/work
+         cp -a /nix/.rw-store/upper/* /mnt/disk/upper/ (if exists)
+         Stop nix-daemon, lazy unmount /nix/store, remount with disk upper:
+           systemctl stop nix-daemon.socket nix-daemon.service
+           umount -l /nix/store
+           mount -t overlay overlay \
+             -o lowerdir=/nix/.ro-store,upperdir=/mnt/disk/upper,workdir=/mnt/disk/work \
+             /nix/store
+         This prevents tmpfs overflow (16GB) when building kata-guest-kernel.
+         Disko will reformat sda later — this is a temporary overlay.
+      b. Write /root/.aws/credentials:
          [default]
          aws_access_key_id = <from seed-system.yaml>
          aws_secret_access_key = <from seed-system.yaml>
-      b. Write /root/.config/nix/nix.conf:
+      c. Write /root/.config/nix/nix.conf:
          extra-substituters = s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default
          extra-trusted-substituters = s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default
          extra-trusted-public-keys = seed-cache-1:HmHh2GMeZTBXufX8RRs30bBNVB75+QfkgFllazC365E=
-      c. Inject AWS env vars into nix-daemon:
+      d. Inject AWS env vars and restart nix-daemon:
          systemctl set-environment \
            AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials \
            AWS_EC2_METADATA_DISABLED=true
-         systemctl restart nix-daemon
+         systemctl start nix-daemon.socket
       This lets the BM pull pre-built derivations from S3 instead of
       compiling kata-guest-kernel and kata-runtime from source (~20min saved).
 
@@ -238,8 +256,10 @@ keys-enrolled → nixos-installed
          - /persist/etc/ssh/ssh_host_rsa_key{,.pub}
          - /persist/seed/server-addr (for non-init nodes)
       c. Build on the BM (pulls from S3 cache):
-         ssh root@<ip> 'nix build --refresh --print-out-paths \
+         ssh root@<ip> 'nix build --extra-experimental-features "nix-command flakes" \
+           --refresh --print-out-paths \
            "github:loomtex/seed?dir=infra#nixosConfigurations.<hostname>.config.system.build.toplevel"'
+         Note: kexec installer needs --extra-experimental-features.
       d. Run disko:
          nixos-anywhere --phases disko --build-on remote \
            --flake "github:loomtex/seed?dir=infra#<hostname>" root@<ip> \
