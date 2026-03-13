@@ -17,62 +17,34 @@
     boot.loader.systemd-boot.enable = true;
     boot.loader.efi.canTouchEfiVariables = true;
 
-    # System-wide packages for provisioning (ada gets her own via nuketown).
+    # System-wide packages for provisioning
     environment.systemPackages = with pkgs; [
       nodejs_22       # Registration server
+      nixos-anywhere
+      sops age ssh-to-age
+      jq git curl
+      clevis jose
     ];
 
-    # --- Nuketown: ada as provisioning agent ---
+    # --- ada: provisioning agent ---
 
-    nuketown = {
-      enable = true;
-      domain = "6bit.com";
-      humanUser = "josh";
-
-      agents.ada = {
-        enable = true;
-        uid = 1100;
-        role = "provisioner";
-        description = "Cluster provisioning agent — manages seed infrastructure";
-
-        portal.enable = true;
-        sudo.enable = true;
-
-        packages = with pkgs; [
-          unstable.claude-code
-          nixos-anywhere
-          sops age ssh-to-age
-          jq git curl
-          clevis jose
-          vultr-cli
-        ];
-
-        git = {
-          name = "Ada";
-          email = "ada@6bit.com";
-        };
-
-        # Secrets added after stake host key enrollment:
-        # secrets.sshKey = "ada/ssh-key";
-        # secrets.gpgKey = "ada/gpg-key";
-      };
+    users.users.ada = {
+      uid = 1100;
+      group = "ada";
+      isNormalUser = true;
+      extraGroups = [ "wheel" ];
+      home = "/home/ada";
+      openssh.authorizedKeys.keys = [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi"
+      ];
     };
+    users.groups.ada = { gid = 1100; };
 
-    # Headless auto-approve: no zenity on a server VM.
-    # All of ada's sudo calls are automatically approved.
-    systemd.services.nuketown-autoapprove = {
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
-      script = ''
-        mkdir -p /run/nuketown-broker
-        echo "MOCK_APPROVED" > /run/nuketown-broker/mode
-      '';
-    };
-
-    # ada on signi can SSH in to start provisioning sessions
-    users.users.ada.openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi"
-    ];
+    # NOPASSWD sudo for ada — stake is ephemeral, no approval daemon needed
+    security.sudo.extraRules = [{
+      users = [ "ada" ];
+      commands = [{ command = "ALL"; options = [ "NOPASSWD" ]; }];
+    }];
 
     # --- Services ---
 

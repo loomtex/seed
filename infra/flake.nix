@@ -60,24 +60,9 @@
         ./machines/infra/seed-stake/disks.nix
         ./profiles/seed-cache.nix
         ./profiles/seed-vpc.nix
-        nuketown.nixosModules.default
-        home-manager.nixosModules.home-manager
         {
-          home-manager.useGlobalPkgs = true;
-          home-manager.useUserPackages = true;
           seed.netbootPath = seed.packages.${system}.netboot;
           sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
-        }
-        # Unstable overlay for claude-code
-        {
-          nixpkgs.overlays = [
-            (final: prev: {
-              unstable = import nixpkgs-unstable {
-                inherit system;
-                config.allowUnfree = true;
-              };
-            })
-          ];
         }
       ];
 
