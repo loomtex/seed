@@ -131,12 +131,16 @@ created → ssh-ready
   action: Poll SSH on root@<ip>
 
 ssh-ready → nixos-installed
-  needs: SSH as root
-  action: nixos-anywhere --flake .#seed-puncher-1 --target-host root@<ip> --build-on-remote
-  notes: ALWAYS --build-on-remote. Target pulls from cache.nixos.org + S3 binary cache.
-         If stake is already provisioned and has S3 cache, pre-build on stake first:
-           ssh root@<stake> 'nix build github:loomtex/seed/infra#nixosConfigurations.seed-puncher-1.config.system.build.toplevel'
-         This populates S3 cache, then puncher pulls from S3 instead of rebuilding.
+  needs: SSH as root, stake ready
+  action: FROM STAKE — SSH to stake, then run:
+    nix run nixpkgs#nixos-anywhere -- \
+      --flake github:loomtex/seed?dir=infra#seed-puncher-1 \
+      --target-host root@<ip> --build-on local
+  notes: --build-on local means stake builds (16GB RAM, S3 cache), then
+         pushes the closure to the puncher. The puncher only has 2GB RAM
+         and CANNOT build — Go compilation (sops-install-secrets) will OOM.
+         NEVER run nixos-anywhere from signi (Starlink upstream too slow).
+         NEVER use --build-on-remote for the puncher (OOM).
 
 nixos-installed → tang-ready
   needs: VPC interface configured (seed-vpc service)
@@ -186,13 +190,19 @@ phone-homed → keys-enrolled
 
 keys-enrolled → nixos-installed
   needs: Node SSH (installer), secrets committed, puncher tang-ready
-  action:
-    1. Generate LUKS passphrase, write to /tmp/disk-password
-    2. Generate initrd SSH host key
-    3. Pre-build on stake: ssh root@<stake> 'nix build github:loomtex/seed/infra#nixosConfigurations.<hostname>.config.system.build.toplevel'
-    4. nixos-anywhere --flake .#<hostname> --target-host root@<ip> --build-on-remote --disk-encryption-keys /tmp/disk-password /tmp/disk-password --extra-files <dir>
-  notes: ALWAYS --build-on-remote. Pre-build on stake populates S3 cache, so the
-         target pulls from S3 instead of rebuilding (minutes vs hours).
+  action: FROM STAKE — SSH to stake, then run:
+    1. Generate LUKS passphrase, write to /tmp/disk-password on stake
+    2. Generate initrd SSH host key on stake
+    3. Pre-build on stake (populates S3 cache):
+       sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.<hostname>.config.system.build.toplevel"
+    4. nix run nixpkgs#nixos-anywhere -- \
+         --flake "github:loomtex/seed?dir=infra#<hostname>" \
+         --target-host root@<ip> --build-on-remote \
+         --disk-encryption-keys /tmp/disk-password /tmp/disk-password \
+         --extra-files <dir>
+  notes: --build-on-remote for BMs is OK (32GB RAM). Pre-build on stake
+         populates S3 cache so BM pulls from S3 instead of rebuilding.
+         ALWAYS run nixos-anywhere FROM the stake, never from signi.
          extra-files must include /persist/secrets/initrd/ssh_host_ed25519_key
          Node reboots into LUKS-encrypted NixOS
 
