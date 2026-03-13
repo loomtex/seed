@@ -16,10 +16,12 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| ID | *(to be recorded)* |
-| IP | *(to be recorded)* |
+| ID | 34c58d54-3a4a-4138-8be4-52481a3801d8 |
+| IP | 155.138.216.168 |
 | VPC IP | 10.0.0.2 |
-| State | **absent** |
+| Plan | vx1-g-4c-16g-240s |
+| State | **ready** |
+| Notes | Ephemeral kexec — reboots to Debian |
 
 ## Puncher (seed-puncher-1)
 

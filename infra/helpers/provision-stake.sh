@@ -265,8 +265,9 @@ remote_ssh root "$STAKE_IP" "
   systemctl start nginx || true
   systemctl start seed-register || true
 
-  # Restart sshd last (changes auth config)
-  systemctl restart sshd || true
+  # Defer sshd restart — if we restart within this SSH session, it kills
+  # the connection and the calling script hangs waiting for exit status.
+  nohup bash -c 'sleep 2 && systemctl restart sshd' &>/dev/null &
 
   echo 'Activation complete'
 "
