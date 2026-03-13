@@ -2,8 +2,8 @@ keys:
   - &admin_josh 2EE325D71601671696EBF687E45953D34C8829ED
   - &ada_age age1ujjm7feyd3p2e0qtfa6zr2rzf593yd2z0xjn0ytvd8jcje68nansxy4zuu
   - &seed_atl_1_age age1neey2tjnrka26dndtwp400y5auud86v92f09srdr3xun80exv5jqcnlq6t
-  - &seed_atl_2_age age19xq48wjmej07g6sl8kg86a64jsxe5gc47y2f6ghefjxeqhhcad7q4sm0vx
-  - &seed_atl_3_age age1dql0yg48r4m6xsycwxf2dn3wrvdld6rrszgm2yaxud4jwamx7vgq59gxy9
+  - &seed_atl_2_age age16kvu4zv76gnuenewe3eaphx5uq5xd4hcw9qpf6x7ltgtlsm9kp2s05uvwy
+  - &seed_atl_3_age age1x6fmwskwxvacf9nnsafexvpgfdl9ugj9xf9fvpvfng3rkukc3yxskddr3p
   - &seed_tang_1_age age1s3qkxjd29dd6mvttvruf6mpzue2lun3qmyfnycgk8t6c7ftz7vpqa87flk
   - &seed_stake_age age1uzdjpvu5ftf5um2veavl85r2hht89afk2l3sajxj3ehc7wa9ya5s9fqlrh
   - &seed_puncher_1_age age1ae83xwy93c4u9nrzu8gtdyr9ks9c3zu44p7dmc78penpenaysgnqq5xqgx
