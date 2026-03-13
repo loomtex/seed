@@ -71,6 +71,7 @@ in
 
     script = ''
       set -euo pipefail
+      trap 'echo "FAILED at line $LINENO (exit $?)" >&2' ERR
 
       mkdir -p "${certDir}" "${legoDir}"
 
@@ -132,15 +133,13 @@ in
   # Diagnostic: dump systemd state to PVC for debugging (Kata VM — no kubectl exec)
   systemd.services.seed-diag = {
     description = "Dump systemd state to PVC";
-    after = [ "seed-acme.service" "caddy.service" ];
-    wants = [ "seed-acme.service" "caddy.service" ];
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
     };
     script = ''
-      sleep 5
+      sleep 45
       {
         echo "=== $(date) ==="
         echo "--- seed-acme status ---"
