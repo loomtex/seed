@@ -6,7 +6,7 @@
     vpc.subnet = "10.0.0.0/24";
 
     stake = {
-      plan = "vx1-g-4c-16g-240s";
+      plan = "vc2-6c-16gb";
       vpcIp = "10.0.0.2";
       flakeAttr = "seed-stake";
     };

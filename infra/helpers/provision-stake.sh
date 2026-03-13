@@ -25,7 +25,7 @@ INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VULTR_API_KEY_FILE="${VULTR_API_KEY_FILE:-/run/secrets/ada/vultr-api-key}"
 
 # Cluster topology
-STAKE_PLAN="vx1-g-4c-16g-240s"
+STAKE_PLAN="vc2-6c-16gb"
 REGION="atl"
 VPC_ID=$(awk '/^\| ID \|/ {print $4}' "$INFRA_DIR/.state/atl.md" | head -1)
 FLAKE_URL="github:loomtex/seed?dir=infra"
