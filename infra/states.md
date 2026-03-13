@@ -263,12 +263,14 @@ keys-enrolled → nixos-installed
          nixos-anywhere --phases disko --build-on remote \
            --flake "github:loomtex/seed?dir=infra#<hostname>" root@<ip> \
            --disk-encryption-keys /tmp/disk-password /tmp/disk-password
-      e. Create empty Clevis JWE placeholder (disko expects it):
-         ssh root@<ip> 'mkdir -p /mnt/persist/secrets && touch /mnt/persist/secrets/clevis-cryptroot.jwe'
-      f. Install:
-         ssh root@<ip> 'nixos-install --root /mnt --system <toplevel-path> --no-root-passwd'
-      g. Copy extra-files into /mnt:
+      e. Create Clevis JWE (Tang must be reachable over VPC from node):
+         Get Tang thumbprint: ssh root@<ip> 'jose jwk thp -i <(curl -sfS http://10.0.0.1:7654/adv | jq ".payload" -r | base64 -d | jq ".keys[0]")'
+         Create JWE: ssh root@<ip> 'echo -n <passphrase> | clevis encrypt tang '"'"'{"url":"http://10.0.0.1:7654","thp":"<thumbprint>"}'"'"' > /mnt/boot/secrets/clevis-cryptroot.jwe'
+         (mkdir -p /mnt/boot/secrets first; set chmod 600)
+      f. Copy extra-files into /mnt:
          scp -r /tmp/<hostname>-extra/* root@<ip>:/mnt/
+      g. Install:
+         ssh root@<ip> 'nixos-install --root /mnt --system <toplevel-path> --no-root-passwd'
       h. Reboot (or kexec into installed kernel if iPXE reboot loops)
 
   notes: ALWAYS inject S3 cache BEFORE building on the BM.
@@ -279,24 +281,30 @@ keys-enrolled → nixos-installed
          already in S3 from a previous node's build.
          NEVER build on signi (Starlink upstream too slow).
          extra-files must include /persist/secrets/initrd/ssh_host_ed25519_key
-         Node reboots into LUKS-encrypted NixOS.
+         Create JWE BEFORE nixos-install so it gets embedded in initrd.
+         Order: disko → create JWE on /mnt/boot → copy extra-files → nixos-install
+         Node reboots into LUKS-encrypted NixOS with Clevis auto-unlock.
 
 nixos-installed → luks-locked
   needs: Node rebooted after nixos-anywhere
   action: Wait for SSH on port 2222 (initrd)
-  notes: First boot — no Clevis JWE yet, so Tang auto-unlock won't work
-         initrd SSH gives a shell for manual passphrase entry
+  notes: If Clevis JWE was created and placed on /boot before install,
+         auto-unlock should work. If not, SSH to port 2222 for manual unlock.
+         initrd SSH gives a shell for manual passphrase entry.
 
 luks-locked → running
-  needs: LUKS passphrase (from provisioning) OR Clevis JWE
+  needs: LUKS passphrase (manual) OR Clevis JWE on /boot (auto)
   action:
-    First boot: SSH to port 2222, enter passphrase via systemd-tty-ask-password-agent
-    Then: Create Clevis JWE, copy to /persist/secrets/clevis-cryptroot.jwe
-    Future boots: Clevis auto-unlocks via Tang
-  notes: After first manual unlock, create JWE:
-         echo -n <passphrase> | clevis encrypt tang '{"url":"http://10.0.0.1:7654"}' > /tmp/jwe
-         scp /tmp/jwe <node>:/persist/secrets/clevis-cryptroot.jwe
-         The disks.nix already has clevis.enable = true
+    Auto: Clevis decrypts JWE via Tang, unlocks LUKS automatically
+    Manual fallback: SSH to port 2222, enter passphrase via systemd-tty-ask-password-agent
+  notes: JWE lives at /boot/secrets/clevis-cryptroot.jwe (unencrypted ESP).
+         append-initrd-secrets embeds it into the initrd at switch/install time.
+         The JWE is Tang-encrypted — useless without VPC access to Tang.
+         If JWE was not created during provisioning, create it after manual unlock:
+         echo -n <passphrase> | clevis encrypt tang '{"url":"http://10.0.0.1:7654","thp":"<thumbprint>"}' \
+           | sudo tee /boot/secrets/clevis-cryptroot.jwe > /dev/null
+         sudo chmod 600 /boot/secrets/clevis-cryptroot.jwe
+         sudo nixos-rebuild boot --flake "github:loomtex/seed?dir=infra#<hostname>" --refresh
 
 running → k3s-joined
   needs: clusterInit node must be running first (provides k3s token + API)
