@@ -129,6 +129,36 @@ in
     '';
   };
 
+  # Diagnostic: dump systemd state to PVC for debugging (Kata VM — no kubectl exec)
+  systemd.services.seed-diag = {
+    description = "Dump systemd state to PVC";
+    after = [ "seed-acme.service" "caddy.service" ];
+    wants = [ "seed-acme.service" "caddy.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      sleep 5
+      {
+        echo "=== $(date) ==="
+        echo "--- seed-acme status ---"
+        systemctl status seed-acme.service 2>&1 || true
+        echo "--- caddy status ---"
+        systemctl status caddy.service 2>&1 || true
+        echo "--- caddy journal ---"
+        journalctl -u caddy.service --no-pager -n 50 2>&1 || true
+        echo "--- seed-acme journal ---"
+        journalctl -u seed-acme.service --no-pager -n 20 2>&1 || true
+        echo "--- cert files ---"
+        ls -la /var/lib/acme/ns-wildcard/ 2>&1 || true
+        echo "--- listening ports ---"
+        ss -tlnp 2>&1 || true
+      } > /seed/storage/data/diag.txt 2>&1
+    '';
+  };
+
   # Daily renewal check
   systemd.timers.seed-acme = {
     wantedBy = [ "timers.target" ];
