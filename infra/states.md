@@ -363,17 +363,56 @@ k3s-joined → healthy
          IPv6 /64 doesn't need attachment — MetalLB announces via NDP.
 ```
 
+### Ceph Secrets
+
+Ceph auth keys must be generated once per cluster before nodes are built.
+The keys live in `secrets/seed-system.yaml` (accessible to all nodes) and
+the fsid lives in `cluster.nix`. All Ceph daemon bootstrap (MON, MGR, OSD)
+is automated by oneshot services in `profiles/seed-ceph.nix` — this section
+covers only the one-time secret generation.
+
+| State | Detection |
+|-------|-----------|
+| `absent` | `sops -d secrets/seed-system.yaml` has no `ceph` key |
+| `generated` | `sops -d secrets/seed-system.yaml` contains `ceph.mon-key` and `ceph.admin-key` |
+
+**Transitions:**
+```
+absent → generated
+  needs: sops age key on signi, ceph package (via nix-shell)
+  action:
+    1. Generate fsid (if not already in cluster.nix):
+       nix-shell -p util-linux --run 'uuidgen'
+       Add to cluster.nix: ceph.fsid = "<uuid>";
+    2. Generate ceph auth keys:
+       nix-shell -p ceph --run 'ceph-authtool --gen-print-key'  (run twice: mon + admin)
+    3. Add to sops secrets:
+       sops --set '["ceph"] {"mon-key": "<mon-key>", "admin-key": "<admin-key>"}' \
+         secrets/seed-system.yaml
+    4. Verify: sops -d secrets/seed-system.yaml | grep -A2 ceph
+    5. Commit and push (keys must be in secrets BEFORE node builds)
+  notes: Keys are base64-encoded with ceph's internal format (type + timestamp
+         + length + random bytes). MUST use ceph-authtool, not raw random.
+         NEVER use /dev/urandom via bash — use nix-shell for ceph.
+         The fsid identifies the cluster — all nodes must share the same one.
+         OSD disk devices are specified per-node in cluster.nix (ceph.osdDevice).
+```
+
 ## Dependency Order
 
 ```
-VPC ─→ Reserved IPs ─→ Stake(+VPC) ─→ Puncher ─→ Node(clusterInit=true) ─→ Node(others)
-                                                                             ↗
-                                                                  (parallel)
+VPC ─→ Reserved IPs ──→ Stake(+VPC) ─→ Puncher ─→ Node(clusterInit=true) ─→ Node(others)
+              │                                              ↗
+              ├─→ Ceph Secrets ─────────────────────────────┘
+              │                                    (parallel)
 ```
 
 VPC is created first so stake is born with its VPC NIC.
 Reserved IPs go after VPC because the allocated addresses must be committed
 to source files before node closures are built (controller config + DNS records).
+Ceph secrets must be generated before node closures are built (nodes reference
+`ceph/mon-key` and `ceph/admin-key` from sops). Can be done in parallel with
+stake/puncher provisioning.
 Puncher needs to be tang-ready before nodes can be installed (Clevis binding).
 The clusterInit node must be running before others can join.
 Non-init nodes can be provisioned in parallel.

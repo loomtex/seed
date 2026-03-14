@@ -58,6 +58,7 @@ infra/
 │       └── seed-tang-1/   # Tang server (DFW, legacy)
 ├── profiles/
 │   ├── server.nix         # Base server (nix flakes, common packages)
+│   ├── seed-ceph.nix      # Ceph MON + MGR + OSD (dmcrypt) per node
 │   ├── seed-cache.nix     # S3 binary cache (substituter + post-build-hook)
 │   ├── seed-luks.nix      # LUKS + Clevis/Tang auto-unlock
 │   ├── seed-vpc.nix       # Vultr VPC v1 static IP
@@ -205,6 +206,25 @@ Bare metal nodes boot via iPXE from Vultr's Custom OS (159):
 3. Create Clevis JWE: `echo -n <pass> | clevis encrypt tang '{"url":"..."}'`
 4. Copy JWE to `/boot/secrets/clevis-cryptroot.jwe`
 5. Clevis auto-unlocks via Tang over VPC after reboot
+
+### Ceph Secret Generation
+
+Ceph auth keys must be generated once per cluster before building node closures.
+All Ceph daemon bootstrap (MON, MGR, OSD) is automated by `profiles/seed-ceph.nix` —
+only the secrets require manual generation.
+
+```bash
+# Generate ceph auth keys (MUST use ceph-authtool, not raw random)
+nix-shell -p ceph --run 'ceph-authtool --gen-print-key'  # mon key
+nix-shell -p ceph --run 'ceph-authtool --gen-print-key'  # admin key
+
+# Add to sops
+sops --set '["ceph"] {"mon-key": "<mon-key>", "admin-key": "<admin-key>"}' \
+  secrets/seed-system.yaml
+```
+
+The fsid is in `cluster.nix` (`ceph.fsid`). Per-node OSD config (osdId, osdDevice)
+is also in `cluster.nix` and passed to the profile via `specialArgs`.
 
 ### k3s Cluster Join
 

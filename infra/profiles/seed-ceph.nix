@@ -1,0 +1,246 @@
+# Ceph distributed storage — MON + MGR + OSD per seed node.
+#
+# Each node runs one of each daemon. OSDs use ceph-volume + dmcrypt
+# (LUKS encryption with keys stored in MON KV). Bootstrap is idempotent
+# via ConditionPathExists guards on oneshot services.
+#
+# Requires specialArgs: clusterCeph, nodeCeph (from flake.nix)
+{ config, lib, pkgs, clusterCeph, nodeCeph, ... }:
+
+let
+  hostname = config.networking.hostName;
+  osdId = nodeCeph.osdId;
+  osdDevice = nodeCeph.osdDevice;
+  ceph = pkgs.ceph;
+in {
+  services.ceph = {
+    enable = true;
+    global = {
+      fsid = clusterCeph.fsid;
+      monHost = clusterCeph.monHost;
+      monInitialMembers = clusterCeph.monInitialMembers;
+    };
+
+    # In-transit encryption (msgr2 secure mode — AES-128-GCM)
+    extraConfig = {
+      "ms_cluster_mode" = "secure";
+      "ms_service_mode" = "secure";
+      "ms_mon_cluster_mode" = "secure";
+      "ms_client_mode" = "secure crc";
+    };
+
+    mon = {
+      enable = true;
+      daemons = [ hostname ];
+    };
+    mgr = {
+      enable = true;
+      daemons = [ hostname ];
+    };
+    osd = {
+      enable = true;
+      daemons = [ osdId ];
+    };
+  };
+
+  # OSD service override: ceph-volume activation for dmcrypt
+  # Pattern from nixpkgs ceph-single-node-bluestore-dmcrypt test
+  systemd.services."ceph-osd-${osdId}" = {
+    serviceConfig.ExecStartPre = lib.mkForce [
+      "!${ceph.out}/bin/ceph-volume lvm activate --bluestore ${osdId} --no-systemd"
+      "${ceph.lib}/libexec/ceph/ceph-osd-prestart.sh --id ${osdId} --cluster ceph"
+    ];
+    serviceConfig.ExecStopPost = [
+      "!${ceph.out}/bin/ceph-volume lvm deactivate ${osdId}"
+    ];
+    unitConfig.ConditionPathExists = lib.mkForce [];
+    path = with pkgs; [ util-linux lvm2 cryptsetup ];
+  };
+
+  # --- Bootstrap oneshot services (idempotent) ---
+
+  # 1. Bootstrap MON: create monmap, keyring, mkfs
+  systemd.services."ceph-bootstrap-mon" = {
+    description = "Bootstrap Ceph MON for ${hostname}";
+    wantedBy = [ "ceph-mon-${hostname}.service" ];
+    before = [ "ceph-mon-${hostname}.service" ];
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    unitConfig.ConditionPathExists = "!/var/lib/ceph/mon/ceph-${hostname}/keyring";
+    script = let
+      monKeyFile = config.sops.secrets."ceph/mon-key".path;
+      adminKeyFile = config.sops.secrets."ceph/admin-key".path;
+      monDir = "/var/lib/ceph/mon/ceph-${hostname}";
+    in ''
+      set -euo pipefail
+
+      MON_KEY=$(cat ${monKeyFile})
+      ADMIN_KEY=$(cat ${adminKeyFile})
+
+      # Create MON keyring with mon + admin keys
+      KEYRING=$(mktemp)
+      ${ceph.out}/bin/ceph-authtool "$KEYRING" \
+        --create-keyring \
+        --name mon. \
+        --add-key "$MON_KEY" \
+        --cap mon 'allow *'
+
+      ${ceph.out}/bin/ceph-authtool "$KEYRING" \
+        --name client.admin \
+        --add-key "$ADMIN_KEY" \
+        --cap mon 'allow *' \
+        --cap osd 'allow *' \
+        --cap mds 'allow *' \
+        --cap mgr 'allow *'
+
+      # Create monmap with all monitors
+      MONMAP=$(mktemp)
+      ${ceph.out}/bin/monmaptool "$MONMAP" --create --clobber --fsid ${clusterCeph.fsid} \
+        ${lib.concatStringsSep " " (lib.mapAttrsToList (name: ip:
+          "--add ${name} [v2:${ip}:3300/0,v1:${ip}:6789/0]"
+        ) clusterCeph.monAddrs)}
+
+      # Create mon data directory and mkfs
+      install -d -o ceph -g ceph ${monDir}
+      ${ceph.out}/bin/ceph-mon --mkfs -i ${hostname} --monmap "$MONMAP" --keyring "$KEYRING"
+      chown -R ceph:ceph ${monDir}
+
+      rm -f "$KEYRING" "$MONMAP"
+    '';
+    path = with pkgs; [ coreutils ];
+  };
+
+  # 2. Bootstrap MGR: create mgr keyring (needs running mon)
+  systemd.services."ceph-bootstrap-mgr" = {
+    description = "Bootstrap Ceph MGR for ${hostname}";
+    wantedBy = [ "ceph-mgr-${hostname}.service" ];
+    before = [ "ceph-mgr-${hostname}.service" ];
+    after = [ "ceph-mon-${hostname}.service" ];
+    requires = [ "ceph-mon-${hostname}.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    unitConfig.ConditionPathExists = "!/var/lib/ceph/mgr/ceph-${hostname}/keyring";
+    script = let
+      mgrDir = "/var/lib/ceph/mgr/ceph-${hostname}";
+      adminKeyring = config.sops.templates."ceph-admin-keyring".path;
+    in ''
+      set -euo pipefail
+
+      # Wait for mon to be in quorum
+      for i in $(seq 1 60); do
+        if ${ceph.out}/bin/ceph -k ${adminKeyring} mon stat 2>/dev/null | grep -q "quorum"; then
+          break
+        fi
+        echo "Waiting for mon quorum... ($i/60)"
+        sleep 2
+      done
+
+      install -d -o ceph -g ceph ${mgrDir}
+      ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-or-create \
+        mgr.${hostname} \
+        mon 'allow profile mgr' \
+        osd 'allow *' \
+        mds 'allow *' \
+        -o ${mgrDir}/keyring
+      chown -R ceph:ceph ${mgrDir}
+    '';
+    path = with pkgs; [ coreutils gnugrep ];
+  };
+
+  # 3. Bootstrap OSD: prepare encrypted disk (needs running mon for key storage)
+  systemd.services."ceph-bootstrap-osd" = {
+    description = "Bootstrap Ceph OSD ${osdId} on ${osdDevice}";
+    wantedBy = [ "ceph-osd-${osdId}.service" ];
+    before = [ "ceph-osd-${osdId}.service" ];
+    after = [ "ceph-mon-${hostname}.service" ];
+    requires = [ "ceph-mon-${hostname}.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    # Idempotent: skip if LVM VG for this OSD already exists
+    script = let
+      adminKeyring = config.sops.templates."ceph-admin-keyring".path;
+    in ''
+      set -euo pipefail
+
+      # Check if ceph-volume already prepared this OSD
+      if ${ceph.out}/bin/ceph-volume lvm list ${osdId} 2>/dev/null | grep -q "===="; then
+        echo "OSD ${osdId} already prepared, skipping"
+        exit 0
+      fi
+
+      # Wait for mon to be in quorum
+      for i in $(seq 1 60); do
+        if ${ceph.out}/bin/ceph -k ${adminKeyring} mon stat 2>/dev/null | grep -q "quorum"; then
+          break
+        fi
+        echo "Waiting for mon quorum... ($i/60)"
+        sleep 2
+      done
+
+      # Create bootstrap-osd keyring if it doesn't exist
+      ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-or-create \
+        client.bootstrap-osd \
+        mon 'allow profile bootstrap-osd' \
+        -o /var/lib/ceph/bootstrap-osd/ceph.keyring || true
+
+      # Prepare OSD with dmcrypt (LUKS key stored in MON KV)
+      ${ceph.out}/bin/ceph-volume lvm prepare \
+        --bluestore \
+        --dmcrypt \
+        --data ${osdDevice} \
+        --osd-id ${osdId} \
+        --no-systemd
+    '';
+    path = with pkgs; [ util-linux lvm2 cryptsetup coreutils gnugrep ];
+  };
+
+  # --- Secrets ---
+
+  sops.secrets."ceph/mon-key" = {
+    sopsFile = ../secrets/seed-system.yaml;
+  };
+  sops.secrets."ceph/admin-key" = {
+    sopsFile = ../secrets/seed-system.yaml;
+  };
+
+  sops.templates."ceph-admin-keyring" = {
+    content = ''
+      [client.admin]
+          key = ${config.sops.placeholder."ceph/admin-key"}
+          caps mon = "allow *"
+          caps osd = "allow *"
+          caps mds = "allow *"
+          caps mgr = "allow *"
+    '';
+    path = "/persist/etc/ceph/ceph.client.admin.keyring";
+  };
+
+  # Symlink admin keyring into /etc/ceph/ where ceph tools expect it
+  environment.etc."ceph/ceph.client.admin.keyring".source =
+    config.sops.templates."ceph-admin-keyring".path;
+
+  # --- Firewall ---
+
+  networking.firewall.allowedTCPPorts = [
+    3300  # MON v2 (msgr2)
+    6789  # MON v1 (legacy compatibility)
+  ];
+  networking.firewall.allowedTCPPortRanges = [
+    { from = 6800; to = 7300; }  # OSD + MGR
+  ];
+
+  # --- k3s ordering: wait for Ceph before starting k3s ---
+
+  systemd.services.k3s = {
+    after = [ "ceph.target" ];
+    wants = [ "ceph.target" ];
+  };
+}

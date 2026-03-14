@@ -10,6 +10,7 @@
     ../../profiles/seed-cache.nix
     ../../profiles/seed-luks.nix
     ../../profiles/seed-vpc.nix
+    ../../profiles/seed-ceph.nix
   ];
 
   sops = {

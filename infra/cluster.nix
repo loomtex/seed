@@ -9,6 +9,8 @@
     reservedIpv4 = "96.30.193.227";
     reservedIpv6 = "2001:19f0:5400:20a7::/64";
 
+    ceph.fsid = "58ec6b96-5df6-49f2-86c3-182501b0602d";
+
     stake = {
       plan = "vx1-g-4c-16g-240s";
       type = "vm";
@@ -30,9 +32,10 @@
         vpcIp = "10.0.0.10";
         clusterInit = true;
         controller = true;
+        ceph = { osdId = "0"; osdDevice = "/dev/sdb"; };
       };
-      seed-atl-2 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.11"; };
-      seed-atl-3 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.12"; };
+      seed-atl-2 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.11"; ceph = { osdId = "1"; osdDevice = "/dev/sdb"; }; };
+      seed-atl-3 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.12"; ceph = { osdId = "2"; osdDevice = "/dev/sdb"; }; };
     };
   };
 }

@@ -43,8 +43,22 @@
 
     # --- Archetype functions ---
 
-    mkSeedNode = { cluster, name, node }: lib.nixosSystem {
+    mkSeedNode = { cluster, name, node }: let
+      clusterCeph = {
+        inherit (cluster.ceph) fsid;
+        monHost = lib.concatStringsSep "," (
+          lib.mapAttrsToList (_: n: n.vpcIp) cluster.nodes
+        );
+        monInitialMembers = lib.concatStringsSep "," (
+          lib.attrNames cluster.nodes
+        );
+        # Map of hostname → VPC IP for monmap creation
+        monAddrs = lib.mapAttrs (_: n: n.vpcIp) cluster.nodes;
+      };
+      nodeCeph = node.ceph or {};
+    in lib.nixosSystem {
       inherit system;
+      specialArgs = { inherit clusterCeph nodeCeph; };
       modules = [
         disko.nixosModules.disko
         impermanence.nixosModules.impermanence
