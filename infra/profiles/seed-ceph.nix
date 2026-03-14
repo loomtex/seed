@@ -43,11 +43,16 @@ in {
     };
   };
 
-  # OSD service override: ceph-volume activation for dmcrypt
-  # Pattern from nixpkgs ceph-single-node-bluestore-dmcrypt test
+  # OSD service override: ceph-volume activation for dmcrypt.
+  # dmcrypt OSDs require both OSD ID and OSD FSID for activation.
+  # The FSID is generated at prepare time, so we look it up at runtime.
   systemd.services."ceph-osd-${osdId}" = {
     serviceConfig.ExecStartPre = lib.mkForce [
-      "!${ceph.out}/bin/ceph-volume lvm activate --bluestore ${osdId} --no-systemd"
+      ("!+" + pkgs.writeShellScript "ceph-osd-${osdId}-activate" ''
+        OSD_FSID=$(${ceph.out}/bin/ceph-volume lvm list ${osdId} --format json \
+          | ${pkgs.jq}/bin/jq -r '."${osdId}"[0].tags["ceph.osd_fsid"]')
+        exec ${ceph.out}/bin/ceph-volume lvm activate --bluestore ${osdId} "$OSD_FSID" --no-systemd
+      '')
       "${ceph.lib}/libexec/ceph/ceph-osd-prestart.sh --id ${osdId} --cluster ceph"
     ];
     serviceConfig.ExecStopPost = [
