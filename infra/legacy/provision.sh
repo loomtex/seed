@@ -45,7 +45,7 @@ PULUMI_BACKEND_URL="s3://${PULUMI_S3_BUCKET}?endpoint=${PULUMI_S3_ENDPOINT}&regi
 
 # Stake VM config
 STAKE_REGION="${STAKE_REGION:-atl}"
-STAKE_PLAN="${STAKE_PLAN:-vc2-4c-8gb}"
+STAKE_PLAN="${STAKE_PLAN:-vx1-m-8c-32g-480s}"
 STAKE_LABEL="seed-stake"
 STAKE_FLAKE="github:joshperry/mynix#seed-stake"
 STAKE_KEXEC_FLAKE="github:joshperry/mynix#seed-stake-kexec"

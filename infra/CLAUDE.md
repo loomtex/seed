@@ -14,7 +14,7 @@ orchestrator.** The key files are:
 
 - `cluster.nix` — What should exist (hardware inventory, desired topology)
 - `states.md` — How to get there (state model, transitions, detection rules)
-- `.state/atl.md` — Where we are now (runtime state, gitignored)
+- `.state/atl.md` — Where we are now (runtime state, tracked over time by git)
 
 Read `cluster.nix` to know the desired end state. Read `states.md` to
 understand the lifecycle transitions. Probe the actual infrastructure
@@ -78,7 +78,7 @@ infra/
 
 - **Vultr API key**: `/run/secrets/ada/vultr-api-key` on signi
   - Set `VULTR_API_KEY_FILE` or `VULTR_API_KEY` before using helpers
-- **SSH**: ada's ed25519 key authenticates to all seed machines
+- **SSH**: ada's ed25519 key is on the vultr account and so it authenticates to all seed machines
   - `ssh seed-atl-1`, `ssh seed-stake`, etc. (configured in ~/.ssh/config)
 - **sops**: ada's age key at `~/.config/sops/age/keys.txt`
   - Josh's PGP key is the other recipient for all secrets
@@ -107,15 +107,38 @@ clevis, etc. available in its environment.
 
 ## Build Strategy
 
-**CRITICAL: Never build NixOS closures on signi.** signi is on Starlink —
-upstream bandwidth is severely limited. Always build on the target machine
-or on the stake (which has datacenter bandwidth + S3 binary cache).
+There is a binary cache, it is critical that this be configured on
+each host before nix operations (even after nixos-anywhere kexec phase),
+otherwise much duplicate work and wasted time ensues.
+
+Stake is your hands on site. Use it like an ssh bastion and as a
+build host, it has a beefy build and high-bandwith connectivity to
+the binary cache.
+
+For hosts like puncher, use stake for building, for hosts like the
+baremetal do the build "remote" on that host, from stake.
+
+Once stake is deployed you should basically never run a build operation
+on the host you're running on (signi), even derivations. Often we're
+running on a metered and slow connection, this is the purpose of stake.
+
+```bash
+ssh ada@<stake> 'sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.seed-puncher-1.config.system.build.toplevel"'
+# S3 cache now has all paths. Running a build-on remote pulls from cache
+```
+
+The stake has S3 binary cache configured by the provisioning helper:
+injected into the stake's nix-daemon environment from signi.
+No sops on the stake.
 
 ### Stake Provisioning (Ephemeral Kexec)
 
 The stake uses **ephemeral infect**: kexec into NixOS installer, swap
-nix store overlay to disk, build the system closure ON the stake, and
-activate in place. No disko, no nixos-install, no reboot.
+nix store overlay to disk, build the system derivations and closure
+ON the stake (so signi doesn't have to upload it), and activate in place.
+
+This is kind of a unique nixos-anywhere flow with no disko, no nixos-install,
+and no reboot.
 
 ```bash
 nix run .#provision-stake              # Full: create VM + provision
@@ -134,7 +157,7 @@ since the stake has no enrolled host key.
 
 ### Node Provisioning (Disko + Install)
 
-For permanent machines (puncher, ATL nodes), use disko + install:
+For permanent machines (puncher, k8s nodes), use disko + install:
 
 1. **Kexec only**: `nixos-anywhere --phases kexec --build-on remote --flake .#<host> root@<ip>`
 2. **Set up S3 cache** in kexec env (credentials + nix.conf substituter)
@@ -143,26 +166,6 @@ For permanent machines (puncher, ATL nodes), use disko + install:
 5. **Build on target**: `nix build "github:loomtex/seed?dir=infra#nixosConfigurations.<host>.config.system.build.toplevel"`
 6. **Install**: `nixos-install --root /mnt --system <toplevel-path> --no-root-passwd`
 7. **Reboot**
-
-### Once stake is running: build everything on stake
-
-After the stake is provisioned, build ALL other machines' closures
-on the stake first. The post-build-hook uploads to S3, then the targets
-pull from S3 cache instead of rebuilding:
-
-```bash
-ssh ada@<stake> 'sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.seed-puncher-1.config.system.build.toplevel"'
-# S3 cache now has all paths. The target pulls from S3.
-```
-
-### S3 Binary Cache
-
-The stake has S3 binary cache configured by the provisioning helper:
-- **Pull**: S3 substituter pulls pre-built paths from `seed-nix-cache`
-- **Push**: Post-build-hook signs + uploads every build to S3
-
-Credentials are decrypted from `secrets/seed-system.yaml` on signi and
-injected into the stake's nix-daemon environment. No sops on the stake.
 
 ### Vultr VM SSH Keys
 
@@ -181,6 +184,9 @@ nixos-anywhere --flake .#seed-atl-1 --target-host root@<ip> --build-on-remote \
   --extra-files /tmp/extra-files
 ```
 
+Most nixos-anywhere provisions are multi-call, the kexec phase is executed, then
+the S3 binary cache is configured, then the disko and nixos-install phases are run.
+
 The `--extra-files` directory should contain:
 - `/persist/secrets/initrd/ssh_host_ed25519_key` — initrd SSH host key
 
@@ -189,17 +195,16 @@ The `--extra-files` directory should contain:
 Bare metal nodes boot via iPXE from Vultr's Custom OS (159):
 1. Vultr boots iPXE with a startup script
 2. Script fetches kernel + initrd from stake's nginx (:8080)
-3. Node boots into NixOS installer with SSH enabled
+3. Node boots into NixOS installer(nixos-anywhere kexec env) with SSH enabled
 4. Phone-home service POSTs to stake's registration endpoint (:8081)
 5. Agent detects registration and begins provisioning
 
 ### LUKS + Clevis Flow
 
 1. nixos-anywhere installs with LUKS passphrase
-2. First boot: SSH to port 2222 (initrd), manually enter passphrase
 3. Create Clevis JWE: `echo -n <pass> | clevis encrypt tang '{"url":"..."}'`
-4. Copy JWE to `/persist/secrets/clevis-cryptroot.jwe`
-5. Future boots: Clevis auto-unlocks via Tang over VPC
+4. Copy JWE to `/boot/secrets/clevis-cryptroot.jwe`
+5. Clevis auto-unlocks via Tang over VPC after reboot
 
 ### k3s Cluster Join
 
@@ -207,9 +212,15 @@ Bare metal nodes boot via iPXE from Vultr's Custom OS (159):
 - Other nodes: `seed.serverAddr` or `/persist/seed/server-addr` points to init node
 - All nodes need the same k3s token (from sops secrets)
 
-## ATL Cluster Topology
+## Cluster Topology
 
-From `cluster.nix`:
+See cluster.nix for the actual definitions, but most clusters contain
+a puncher for network management services (tang, dns, etc), and k3s
+nodes configured to run the seed workloads.
+
+Stake is ephemeral and only runs for provision operations.
+
+Example:
 
 | Machine | Type | Plan | VPC IP | Role |
 |---------|------|------|--------|------|
@@ -221,22 +232,21 @@ From `cluster.nix`:
 
 ## Orchestration Model
 
-Provisioning is orchestrated from **signi** (the workstation), not from the
+Provisioning is orchestrated from **signi** (the workstation), through the
 stake. The agent runs locally and uses SSH to reach remote machines. This
 approach is simpler and more resilient:
 
-- **No agent setup on stake** — the stake just serves iPXE + registration
 - **Parallel provisioning** — spin up parallel agents on signi that each SSH
-  to different nodes for concurrent provisioning
+  to different nodes through the stake for concurrent provisioning
 - **Resilient** — if the stake has issues, the orchestration context survives
-- **All tooling available** — nixos-anywhere, sops, age, clevis all run locally
 
-The stake's role is purely infrastructure: nginx for iPXE netboot (:8080)
-and the registration endpoint for phone-home (:8081).
+The stake's role is for handling builds in the DC and for hosting some
+provision specific services: nginx for iPXE netboot (:8080) and the
+registration endpoint for phone-home (:8081).
 
 ## What NOT to do
 
-- Don't use Pulumi (it's in `legacy/` for reference only)
-- Don't hardcode IPs — read from `cluster.nix` and `data/vpc.nix`
-- Prefer VPC at creation, but hot-attach works for BMs if needed (verified)
+- Don't use Pulumi (code in `legacy/` is for reference only)
+- Don't hardcode things — expand vars, reference variables, read from `cluster.nix` and `data/vpc.nix`
+- For the ephemeral infect, you can't hot-add VPC networks so they must be added at build time
 - Don't skip Clevis binding — every LUKS node needs Tang auto-unlock

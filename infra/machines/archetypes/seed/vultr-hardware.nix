@@ -1,4 +1,9 @@
 {
+  boot.initrd.availableKernelModules = [ "ahci" "xhci_pci" "sd_mod" "sr_mod" ];
+  boot.kernelModules = [ "kvm-intel" ];
+
+  nixpkgs.hostPlatform = "x86_64-linux";
+
   disko.devices = {
     disk = {
       sda = {
@@ -7,6 +12,9 @@
         content = {
           type = "gpt";
           partitions = {
+            # GRUB BIOS boot partition — required for GRUB on GPT disks.
+            # Holds GRUB's core.img when booting via BIOS/CSM (iPXE netboot
+            # installs in BIOS mode, so the firmware may try BIOS first).
             bios = {
               size = "1M";
               type = "EF02";
@@ -62,6 +70,7 @@
     };
   };
 
+  # Clevis/Tang auto-unlock for LUKS
   boot.initrd.clevis = {
     enable = true;
     useTang = true;
