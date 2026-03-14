@@ -79,6 +79,14 @@ in {
       networkConfig.DHCP = "no";
     };
 
+    # Restrict dhcpcd to the public NIC only. Without this, dhcpcd manages
+    # ALL interfaces (VPC, flannel, veths). When k3s stops and flannel goes
+    # down, dhcpcd recalculates routes and promotes the VPC NIC as default,
+    # deleting the public default route and making the machine unreachable.
+    networking.dhcpcd.extraConfig = ''
+      denyinterfaces enp1s0f1 flannel* veth* cni*
+    '';
+
     # Ensure common VPC NIC drivers are available in initrd
     boot.initrd.availableKernelModules = [ "virtio_net" "igb" ];
   };
