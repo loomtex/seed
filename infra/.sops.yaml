@@ -6,7 +6,7 @@ keys:
   - &seed_atl1_3_age age1x6fmwskwxvacf9nnsafexvpgfdl9ugj9xf9fvpvfng3rkukc3yxskddr3p
   - &seed_tang_1_age age1s3qkxjd29dd6mvttvruf6mpzue2lun3qmyfnycgk8t6c7ftz7vpqa87flk
   - &stake_age age1uzdjpvu5ftf5um2veavl85r2hht89afk2l3sajxj3ehc7wa9ya5s9fqlrh
-  - &puncher_atl1_1_age age1ae83xwy93c4u9nrzu8gtdyr9ks9c3zu44p7dmc78penpenaysgnqq5xqgx
+  - &puncher_atl1_1_age age1kazl566j80pl3eshzqv9c0wyq843g8ep7vt27su03e4jg6eg64gqv6qnwl
 
 creation_rules:
   - path_regex: secrets/stake\.yaml$

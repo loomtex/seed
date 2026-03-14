@@ -27,22 +27,22 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| ID | *(pending reprovision)* |
-| IP | *(pending reprovision)* |
+| ID | 471fa51a-a0b7-4b25-8b0b-ad738a7cdaf8 |
+| IP | 155.138.223.154 |
 | VPC IP | 10.0.0.2 |
 | Plan | vx1-g-4c-16g-240s |
-| State | **absent** |
+| State | **ready** |
 | Notes | Ephemeral kexec — reboots to Debian |
 
 ## Puncher (puncher-atl1-1)
 
 | Field | Value |
 |-------|-------|
-| ID | *(pending reprovision)* |
-| IP | *(pending reprovision)* |
+| ID | 3e49dd63-bf6f-4116-8255-da16b6a3845f |
+| IP | 155.138.164.204 |
 | VPC IP | 10.0.0.1 |
 | Tang port | 7654 |
-| State | **absent** |
+| State | **tang-ready** |
 | Notes | Tang + Unbound + PowerDNS |
 
 ## Nodes
