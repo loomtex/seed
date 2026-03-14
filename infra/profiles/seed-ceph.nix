@@ -101,7 +101,7 @@ in {
       MONMAP=$(mktemp)
       ${ceph.out}/bin/monmaptool "$MONMAP" --create --clobber --fsid ${clusterCeph.fsid} \
         ${lib.concatStringsSep " " (lib.mapAttrsToList (name: ip:
-          "--add ${name} [v2:${ip}:3300/0,v1:${ip}:6789/0]"
+          "--addv ${name} [v2:${ip}:3300/0,v1:${ip}:6789/0]"
         ) clusterCeph.monAddrs)}
 
       # Create mon data directory and mkfs
