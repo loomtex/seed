@@ -33,47 +33,44 @@
   outputs = { self, nixpkgs, nixpkgs-unstable, home-manager, nuketown, disko, impermanence, sops-nix, seed, ... }:
   let
     system = "x86_64-linux";
+    lib = nixpkgs.lib;
     pkgs = nixpkgs.legacyPackages.${system};
 
-    cluster = import ./cluster.nix;
+    clusterData = import ./cluster.nix;
 
-    mkMachine = name: path: extraModules: nixpkgs.lib.nixosSystem {
+    # Hardware module selection by machine type
+    hardwareModule = type: ./archetypes/hardware/vultr-${type}.nix;
+
+    # --- Archetype functions ---
+
+    mkSeedNode = { cluster, name, node }: lib.nixosSystem {
       inherit system;
       modules = [
         disko.nixosModules.disko
         impermanence.nixosModules.impermanence
         sops-nix.nixosModules.sops
-        (path + "/configuration.nix")
-      ] ++ extraModules;
-    };
+        seed.nixosModules.default
+        seed.nixosModules.persistence
 
-    # ATL nodes get full seed module stack
-    mkSeedNode = name: path: extraModules: mkMachine name path ([
-      seed.nixosModules.default
-      seed.nixosModules.persistence
-    ] ++ extraModules);
-  in {
-    nixosConfigurations = {
-      # --- Infrastructure machines ---
+        (hardwareModule node.type)
+        ./archetypes/seed/base.nix
 
-      seed-stake = mkMachine "seed-stake" ./machines/infra/seed-stake [
-        ./profiles/seed-vpc.nix
-        { seed.netbootPath = seed.packages.${system}.netboot; }
-      ];
-
-      seed-puncher-1 = mkMachine "seed-puncher-1" ./machines/infra/seed-puncher-1 [
-        { seed.vpcSubnets = [ "10.0.0.0/24" ]; }
-      ];
-
-      seed-tang-1 = mkMachine "seed-tang-1" ./machines/infra/seed-tang-1 [
-        { seed.netbootPath = seed.packages.${system}.netboot; }
-      ];
-
-      # --- ATL cluster nodes ---
-
-      seed-atl-1 = mkSeedNode "seed-atl-1" ./machines/atl/seed-atl-1 [
-        seed.nixosModules.controller
         {
+          networking.hostName = name;
+          sops.defaultSopsFile = ./secrets/${name}.yaml;
+          time.timeZone = cluster.timeZone;
+        }
+      ]
+      ++ lib.optionals (node.clusterInit or false) [
+        { seed.k3s.clusterInit = true; }
+      ]
+      ++ lib.optionals (node.controller or false) [
+        seed.nixosModules.controller
+        ./profiles/seed-controller.nix
+        ./archetypes/seed/controller.nix
+        {
+          seed.controller.ipv4Address = cluster.reservedIpv4;
+          seed.controller.ipv6Block = cluster.reservedIpv6;
           seed.controller.controllerImage = "${seed.packages.${system}.controllerImage}";
           seed.controller.hostAgentImage = "${seed.packages.${system}.hostAgentImage}";
           seed.controller.poolManager = {
@@ -83,14 +80,64 @@
           };
         }
       ];
-
-      seed-atl-2 = mkSeedNode "seed-atl-2" ./machines/atl/seed-atl-2 [];
-
-      seed-atl-3 = mkSeedNode "seed-atl-3" ./machines/atl/seed-atl-3 [];
     };
 
+    mkPuncher = { cluster, name }: lib.nixosSystem {
+      inherit system;
+      modules = [
+        disko.nixosModules.disko
+        impermanence.nixosModules.impermanence
+        sops-nix.nixosModules.sops
+
+        (hardwareModule cluster.puncher.type)
+        ./archetypes/puncher/configuration.nix
+
+        {
+          networking.hostName = name;
+          sops.defaultSopsFile = ./secrets/${name}.yaml;
+          time.timeZone = cluster.timeZone;
+          seed.vpcSubnets = [ cluster.vpc.subnet ];
+        }
+      ];
+    };
+
+    mkStake = { cluster }: lib.nixosSystem {
+      inherit system;
+      modules = [
+        sops-nix.nixosModules.sops
+        ./archetypes/stake/configuration.nix
+        ./profiles/seed-vpc.nix
+
+        {
+          networking.hostName = "seed-stake";
+          time.timeZone = cluster.timeZone;
+          seed.netbootPath = seed.packages.${system}.netboot;
+        }
+      ];
+    };
+
+  in {
+    nixosConfigurations = lib.concatMapAttrs (_clusterName: cluster:
+      let
+        nodes = lib.mapAttrs (name: node:
+          mkSeedNode { inherit cluster name node; }
+        ) cluster.nodes;
+
+        puncher = {
+          ${cluster.puncher.name} = mkPuncher {
+            inherit cluster;
+            name = cluster.puncher.name;
+          };
+        };
+
+        stake = {
+          "seed-stake" = mkStake { inherit cluster; };
+        };
+      in nodes // puncher // stake
+    ) clusterData.clusters;
+
     # Expose cluster inventory for nix eval
-    inherit cluster;
+    cluster = clusterData;
 
     # Helper scripts as flake apps
     apps.${system} = {

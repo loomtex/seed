@@ -3,7 +3,7 @@
 {
   imports = [
     ./hardware-configuration.nix
-    ../../../profiles/server.nix
+    ../../profiles/server.nix
   ];
 
   options.seed.netbootPath = lib.mkOption {
@@ -92,7 +92,6 @@
     # --- Networking ---
 
     networking = {
-      hostName = "seed-stake";
       useDHCP = true;
       firewall = {
         enable = true;
@@ -104,7 +103,6 @@
       };
     };
 
-    time.timeZone = "America/Chicago";
     i18n.defaultLocale = "en_US.UTF-8";
 
     services.openssh = {

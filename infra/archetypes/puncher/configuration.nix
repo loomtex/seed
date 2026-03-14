@@ -2,12 +2,10 @@
 
 {
   imports = [
-    ./hardware-configuration.nix
-    ./disks.nix
-    ../../../profiles/server.nix
-    ../../../profiles/seed-local-users.nix
-    ../../../profiles/seed-cache.nix
-    ../../../profiles/seed-vpc.nix
+    ../../profiles/server.nix
+    ../../profiles/seed-local-users.nix
+    ../../profiles/seed-cache.nix
+    ../../profiles/seed-vpc.nix
   ];
 
   options.seed.vpcSubnets = lib.mkOption {
@@ -23,9 +21,7 @@
     systemd.services.unbound.after = [ "seed-vpc.service" ];
 
     sops.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
-
-    boot.loader.systemd-boot.enable = true;
-    boot.loader.efi.canTouchEfiVariables = true;
+    sops.secrets.vultr-api-key = {};
 
     # Tang: Network-Bound Disk Encryption server
     services.tang = {
@@ -163,7 +159,6 @@
       };
     };
 
-    time.timeZone = "America/Denver";
     i18n.defaultLocale = "en_US.UTF-8";
 
     environment.systemPackages = with pkgs; [
@@ -174,6 +169,13 @@
     services.openssh = {
       enable = true;
       settings.PermitRootLogin = "no";
+    };
+
+    system.autoUpgrade = {
+      enable = true;
+      dates = "04:00";
+      flake = "github:loomtex/seed?dir=infra";
+      allowReboot = true;
     };
 
     system.stateVersion = "25.11";

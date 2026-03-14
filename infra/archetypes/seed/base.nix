@@ -1,13 +1,15 @@
+# Base configuration shared by all seed k3s nodes.
+# Host-specific settings (hostname, sopsFile, timeZone, hardware, controller)
+# are provided by the archetype functions in flake.nix.
 { config, pkgs, ... }:
 
 {
   imports = [
-    ../../../profiles/server.nix
-    ../../../profiles/seed-local-users.nix
-    ../../../profiles/seed-cache.nix
-    ../../../profiles/seed-luks.nix
-    ../../../profiles/seed-vpc.nix
-    ../../../profiles/seed-controller.nix
+    ../../profiles/server.nix
+    ../../profiles/seed-local-users.nix
+    ../../profiles/seed-cache.nix
+    ../../profiles/seed-luks.nix
+    ../../profiles/seed-vpc.nix
   ];
 
   sops = {
@@ -15,25 +17,9 @@
     secrets."seed/k3s-token" = {};
   };
 
-  # GRUB: works from both BIOS and EFI installs (iPXE netboot is BIOS-only
-  # on Vultr bare metal, so systemd-boot's bootctl install gets skipped).
-  boot.loader.grub = {
-    enable = true;
-    efiSupport = true;
-    efiInstallAsRemovable = true;  # writes \EFI\BOOT\BOOTX64.EFI — no NVRAM needed
-    device = "/dev/disk/by-path/pci-0000:00:17.0-ata-5";
-  };
-  boot.loader.efi.canTouchEfiVariables = false;
-  boot.loader.timeout = 5;
-
-  boot.kernelParams = [
-    "console=tty0" "console=ttyS0,115200n8"
-  ];
-
   # Allow ada to push closures for remote deploys
   nix.settings.trusted-users = [ "root" "ada" ];
 
-  # Seed: k3s HA bootstrap node (first server, etcd init)
   seed = {
     enable = true;
     role = "server";
@@ -73,14 +59,12 @@
   system.autoUpgrade = {
     enable = true;
     dates = "04:00";
-    flake = "github:loomtex/seed-infra";
+    flake = "github:loomtex/seed?dir=infra";
     allowReboot = false;
   };
 
   networking = {
     interfaces.enp1s0f0.useDHCP = true;
-    # IPv6: SLAAC handles address + gateway (accept_ra=2 set by seed module)
-    # Reserved IPs: MetalLB L2 speaker manages them on the interface
     firewall = {
       enable = true;
       allowedTCPPorts = [
@@ -92,7 +76,6 @@
     };
   };
 
-  time.timeZone = "America/Denver";
   i18n.defaultLocale = "en_US.UTF-8";
 
   environment.systemPackages = with pkgs; [
