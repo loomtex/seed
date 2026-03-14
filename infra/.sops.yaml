@@ -1,41 +1,41 @@
 keys:
   - &admin_josh 2EE325D71601671696EBF687E45953D34C8829ED
   - &ada_age age1ujjm7feyd3p2e0qtfa6zr2rzf593yd2z0xjn0ytvd8jcje68nansxy4zuu
-  - &seed_atl_1_age age1neey2tjnrka26dndtwp400y5auud86v92f09srdr3xun80exv5jqcnlq6t
-  - &seed_atl_2_age age16kvu4zv76gnuenewe3eaphx5uq5xd4hcw9qpf6x7ltgtlsm9kp2s05uvwy
-  - &seed_atl_3_age age1x6fmwskwxvacf9nnsafexvpgfdl9ugj9xf9fvpvfng3rkukc3yxskddr3p
+  - &seed_atl1_1_age age1neey2tjnrka26dndtwp400y5auud86v92f09srdr3xun80exv5jqcnlq6t
+  - &seed_atl1_2_age age16kvu4zv76gnuenewe3eaphx5uq5xd4hcw9qpf6x7ltgtlsm9kp2s05uvwy
+  - &seed_atl1_3_age age1x6fmwskwxvacf9nnsafexvpgfdl9ugj9xf9fvpvfng3rkukc3yxskddr3p
   - &seed_tang_1_age age1s3qkxjd29dd6mvttvruf6mpzue2lun3qmyfnycgk8t6c7ftz7vpqa87flk
-  - &seed_stake_age age1uzdjpvu5ftf5um2veavl85r2hht89afk2l3sajxj3ehc7wa9ya5s9fqlrh
-  - &seed_puncher_1_age age1ae83xwy93c4u9nrzu8gtdyr9ks9c3zu44p7dmc78penpenaysgnqq5xqgx
+  - &stake_age age1uzdjpvu5ftf5um2veavl85r2hht89afk2l3sajxj3ehc7wa9ya5s9fqlrh
+  - &puncher_atl1_1_age age1ae83xwy93c4u9nrzu8gtdyr9ks9c3zu44p7dmc78penpenaysgnqq5xqgx
 
 creation_rules:
-  - path_regex: secrets/seed-stake\.yaml$
+  - path_regex: secrets/stake\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
         age:
-          - *seed_stake_age
+          - *stake_age
 
-  - path_regex: secrets/seed-atl-1\.yaml$
+  - path_regex: secrets/seed-atl1-1\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
         age:
-          - *seed_atl_1_age
+          - *seed_atl1_1_age
 
-  - path_regex: secrets/seed-atl-2\.yaml$
+  - path_regex: secrets/seed-atl1-2\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
         age:
-          - *seed_atl_2_age
+          - *seed_atl1_2_age
 
-  - path_regex: secrets/seed-atl-3\.yaml$
+  - path_regex: secrets/seed-atl1-3\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
         age:
-          - *seed_atl_3_age
+          - *seed_atl1_3_age
 
   - path_regex: secrets/seed-tang-1\.yaml$
     key_groups:
@@ -44,24 +44,24 @@ creation_rules:
         age:
           - *seed_tang_1_age
 
-  - path_regex: secrets/seed-puncher-1\.yaml$
+  - path_regex: secrets/puncher-atl1-1\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
         age:
-          - *seed_puncher_1_age
+          - *puncher_atl1_1_age
 
-  - path_regex: secrets/seed-system\.yaml$
+  - path_regex: secrets/seed-system-atl1\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
         age:
-          - *seed_stake_age
-          - *seed_atl_1_age
-          - *seed_atl_2_age
-          - *seed_atl_3_age
+          - *stake_age
+          - *seed_atl1_1_age
+          - *seed_atl1_2_age
+          - *seed_atl1_3_age
           - *seed_tang_1_age
-          - *seed_puncher_1_age
+          - *puncher_atl1_1_age
           - *ada_age
 
   - path_regex: secrets/luks-recovery\.yaml$

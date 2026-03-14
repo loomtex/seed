@@ -21,7 +21,7 @@ management as easy as possible for any agent reading this document.
 
 ## State File
 
-Runtime state is tracked in `.state/atl.md` (checked into git).
+Runtime state is tracked in `.state/atl1.md` (checked into git).
 The agent writes Vultr IDs, IPs, current states, and notes there, then
 commits the update alongside any infrastructure changes. This gives:
 - **Human readability**: Josh can glance at it to see cluster status
@@ -67,7 +67,7 @@ absent → allocated
     4. Update source files with allocated IPs:
        - instances/dns.nix: NS/A/AAAA glue records
        - flake.nix: seed.ipv6.block
-       - infra/machines/atl/seed-atl-1/configuration.nix: controller.ipv4Address, controller.ipv6Block
+       - infra/machines/atl/seed-atl1-1/configuration.nix: controller.ipv4Address, controller.ipv6Block
     5. Commit and push (IPs must be in configs BEFORE node builds)
   notes: Reserve IPs BEFORE building any node closures — the controller
          config references these IPs, and DNS zone records include them.
@@ -94,7 +94,7 @@ The `provision-stake` helper automates the full flow.
 | `absent` | No Vultr instance with this label/ID |
 | `created` | Instance exists, may not have IP yet |
 | `ssh-ready` | SSH to root@IP succeeds (Debian default OS) |
-| `ready` | SSH as ada, hostname=seed-stake, nginx :8080 + registration :8081 up |
+| `ready` | SSH as ada, hostname=stake, nginx :8080 + registration :8081 up |
 
 **Transitions:**
 ```
@@ -116,7 +116,7 @@ ssh-ready → ready
   action: Run `nix run .#provision-stake -- --ip <ip>` (or just `nix run .#provision-stake`
           to create VM + provision in one shot). The helper does:
     1. Kexec into NixOS installer:
-       nixos-anywhere --phases kexec --build-on remote --flake .#seed-stake root@<ip>
+       nixos-anywhere --phases kexec --build-on remote --flake .#stake root@<ip>
     2. Wait for SSH to reconnect (NixOS installer boots)
     3. Configure S3 binary cache in installer:
        - Write /root/.aws/credentials and signing key
@@ -127,8 +127,8 @@ ssh-ready → ready
        - mkfs.ext4 /dev/vda, mount at /mnt/disk
        - Copy existing overlay upper to disk
        - Remount /nix/store with disk-backed upper
-    5. Build seed-stake closure ON the stake:
-       nix build "github:loomtex/seed?dir=infra#...seed-stake...toplevel"
+    5. Build stake closure ON the stake:
+       nix build "github:loomtex/seed?dir=infra#...stake...toplevel"
        (S3 cache provides pre-built derivations — minutes, not hours)
     6. Activate in-place:
        - $TOPLEVEL/activate (users, /etc, tmpfiles)
@@ -143,14 +143,14 @@ ssh-ready → ready
          The kexec config has no bootloader and no disk layout.
 ```
 
-### Puncher (seed-puncher-1)
+### Puncher (puncher-atl1-1)
 
 | State | Detection |
 |-------|-----------|
 | `absent` | No Vultr instance with this label/ID |
 | `created` | Instance exists |
 | `ssh-ready` | SSH to root@IP succeeds (Debian) |
-| `nixos-installed` | SSH as ada, hostname = `seed-puncher-1` |
+| `nixos-installed` | SSH as ada, hostname = `puncher-atl1-1` |
 | `tang-ready` | `curl http://<vpcIp>:<tangPort>/adv` returns JSON |
 
 **Transitions:**
@@ -168,7 +168,7 @@ ssh-ready → nixos-installed
   action: FROM STAKE (via agent forwarding) — SSH to stake with -A, then run:
     ssh -A ada@<stake>
     sudo SSH_AUTH_SOCK=$SSH_AUTH_SOCK nix run nixpkgs#nixos-anywhere -- \
-      --flake 'github:loomtex/seed?dir=infra#seed-puncher-1' \
+      --flake 'github:loomtex/seed?dir=infra#puncher-atl1-1' \
       --target-host root@<ip> --build-on local
   notes: --build-on local means stake builds (16GB RAM, S3 cache), then
          pushes the closure to the puncher. The puncher only has 2GB RAM
@@ -259,8 +259,8 @@ keys-enrolled → nixos-installed
          Disko will reformat sda later — this is a temporary overlay.
       b. Write /root/.aws/credentials:
          [default]
-         aws_access_key_id = <from seed-system.yaml>
-         aws_secret_access_key = <from seed-system.yaml>
+         aws_access_key_id = <from seed-system-atl1.yaml>
+         aws_secret_access_key = <from seed-system-atl1.yaml>
       c. Write /root/.config/nix/nix.conf:
          experimental-features = nix-command flakes
          extra-substituters = s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default
@@ -366,15 +366,15 @@ k3s-joined → healthy
 ### Ceph Secrets
 
 Ceph auth keys must be generated once per cluster before nodes are built.
-The keys live in `secrets/seed-system.yaml` (accessible to all nodes) and
+The keys live in `secrets/seed-system-atl1.yaml` (accessible to all nodes) and
 the fsid lives in `cluster.nix`. All Ceph daemon bootstrap (MON, MGR, OSD)
 is automated by oneshot services in `profiles/seed-ceph.nix` — this section
 covers only the one-time secret generation.
 
 | State | Detection |
 |-------|-----------|
-| `absent` | `sops -d secrets/seed-system.yaml` has no `ceph` key |
-| `generated` | `sops -d secrets/seed-system.yaml` contains `ceph.mon-key` and `ceph.admin-key` |
+| `absent` | `sops -d secrets/seed-system-atl1.yaml` has no `ceph` key |
+| `generated` | `sops -d secrets/seed-system-atl1.yaml` contains `ceph.mon-key` and `ceph.admin-key` |
 
 **Transitions:**
 ```
@@ -388,8 +388,8 @@ absent → generated
        nix-shell -p ceph --run 'ceph-authtool --gen-print-key'  (run twice: mon + admin)
     3. Add to sops secrets:
        sops --set '["ceph"] {"mon-key": "<mon-key>", "admin-key": "<admin-key>"}' \
-         secrets/seed-system.yaml
-    4. Verify: sops -d secrets/seed-system.yaml | grep -A2 ceph
+         secrets/seed-system-atl1.yaml
+    4. Verify: sops -d secrets/seed-system-atl1.yaml | grep -A2 ceph
     5. Commit and push (keys must be in secrets BEFORE node builds)
   notes: Keys are base64-encoded with ceph's internal format (type + timestamp
          + length + random bytes). MUST use ceph-authtool, not raw random.
@@ -436,7 +436,7 @@ The agent has these tools for infrastructure operations:
 If the state file is lost, reconstruct by:
 1. `nix run .#vultr -- list vms` and `list bms` to find resources
 2. SSH to each to determine its state
-3. Write findings to `.state/atl.md`
+3. Write findings to `.state/atl1.md`
 
 If a node is stuck in a bad state, the safest recovery is usually:
 1. Destroy the Vultr resource

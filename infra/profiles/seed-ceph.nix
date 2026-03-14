@@ -213,10 +213,10 @@ in {
   # --- Secrets ---
 
   sops.secrets."ceph/mon-key" = {
-    sopsFile = ../secrets/seed-system.yaml;
+    sopsFile = ../secrets/seed-system-atl1.yaml;
   };
   sops.secrets."ceph/admin-key" = {
-    sopsFile = ../secrets/seed-system.yaml;
+    sopsFile = ../secrets/seed-system-atl1.yaml;
   };
 
   sops.templates."ceph-admin-keyring" = {

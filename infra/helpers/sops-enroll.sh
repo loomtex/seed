@@ -5,10 +5,10 @@
 #   1. Convert SSH ed25519 pubkey to age recipient
 #   2. Add age key anchor to .sops.yaml keys section
 #   3. Add creation rule for secrets/<hostname>.yaml
-#   4. Add the key to the seed-system.yaml creation rule
+#   4. Add the key to the seed-system-atl1.yaml creation rule
 #   5. Create empty per-node secrets file (encrypted)
 
-HOSTNAME="${1:?hostname required (e.g. seed-atl-1)}"
+HOSTNAME="${1:?hostname required (e.g. seed-atl1-1)}"
 PUBKEY_FILE="${2:?ssh pubkey file required}"
 SOPS_YAML="${3:-.sops.yaml}"
 
@@ -21,7 +21,7 @@ fi
 AGE_KEY=$(ssh-to-age < "$PUBKEY_FILE")
 echo "Age key for $HOSTNAME: $AGE_KEY"
 
-# Generate anchor name: seed_atl_1_age (replace - with _)
+# Generate anchor name: seed_atl1_1_age (replace - with _)
 ANCHOR=$(echo "${HOSTNAME}_age" | tr '-' '_')
 
 echo ""
@@ -36,7 +36,7 @@ echo "          - *admin_josh"
 echo "        age:"
 echo "          - *${ANCHOR}"
 echo ""
-echo "Add *${ANCHOR} to the seed-system.yaml creation rule's age list."
+echo "Add *${ANCHOR} to the seed-system-atl1.yaml creation rule's age list."
 echo ""
 echo "Then create the per-node secrets file:"
 echo "  sops secrets/${HOSTNAME}.yaml"

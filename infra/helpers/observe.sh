@@ -5,12 +5,12 @@
 # tmux session in read-only mode. Press Ctrl-B then d to detach.
 # Pass -w to attach read-write (you can type into the session).
 
-STAKE="${1:-seed-stake}"
+STAKE="${1:-stake}"
 MODE="readonly"
 
 if [ "${1:-}" = "-w" ]; then
   MODE="readwrite"
-  STAKE="${2:-seed-stake}"
+  STAKE="${2:-stake}"
 elif [ "${2:-}" = "-w" ]; then
   MODE="readwrite"
 fi

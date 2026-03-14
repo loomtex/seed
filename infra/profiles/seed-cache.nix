@@ -12,13 +12,13 @@ let
   '';
 in {
   sops.secrets."seed/cache-signing-key" = {
-    sopsFile = ../secrets/seed-system.yaml;
+    sopsFile = ../secrets/seed-system-atl1.yaml;
   };
   sops.secrets."seed/s3-access-key" = {
-    sopsFile = ../secrets/seed-system.yaml;
+    sopsFile = ../secrets/seed-system-atl1.yaml;
   };
   sops.secrets."seed/s3-secret-key" = {
-    sopsFile = ../secrets/seed-system.yaml;
+    sopsFile = ../secrets/seed-system-atl1.yaml;
   };
 
   sops.templates."seed-s3-credentials".content = ''

@@ -2,7 +2,7 @@
 # Single source of truth — archetype functions in flake.nix generate
 # all nixosConfigurations from this data.
 {
-  clusters.atl = {
+  clusters.atl1 = {
     region = "atl";
     timeZone = "America/Denver";
     vpc.subnet = "10.0.0.0/24";
@@ -18,7 +18,7 @@
     };
 
     puncher = {
-      name = "seed-puncher-1";
+      name = "puncher-atl1-1";
       plan = "vc2-1c-2gb";
       type = "vm";
       vpcIp = "10.0.0.1";
@@ -26,7 +26,7 @@
     };
 
     nodes = {
-      seed-atl-1 = {
+      seed-atl1-1 = {
         type = "bm";
         plan = "vbm-6c-32gb";
         vpcIp = "10.0.0.10";
@@ -34,8 +34,8 @@
         controller = true;
         ceph = { osdId = "0"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; };
       };
-      seed-atl-2 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.11"; ceph = { osdId = "1"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; }; };
-      seed-atl-3 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.12"; ceph = { osdId = "2"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; }; };
+      seed-atl1-2 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.11"; ceph = { osdId = "1"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; }; };
+      seed-atl1-3 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.12"; ceph = { osdId = "2"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; }; };
     };
   };
 }

@@ -3,7 +3,7 @@
 # provision-stake.sh — Provision the stake VM via ephemeral infect
 #
 # Creates a Debian VM on Vultr, kexecs into NixOS installer, swaps nix
-# store overlay to disk, builds the seed-stake system closure ON the
+# store overlay to disk, builds the stake system closure ON the
 # target (never on signi), and activates in place. No disko, no
 # nixos-install, no reboot — the stake runs from the kexec activation
 # until destroyed.
@@ -27,9 +27,9 @@ VULTR_API_KEY_FILE="${VULTR_API_KEY_FILE:-/run/secrets/ada/vultr-api-key}"
 # Cluster topology
 STAKE_PLAN="vx1-g-4c-16g-240s"
 REGION="atl"
-VPC_ID=$(awk '/^\| ID \|/ {print $4}' "$INFRA_DIR/.state/atl.md" | head -1)
+VPC_ID=$(awk '/^\| ID \|/ {print $4}' "$INFRA_DIR/.state/atl1.md" | head -1)
 FLAKE_URL="github:loomtex/seed?dir=infra"
-STAKE_TOPLEVEL="$FLAKE_URL#nixosConfigurations.seed-stake.config.system.build.toplevel"
+STAKE_TOPLEVEL="$FLAKE_URL#nixosConfigurations.stake.config.system.build.toplevel"
 
 # S3 binary cache
 S3_CACHE_URL="s3://seed-nix-cache?endpoint=atl2.vultrobjects.com&region=us-east-1&profile=default"
@@ -63,7 +63,7 @@ wait_for_ssh() {
 }
 
 decrypt_secret() {
-  sops --decrypt --extract "$1" "$INFRA_DIR/secrets/seed-system.yaml"
+  sops --decrypt --extract "$1" "$INFRA_DIR/secrets/seed-system-atl1.yaml"
 }
 
 # --- Parse args ---
@@ -92,12 +92,12 @@ log "Credentials decrypted"
 
 if ! $SKIP_CREATE; then
   if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "*(to" ]; then
-    err "VPC ID not found in .state/atl.md — create VPC first"
+    err "VPC ID not found in .state/atl1.md — create VPC first"
   fi
 
   log "Creating stake VM (plan: $STAKE_PLAN, region: $REGION, VPC: $VPC_ID)"
   export VULTR_API_KEY_FILE
-  RESULT=$(bash "$SCRIPT_DIR/vultr.sh" create-vm seed-stake "$STAKE_PLAN" "$REGION" "$VPC_ID" 2136)
+  RESULT=$(bash "$SCRIPT_DIR/vultr.sh" create-vm stake "$STAKE_PLAN" "$REGION" "$VPC_ID" 2136)
   STAKE_VULTR_ID=$(echo "$RESULT" | jq -r '.instance.id')
   log "Created VM: $STAKE_VULTR_ID"
 
@@ -133,7 +133,7 @@ fi
 if ! $SKIP_KEXEC; then
   log "Phase 2: kexec into NixOS installer..."
   nixos-anywhere \
-    --flake "$FLAKE_URL#seed-stake" \
+    --flake "$FLAKE_URL#stake" \
     --build-on remote \
     --phases kexec \
     "root@$STAKE_IP"
@@ -243,7 +243,7 @@ remote_ssh root "$STAKE_IP" "
   systemctl daemon-reload
 
   # Set hostname
-  hostname seed-stake
+  hostname stake
 
   # Fix DNS: activation replaces resolv.conf with systemd-resolved stub
   # but systemd-resolved doesn't run in kexec. Use real nameservers.
@@ -322,8 +322,8 @@ log "S3 cache configured (pull + push)"
 
 log "Phase 7: Verifying stake..."
 HOSTNAME=$(remote_ssh ada "$STAKE_IP" "hostname")
-if [ "$HOSTNAME" != "seed-stake" ]; then
-  err "Hostname mismatch: expected seed-stake, got $HOSTNAME"
+if [ "$HOSTNAME" != "stake" ]; then
+  err "Hostname mismatch: expected stake, got $HOSTNAME"
 fi
 
 VPC_OK=$(remote_ssh ada "$STAKE_IP" "ip addr show | grep '10.0.0.2' || echo 'no-vpc'")

@@ -123,7 +123,7 @@
         ./profiles/seed-vpc.nix
 
         {
-          networking.hostName = "seed-stake";
+          networking.hostName = "stake";
           time.timeZone = cluster.timeZone;
           seed.netbootPath = seed.packages.${system}.netboot;
         }
@@ -145,7 +145,7 @@
         };
 
         stake = {
-          "seed-stake" = mkStake { inherit cluster; };
+          "stake" = mkStake { inherit cluster; };
         };
       in nodes // puncher // stake
     ) clusterData.clusters;

@@ -14,7 +14,7 @@ orchestrator.** The key files are:
 
 - `cluster.nix` — What should exist (hardware inventory, desired topology)
 - `states.md` — How to get there (state model, transitions, detection rules)
-- `.state/atl.md` — Where we are now (runtime state, tracked over time by git)
+- `.state/atl1.md` — Where we are now (runtime state, tracked over time by git)
 
 Read `cluster.nix` to know the desired end state. Read `states.md` to
 understand the lifecycle transitions. Probe the actual infrastructure
@@ -46,15 +46,15 @@ infra/
 ├── .sops.yaml             # Secret encryption rules
 ├── .gitignore
 ├── .state/                # Tracked in git — infrastructure state
-│   └── atl.md             # ATL cluster state (IPs, Vultr IDs, status)
+│   └── atl1.md            # ATL1 cluster state (IPs, Vultr IDs, status)
 ├── machines/
 │   ├── atl/               # ATL cluster nodes
-│   │   ├── seed-atl-1/    # k3s server, clusterInit, controller
-│   │   ├── seed-atl-2/    # k3s server
-│   │   └── seed-atl-3/    # k3s server
+│   │   ├── seed-atl1-1/   # k3s server, clusterInit, controller
+│   │   ├── seed-atl1-2/   # k3s server
+│   │   └── seed-atl1-3/   # k3s server
 │   └── infra/             # Infrastructure machines
-│       ├── seed-stake/    # Ephemeral provisioner VM
-│       ├── seed-puncher-1/# Tang NBDE + DNS
+│       ├── stake/         # Ephemeral provisioner VM
+│       ├── puncher-atl1-1/# Tang NBDE + DNS
 │       └── seed-tang-1/   # Tang server (DFW, legacy)
 ├── profiles/
 │   ├── server.nix         # Base server (nix flakes, common packages)
@@ -80,7 +80,7 @@ infra/
 - **Vultr API key**: `/run/secrets/ada/vultr-api-key` on signi
   - Set `VULTR_API_KEY_FILE` or `VULTR_API_KEY` before using helpers
 - **SSH**: ada's ed25519 key is on the vultr account and so it authenticates to all seed machines
-  - `ssh seed-atl-1`, `ssh seed-stake`, etc. (configured in ~/.ssh/config)
+  - `ssh seed-atl1-1`, `ssh stake`, etc. (configured in ~/.ssh/config)
 - **sops**: ada's age key at `~/.config/sops/age/keys.txt`
   - Josh's PGP key is the other recipient for all secrets
 - **S3 cache**: credentials in sops template, deployed via seed-cache.nix profile
@@ -92,12 +92,12 @@ Available as flake apps (deterministic dependencies via nix):
 ```bash
 # Vultr operations
 nix run .#vultr -- create-vpc atl 10.0.0.0
-nix run .#vultr -- create-vm seed-stake vc2-4c-8gb atl <vpc-id>
+nix run .#vultr -- create-vm stake vc2-4c-8gb atl <vpc-id>
 nix run .#vultr -- list vms
 nix run .#vultr -- destroy vm <id>
 
 # Secret enrollment
-nix run .#sops-enroll -- seed-atl-1 /tmp/ssh_host_ed25519_key.pub
+nix run .#sops-enroll -- seed-atl1-1 /tmp/ssh_host_ed25519_key.pub
 
 # Clevis binding
 nix run .#clevis-bind -- http://10.0.0.1:7654 /tmp/passphrase
@@ -124,7 +124,7 @@ on the host you're running on (signi), even derivations. Often we're
 running on a metered and slow connection, this is the purpose of stake.
 
 ```bash
-ssh ada@<stake> 'sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.seed-puncher-1.config.system.build.toplevel"'
+ssh ada@<stake> 'sudo nix build "github:loomtex/seed?dir=infra#nixosConfigurations.puncher-atl1-1.config.system.build.toplevel"'
 # S3 cache now has all paths. Running a build-on remote pulls from cache
 ```
 
@@ -180,7 +180,7 @@ VMs and bare metals. Without SSH keys, Debian VMs only allow password auth.
 Used to install NixOS on Debian VMs and netbooted bare metal:
 
 ```bash
-nixos-anywhere --flake .#seed-atl-1 --target-host root@<ip> --build-on-remote \
+nixos-anywhere --flake .#seed-atl1-1 --target-host root@<ip> --build-on-remote \
   --disk-encryption-keys /tmp/disk-password /tmp/disk-password \
   --extra-files /tmp/extra-files
 ```
@@ -220,7 +220,7 @@ nix-shell -p ceph --run 'ceph-authtool --gen-print-key'  # admin key
 
 # Add to sops
 sops --set '["ceph"] {"mon-key": "<mon-key>", "admin-key": "<admin-key>"}' \
-  secrets/seed-system.yaml
+  secrets/seed-system-atl1.yaml
 ```
 
 The fsid is in `cluster.nix` (`ceph.fsid`). Per-node OSD config (osdId, osdDevice)
@@ -244,11 +244,11 @@ Example:
 
 | Machine | Type | Plan | VPC IP | Role |
 |---------|------|------|--------|------|
-| seed-stake | VM | vx1-g-4c-16g-240s | 10.0.0.2 | Provisioner (ephemeral, kexec) |
-| seed-puncher-1 | VM | vc2-1c-2gb | 10.0.0.1 | Tang + DNS |
-| seed-atl-1 | BM | vbm-6c-32gb | 10.0.0.10 | k3s init + controller |
-| seed-atl-2 | BM | vbm-6c-32gb | 10.0.0.11 | k3s server |
-| seed-atl-3 | BM | vbm-6c-32gb | 10.0.0.12 | k3s server |
+| stake | VM | vx1-g-4c-16g-240s | 10.0.0.2 | Provisioner (ephemeral, kexec) |
+| puncher-atl1-1 | VM | vc2-1c-2gb | 10.0.0.1 | Tang + DNS |
+| seed-atl1-1 | BM | vbm-6c-32gb | 10.0.0.10 | k3s init + controller |
+| seed-atl1-2 | BM | vbm-6c-32gb | 10.0.0.11 | k3s server |
+| seed-atl1-3 | BM | vbm-6c-32gb | 10.0.0.12 | k3s server |
 
 ## Orchestration Model
 

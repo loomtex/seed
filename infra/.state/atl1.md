@@ -1,0 +1,85 @@
+# ATL1 Cluster State
+
+Current state of the ATL1 seed cluster infrastructure.
+Updated by the provisioning agent after each transition.
+
+## VPC
+
+| Field | Value |
+|-------|-------|
+| ID | *(pending reprovision)* |
+| State | **absent** |
+| Subnet | 10.0.0.0/24 |
+| Region | atl |
+
+## Reserved IPs
+
+| Field | Value |
+|-------|-------|
+| IPv4 ID | 348bc22d-5a39-4181-b99b-9f5d3e305801 |
+| IPv4 | 96.30.193.227 |
+| IPv4 attached to | *(none)* |
+| IPv6 ID | 36e2fc9c-138d-467b-beca-57a599d89624 |
+| IPv6 block | 2001:19f0:5400:20a7::/64 |
+| State | **allocated** |
+
+## Stake
+
+| Field | Value |
+|-------|-------|
+| ID | *(pending reprovision)* |
+| IP | *(pending reprovision)* |
+| VPC IP | 10.0.0.2 |
+| Plan | vx1-g-4c-16g-240s |
+| State | **absent** |
+| Notes | Ephemeral kexec — reboots to Debian |
+
+## Puncher (puncher-atl1-1)
+
+| Field | Value |
+|-------|-------|
+| ID | *(pending reprovision)* |
+| IP | *(pending reprovision)* |
+| VPC IP | 10.0.0.1 |
+| Tang port | 7654 |
+| State | **absent** |
+| Notes | Tang + Unbound + PowerDNS |
+
+## Nodes
+
+### seed-atl1-1
+
+| Field | Value |
+|-------|-------|
+| BM ID | *(pending reprovision)* |
+| IP | *(pending reprovision)* |
+| IPv6 | *(pending reprovision)* |
+| VPC IP | 10.0.0.10 |
+| State | **absent** |
+| Age key | *(pending reprovision)* |
+| iPXE script | *(pending reprovision)* |
+| Notes | clusterInit, controller, LUKS+Clevis, dual-stack |
+
+### seed-atl1-2
+
+| Field | Value |
+|-------|-------|
+| BM ID | *(pending reprovision)* |
+| IP | *(pending reprovision)* |
+| IPv6 | *(pending reprovision)* |
+| VPC IP | 10.0.0.11 |
+| State | **absent** |
+| Age key | *(pending reprovision)* |
+| Notes | k3s server, LUKS+Clevis, dual-stack |
+
+### seed-atl1-3
+
+| Field | Value |
+|-------|-------|
+| BM ID | *(pending reprovision)* |
+| IP | *(pending reprovision)* |
+| IPv6 | *(pending reprovision)* |
+| VPC IP | 10.0.0.12 |
+| State | **absent** |
+| Age key | *(pending reprovision)* |
+| Notes | k3s server, LUKS+Clevis, dual-stack |
