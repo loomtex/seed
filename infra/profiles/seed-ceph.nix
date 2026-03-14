@@ -21,12 +21,14 @@ in {
       monInitialMembers = clusterCeph.monInitialMembers;
     };
 
-    # In-transit encryption (msgr2 secure mode — AES-128-GCM)
     extraConfig = {
+      # In-transit encryption (msgr2 secure mode — AES-128-GCM)
       "ms_cluster_mode" = "secure";
       "ms_service_mode" = "secure";
       "ms_mon_cluster_mode" = "secure";
       "ms_client_mode" = "secure crc";
+      # CVE-2021-20288: all our daemons are 19.x, no need for legacy compat
+      "auth_allow_insecure_global_id_reclaim" = "false";
     };
 
     mon = {
