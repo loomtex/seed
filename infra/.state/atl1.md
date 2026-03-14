@@ -7,8 +7,8 @@ Updated by the provisioning agent after each transition.
 
 | Field | Value |
 |-------|-------|
-| ID | *(pending reprovision)* |
-| State | **absent** |
+| ID | 3a7375f6-fff4-4952-a53c-41cdd79e2ef3 |
+| State | **active** |
 | Subnet | 10.0.0.0/24 |
 | Region | atl |
 
