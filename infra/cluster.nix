@@ -32,10 +32,10 @@
         vpcIp = "10.0.0.10";
         clusterInit = true;
         controller = true;
-        ceph = { osdId = "0"; osdDevice = "/dev/sdb"; };
+        ceph = { osdId = "0"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; };
       };
-      seed-atl-2 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.11"; ceph = { osdId = "1"; osdDevice = "/dev/sdb"; }; };
-      seed-atl-3 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.12"; ceph = { osdId = "2"; osdDevice = "/dev/sdb"; }; };
+      seed-atl-2 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.11"; ceph = { osdId = "1"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; }; };
+      seed-atl-3 = { type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.12"; ceph = { osdId = "2"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; }; };
     };
   };
 }

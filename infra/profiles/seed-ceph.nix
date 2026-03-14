@@ -186,6 +186,7 @@ in {
       done
 
       # Create bootstrap-osd keyring if it doesn't exist
+      install -d -o ceph -g ceph /var/lib/ceph/bootstrap-osd
       ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-or-create \
         client.bootstrap-osd \
         mon 'allow profile bootstrap-osd' \
