@@ -14,8 +14,6 @@ interface BGPConfig {
   peerAddress: string;
   peerAddressIPv6: string;
   password: string;
-  sourceAddress: string;
-  sourceAddressIPv6: string;
 }
 
 /** Read BGP config from env vars. Returns null if BGP is not configured. */
@@ -27,11 +25,9 @@ export function readBGPConfig(): BGPConfig | null {
   return {
     myASN: parseInt(myASN, 10),
     peerASN: parseInt(peerASN, 10),
-    peerAddress: process.env["SEED_BGP_PEER_ADDRESS"] || "169.254.169.254",
+    peerAddress: process.env["SEED_BGP_PEER_ADDRESS"] || "169.254.1.1",
     peerAddressIPv6: process.env["SEED_BGP_PEER_ADDRESS_IPV6"] || "2001:19f0:ffff::1",
     password: process.env["SEED_BGP_PASSWORD"] || "",
-    sourceAddress: process.env["SEED_BGP_SOURCE_ADDRESS"] || "",
-    sourceAddressIPv6: process.env["SEED_BGP_SOURCE_ADDRESS_IPV6"] || "",
   };
 }
 
@@ -142,7 +138,6 @@ async function configureBGP(
         peerAddress: bgp.peerAddress,
         ebgpMultiHop: true,
         ...(bgp.password ? { password: bgp.password } : {}),
-        ...(bgp.sourceAddress ? { sourceAddress: bgp.sourceAddress } : {}),
       },
     };
 
@@ -172,7 +167,6 @@ async function configureBGP(
         peerAddress: bgp.peerAddressIPv6,
         ebgpMultiHop: true,
         ...(bgp.password ? { password: bgp.password } : {}),
-        ...(bgp.sourceAddressIPv6 ? { sourceAddress: bgp.sourceAddressIPv6 } : {}),
       },
     };
 

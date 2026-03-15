@@ -222,11 +222,7 @@ let
               { name = "SEED_BGP_PEER_ADDRESS"; value = cfg.bgp.peerAddress; }
               { name = "SEED_BGP_PEER_ADDRESS_IPV6"; value = cfg.bgp.peerAddressIPv6; }
               { name = "SEED_BGP_PASSWORD"; value = cfg.bgp.password; }
-            ] ++ lib.optional (cfg.bgp.enable && cfg.bgp.sourceAddress != "") {
-              name = "SEED_BGP_SOURCE_ADDRESS"; value = cfg.bgp.sourceAddress;
-            } ++ lib.optional (cfg.bgp.enable && cfg.bgp.sourceAddressIPv6 != "") {
-              name = "SEED_BGP_SOURCE_ADDRESS_IPV6"; value = cfg.bgp.sourceAddressIPv6;
-            } ++ lib.optional (cfg.webhook.secretFile != "") {
+            ] ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
             } ++ lib.optional cfg.poolManager.enable {
               name = "SEED_POOL_MANAGER_URL"; value = "http://seed-pool-manager.${seedSystemNS}.svc.cluster.local:${toString cfg.poolManager.port}";
@@ -442,8 +438,8 @@ in {
 
       peerAddress = lib.mkOption {
         type = lib.types.str;
-        default = "169.254.169.254";
-        description = "IPv4 BGP peer address (upstream router).";
+        default = "169.254.1.1";
+        description = "IPv4 BGP peer address (upstream router). 169.254.1.1 for Vultr bare metal, 169.254.169.254 for Vultr VMs.";
       };
 
       peerAddressIPv6 = lib.mkOption {
