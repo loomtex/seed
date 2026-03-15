@@ -74,6 +74,15 @@
           sops.defaultSopsFile = ./secrets/${name}.yaml;
           time.timeZone = cluster.timeZone;
         }
+        # Static node IPs from cluster inventory
+        (lib.mkIf ((node.ipv6 or "") != "") {
+          seed.k3s.nodeIp = "${node.vpcIp},${node.ipv6}";
+          seed.k3s.nodeExternalIp = "${node.publicIp},${node.ipv6}";
+        })
+        (lib.mkIf ((node.ipv6 or "") == "" && (node.publicIp or "") != "") {
+          seed.k3s.nodeIp = node.vpcIp;
+          seed.k3s.nodeExternalIp = node.publicIp;
+        })
       ]
       ++ lib.optionals (node.clusterInit or false) [
         { seed.k3s.clusterInit = true; }

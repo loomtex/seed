@@ -53,12 +53,12 @@ Updated by the provisioning agent after each transition.
 |-------|-------|
 | BM ID | 05fa128a-bcf9-463e-9fd8-5524f0caf62d |
 | IP | 96.30.205.16 |
-| IPv6 | *(none yet)* |
+| IPv6 | 2001:19f0:5401:05cd:3eec:efff:feb9:888e |
 | VPC IP | 10.0.0.10 |
-| State | **nixos-installed** |
+| State | **running** |
 | Age key | age1nachhe6fxyqj8wzzypxg7lh8utg2pdn7mrg5jty77keunemcau8q0pxnhx |
 | iPXE script | ba746a49-9b1b-403f-be65-98295a47b661 |
-| Notes | clusterInit, controller, LUKS+Clevis, dual-stack. Booted, Clevis auto-unlock OK. k3s waiting for sops re-key. |
+| Notes | clusterInit, controller, LUKS+Clevis, dual-stack. k3s+ceph running. |
 
 ### seed-atl1-2
 
@@ -66,12 +66,12 @@ Updated by the provisioning agent after each transition.
 |-------|-------|
 | BM ID | a2a3c072-00c5-4003-a918-d9996ac84e68 |
 | IP | 144.202.24.202 |
-| IPv6 | *(none yet)* |
+| IPv6 | 2001:19f0:5400:14fc:3eec:efff:feb9:ef16 |
 | VPC IP | 10.0.0.11 |
-| State | **nixos-installed** |
+| State | **running** |
 | Age key | age1ggj5uuyt5x0vrt4fmcu8lnt0f3qzqkxjm8qpqrplckvpz2s2ugdquuzn78 |
 | iPXE script | ba746a49-9b1b-403f-be65-98295a47b661 |
-| Notes | k3s server, LUKS+Clevis, dual-stack. Booted, Clevis auto-unlock OK. k3s waiting for sops re-key. |
+| Notes | k3s server, LUKS+Clevis, dual-stack. k3s+ceph running. |
 
 ### seed-atl1-3
 
@@ -79,9 +79,9 @@ Updated by the provisioning agent after each transition.
 |-------|-------|
 | BM ID | 4cf7a14e-a785-43e1-9e57-1a51ead63429 |
 | IP | 155.138.232.75 |
-| IPv6 | *(none yet)* |
+| IPv6 | 2001:19f0:5400:2052:3eec:efff:feb9:897e |
 | VPC IP | 10.0.0.12 |
-| State | **nixos-installed** |
+| State | **running** |
 | Age key | age1uzcjxhj5jnu0r5h0q8cqf7rj4tzdcp5zs6xk4rv0257n32pfxvysj7lvm3 |
 | iPXE script | ba746a49-9b1b-403f-be65-98295a47b661 |
-| Notes | k3s server, LUKS+Clevis, dual-stack. Booted, Clevis auto-unlock OK. k3s waiting for sops re-key. |
+| Notes | k3s server, LUKS+Clevis, dual-stack. k3s+ceph running. |

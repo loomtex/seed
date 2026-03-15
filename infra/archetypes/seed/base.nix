@@ -28,7 +28,6 @@
     persistence.enable = true;
     persistence.path = "/persist";
     k3s.dualStack = true;
-    k3s.autoNodeIp = "vultr";
   };
 
   # Impermanence mappings

@@ -109,33 +109,24 @@ in {
 
       dualStack = lib.mkEnableOption "IPv4/IPv6 dual-stack networking for pods and services";
 
-      autoNodeIp = lib.mkOption {
-        type = lib.types.enum [ "disabled" "vultr" ];
-        default = "disabled";
+      nodeIp = lib.mkOption {
+        type = lib.types.str;
+        default = "";
         description = ''
-          Cloud metadata provider for deriving --node-ip at boot.
-          "vultr" — queries http://169.254.169.254/v1.json for IPv4/IPv6.
-          Also reads /persist/seed/server-addr (if present) for cluster join.
-          Writes /run/k3s/node-config.yaml consumed by k3s --config.
-        '';
-      };
-    };
-
-    dns = {
-      nameserver = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          VPC DNS resolver IP (e.g. tang's VPC address). When set with autoNodeIp,
-          the derive-node-ip script configures this as the system nameserver via resolvectl
-          after the VPC interface is up.
+          k3s --node-ip value. For dual-stack, comma-separate IPv4 and IPv6
+          (e.g. "10.0.0.10,2001:db8::1"). When set, also writes
+          /run/k3s/node-config.yaml and reads /persist/seed/server-addr
+          for cluster join.
         '';
       };
 
-      searchDomains = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        description = "DNS search domains (e.g. [\"atl.combine.loom.farm\" \"combine.loom.farm\"]).";
+      nodeExternalIp = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = ''
+          k3s --node-external-ip value. For dual-stack, comma-separate
+          IPv4 and IPv6 (e.g. "96.30.205.16,2001:db8::1").
+        '';
       };
     };
 
@@ -195,7 +186,7 @@ in {
       snapshotter = lib.mkIf cfg.nixSnapshotter.enable "nix";
 
       extraFlags = lib.concatLists [
-        (lib.optionals (cfg.k3s.autoNodeIp != "disabled") [
+        (lib.optionals (cfg.k3s.nodeIp != "") [
           "--config" "/run/k3s/node-config.yaml"
         ])
         (lib.optionals (cfg.role == "server") (disableFlags ++ [
@@ -212,7 +203,7 @@ in {
         cfg.k3s.extraFlags
       ];
 
-      serverAddr = lib.mkIf (cfg.serverAddr != "" && !(cfg.k3s.autoNodeIp != "disabled")) cfg.serverAddr;
+      serverAddr = lib.mkIf (cfg.serverAddr != "" && cfg.k3s.nodeIp == "") cfg.serverAddr;
       token = lib.mkIf (cfg.token != "") cfg.token;
       tokenFile = lib.mkIf (cfg.tokenFile != null) (toString cfg.tokenFile);
 
@@ -245,91 +236,14 @@ in {
         ];
 
         ExecStartPre =
-          # Derive node-ip (and optionally server-addr) from cloud metadata
-          (lib.optionals (cfg.k3s.autoNodeIp != "disabled") [
-            "+${pkgs.writeShellScript "seed-derive-node-ip" ''
+          # Write node-config.yaml from static nix values
+          (lib.optionals (cfg.k3s.nodeIp != "") [
+            "+${pkgs.writeShellScript "seed-node-config" ''
               set -euo pipefail
               mkdir -p /run/k3s
-
-              ${lib.optionalString (cfg.k3s.autoNodeIp == "vultr") ''
-                # Query Vultr metadata API (retry up to 30s for slow network)
-                META=""
-                for i in $(seq 1 15); do
-                  META=$(${pkgs.curl}/bin/curl -sf http://169.254.169.254/v1.json) && break
-                  sleep 2
-                done
-
-                if [ -z "$META" ]; then
-                  echo "WARNING: metadata API unreachable, writing empty config" >&2
-                  echo "# metadata unavailable" > /run/k3s/node-config.yaml
-                  exit 0
-                fi
-
-                IPV4=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "public") | .ipv4.address) // empty')
-                IPV6=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "public") | .ipv6.address) // empty')
-
-                # VPC interface: find private network, configure IP by MAC address
-                VPC_MAC=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "private") | .["mac-address"]) // empty')
-                VPC_IP=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "private") | .ipv4.address) // empty')
-                VPC_MASK=$(echo "$META" | ${pkgs.jq}/bin/jq -r 'first(.interfaces[] | select(.["network-type"] == "private") | .ipv4.netmask) // empty')
-
-                if [ -n "$VPC_MAC" ] && [ -n "$VPC_IP" ]; then
-                  # Find interface name by MAC address
-                  VPC_IFACE=""
-                  for iface in /sys/class/net/*/address; do
-                    if [ "$(cat "$iface")" = "$VPC_MAC" ]; then
-                      VPC_IFACE=$(basename "$(dirname "$iface")")
-                      break
-                    fi
-                  done
-
-                  if [ -n "$VPC_IFACE" ]; then
-                    # Convert netmask to CIDR prefix length
-                    CIDR=$(echo "$VPC_MASK" | ${pkgs.gawk}/bin/awk -F. '{
-                      split($0, a, ".");
-                      bits=0;
-                      for(i=1;i<=4;i++) {
-                        n=a[i];
-                        while(n>0) { bits+=n%2; n=int(n/2) }
-                      }
-                      print bits
-                    }')
-
-                    ${pkgs.iproute2}/bin/ip addr add "$VPC_IP/$CIDR" dev "$VPC_IFACE" 2>/dev/null || true
-                    ${pkgs.iproute2}/bin/ip link set "$VPC_IFACE" up
-
-                    # Use VPC IP as node-ip, public IPs as external
-                    # Dual-stack requires both IPv4+IPv6 in node-ip for flannel
-                    if [ -n "$IPV6" ]; then
-                      echo "node-ip: \"$VPC_IP,$IPV6\"" > /run/k3s/node-config.yaml
-                      echo "node-external-ip: \"$IPV4,$IPV6\"" >> /run/k3s/node-config.yaml
-                    else
-                      echo "node-ip: \"$VPC_IP\"" > /run/k3s/node-config.yaml
-                      echo "node-external-ip: \"$IPV4\"" >> /run/k3s/node-config.yaml
-                    fi
-
-                    ${lib.optionalString (cfg.dns.nameserver != null) ''
-                      # Configure DNS resolver on the VPC interface
-                      ${pkgs.systemd}/bin/resolvectl dns "$VPC_IFACE" ${cfg.dns.nameserver}
-                      ${lib.optionalString (cfg.dns.searchDomains != []) ''
-                        ${pkgs.systemd}/bin/resolvectl domain "$VPC_IFACE" ${lib.concatStringsSep " " cfg.dns.searchDomains}
-                      ''}
-                    ''}
-                  else
-                    echo "WARNING: VPC MAC $VPC_MAC not found, using public IPs" >&2
-                    if [ -n "$IPV6" ]; then
-                      echo "node-ip: \"$IPV4,$IPV6\"" > /run/k3s/node-config.yaml
-                    else
-                      echo "node-ip: \"$IPV4\"" > /run/k3s/node-config.yaml
-                    fi
-                  fi
-                else
-                  if [ -n "$IPV6" ]; then
-                    echo "node-ip: \"$IPV4,$IPV6\"" > /run/k3s/node-config.yaml
-                  else
-                    echo "node-ip: \"$IPV4\"" > /run/k3s/node-config.yaml
-                  fi
-                fi
+              echo "node-ip: \"${cfg.k3s.nodeIp}\"" > /run/k3s/node-config.yaml
+              ${lib.optionalString (cfg.k3s.nodeExternalIp != "") ''
+                echo "node-external-ip: \"${cfg.k3s.nodeExternalIp}\"" >> /run/k3s/node-config.yaml
               ''}
 
               # If a server-addr file exists (written by provisioner for joining nodes),

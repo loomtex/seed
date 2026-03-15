@@ -214,6 +214,11 @@ absent → created
          A normal reboot boots from disk, not PXE. To force PXE boot
          again, use the Vultr "reinstall" API with the iPXE script:
            vultr.sh reinstall-bm <id> 159 <script-id>
+         IPv6: BMs are NOT created with IPv6 by default. Must enable
+         after creation via Vultr API (PATCH /bare-metals/<id> with
+         {"enable_ipv6": true}). IPv6 is assigned via SLAAC — no manual
+         NIC configuration needed, address appears within seconds.
+         Dual-stack k3s requires IPv6 on all nodes.
 
 created → phone-homed
   needs: BM boots into installer, gets DHCP, runs phone-home service
