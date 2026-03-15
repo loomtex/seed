@@ -154,8 +154,10 @@ in {
     networking.firewall.allowedTCPPorts = lib.mkIf (cfg.role == "server") [
       2379  # etcd client
       2380  # etcd peer
+      7946  # MetalLB memberlist (speaker gossip)
     ];
     networking.firewall.allowedUDPPorts = [
+      7946  # MetalLB memberlist (speaker gossip)
       8472  # flannel VXLAN (cross-node pod traffic)
     ];
 
