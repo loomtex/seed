@@ -82,6 +82,55 @@
         dontStrip = true;
       };
 
+      # CSI sidecars for Ceph RBD (and future CSI drivers)
+      csi-provisioner = final.buildGoModule rec {
+        pname = "csi-provisioner";
+        version = "5.1.0";
+        src = final.fetchFromGitHub {
+          owner = "kubernetes-csi"; repo = "external-provisioner";
+          rev = "v${version}"; hash = "sha256-NmKfRgnVj4auBZp3SRX5yb3r4clMN7gNenPaaz3ZyTY=";
+        };
+        vendorHash = null;
+        subPackages = [ "cmd/csi-provisioner" ];
+        ldflags = [ "-s" "-w" "-X main.version=v${version}" ];
+      };
+
+      csi-attacher = final.buildGoModule rec {
+        pname = "csi-attacher";
+        version = "4.7.0";
+        src = final.fetchFromGitHub {
+          owner = "kubernetes-csi"; repo = "external-attacher";
+          rev = "v${version}"; hash = "sha256-TqfBLZQjLqNCg3awhrvedK8Ye4MODP9EFHyYQ7jM+qI=";
+        };
+        vendorHash = null;
+        subPackages = [ "cmd/csi-attacher" ];
+        ldflags = [ "-s" "-w" "-X main.version=v${version}" ];
+      };
+
+      csi-resizer = final.buildGoModule rec {
+        pname = "csi-resizer";
+        version = "1.12.0";
+        src = final.fetchFromGitHub {
+          owner = "kubernetes-csi"; repo = "external-resizer";
+          rev = "v${version}"; hash = "sha256-4YN4XzLjjhULfkxmgMpSVYK4H/snJDSnCdub6Vn7BFw=";
+        };
+        vendorHash = null;
+        subPackages = [ "cmd/csi-resizer" ];
+        ldflags = [ "-s" "-w" "-X main.version=v${version}" ];
+      };
+
+      csi-node-driver-registrar = final.buildGoModule rec {
+        pname = "csi-node-driver-registrar";
+        version = "2.12.0";
+        src = final.fetchFromGitHub {
+          owner = "kubernetes-csi"; repo = "node-driver-registrar";
+          rev = "v${version}"; hash = "sha256-5uWpaIbD/bmAwLdwkU8GHxrSjD3bw0tibofTqumC+dA=";
+        };
+        vendorHash = null;
+        subPackages = [ "cmd/csi-node-driver-registrar" ];
+        ldflags = [ "-s" "-w" "-X main.version=v${version}" ];
+      };
+
       kata-runtime = prev.kata-runtime.overrideAttrs (old: {
         # Patch kata shim to support multi-mount rootfs from snapshotters
         # like nix-snapshotter that return overlay + bind mounts:
@@ -139,6 +188,11 @@
     lib.mkSeed = mkSeed;
     lib.mkInstance = mkInstance;
     lib.mkImage = mkImage;
+
+    # Combinable k8s components: pkgs -> args -> { image, imageRef, container }
+    lib.mkK8sComponent = pkgs: import ./lib/mkK8sComponent.nix { inherit pkgs; };
+    # Ceph RBD CSI composition: { pkgs, mkK8sComponent } -> config -> manifests
+    lib.mkCephCsiRbd = import ./lib/mkCephCsiRbd.nix;
 
     # Re-export nix-snapshotter home modules for rootless k3s consumers
     homeModules = nix-snapshotter.homeModules;

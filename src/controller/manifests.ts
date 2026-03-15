@@ -135,6 +135,7 @@ export function generatePVC(
     },
     spec: {
       accessModes: ["ReadWriteOnce"],
+      storageClassName: "ceph-rbd",
       resources: {
         requests: { storage: size },
       },

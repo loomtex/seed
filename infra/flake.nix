@@ -58,7 +58,7 @@
       nodeCeph = node.ceph or {};
     in lib.nixosSystem {
       inherit system;
-      specialArgs = { inherit clusterCeph nodeCeph; };
+      specialArgs = { inherit clusterCeph nodeCeph; clusterNodes = cluster.nodes; seedFlake = seed; };
       modules = [
         disko.nixosModules.disko
         impermanence.nixosModules.impermanence

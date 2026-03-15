@@ -11,6 +11,7 @@
     ../../profiles/seed-luks.nix
     ../../profiles/seed-vpc.nix
     ../../profiles/seed-ceph.nix
+    ../../profiles/seed-ceph-csi.nix
   ];
 
   sops = {

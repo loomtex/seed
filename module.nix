@@ -148,6 +148,24 @@ in {
         description = "Impermanence mount point where /var/lib/rancher will be persisted.";
       };
     };
+
+    k8s.services = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          manifests = lib.mkOption {
+            type = lib.types.path;
+            description = "Directory of JSON/YAML manifests to apply via kubectl.";
+          };
+          extraManifestPaths = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [];
+            description = "Additional file paths (e.g. sops templates) to apply alongside the manifests directory.";
+          };
+        };
+      });
+      default = {};
+      description = "k8s services to apply on activation. Each entry is a directory of manifests applied via kubectl apply --server-side.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -226,6 +244,57 @@ in {
           privileged_without_host_devices = true
           pod_annotations = ["io.katacontainers.*"]
           container_annotations = ["io.katacontainers.*"]
+      '';
+    };
+
+    # --- seed.k8s.services: hot-apply k8s manifests on NixOS activation ---
+    systemd.services.seed-k8s-apply = lib.mkIf (cfg.k8s.services != {}) {
+      description = "Apply seed k8s service manifests";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "k3s.service" ];
+      wants = [ "k3s.service" ];
+
+      # Re-run on NixOS switch when any manifest derivation changes
+      restartTriggers = lib.mapAttrsToList (_: svc: svc.manifests) cfg.k8s.services;
+
+      path = [ pkgs.kubectl pkgs.coreutils ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        Environment = "KUBECONFIG=/etc/rancher/k3s/k3s.yaml";
+      };
+
+      script = let
+        applyCommands = lib.concatStringsSep "\n" (lib.mapAttrsToList (name: svc: ''
+          echo "Applying k8s service: ${name}"
+          kubectl apply --server-side -f ${svc.manifests}/
+          ${lib.concatMapStringsSep "\n" (p: ''
+            if [ -f "${p}" ]; then
+              echo "Applying extra manifest: ${p}"
+              kubectl apply --server-side -f "${p}"
+            fi
+          '') svc.extraManifestPaths}
+        '') cfg.k8s.services);
+      in ''
+        set -euo pipefail
+
+        # Wait for k8s API
+        echo "Waiting for k8s API..."
+        for i in $(seq 1 120); do
+          if kubectl get --raw /readyz &>/dev/null; then
+            break
+          fi
+          if [ "$i" -eq 120 ]; then
+            echo "Timed out waiting for k8s API" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+
+        ${applyCommands}
+
+        echo "All k8s services applied successfully"
       '';
     };
 
