@@ -133,18 +133,20 @@ export async function applyResource(
 
         if (existing) {
           const svc = manifest as k8s.V1Service;
-          svc.metadata = svc.metadata || {};
-          svc.spec = svc.spec || {};
-          // Preserve server-assigned fields to avoid replace → generation bump → watch loop
+          const desiredPorts = svc.spec?.ports;
+          // Overlay desired onto existing to preserve ALL server-managed fields
+          // (clusterIP, clusterIPs, nodePort, sessionAffinity, internalTrafficPolicy,
+          //  allocateLoadBalancerNodePorts, healthCheckNodePort, etc.)
+          // This prevents replace → generation bump → watch infinite loop.
+          svc.metadata = { ...existing.metadata, ...svc.metadata };
           svc.metadata.resourceVersion = existing.metadata?.resourceVersion;
-          if (existing.spec?.clusterIP) svc.spec.clusterIP = existing.spec.clusterIP;
-          if (existing.spec?.clusterIPs) svc.spec.clusterIPs = existing.spec.clusterIPs;
-          // Preserve nodePort assignments (matched by port name)
-          if (existing.spec?.ports && svc.spec.ports) {
+          svc.spec = { ...existing.spec, ...svc.spec };
+          // Restore nodePort assignments from existing (matched by port name)
+          if (existing.spec?.ports && desiredPorts) {
             const existingPorts = new Map(
               existing.spec.ports.map((p) => [p.name ?? `${p.port}/${p.protocol}`, p.nodePort]),
             );
-            for (const p of svc.spec.ports) {
+            for (const p of svc.spec.ports!) {
               const key = p.name ?? `${p.port}/${p.protocol}`;
               const np = existingPorts.get(key);
               if (np !== undefined) p.nodePort = np;
@@ -156,7 +158,6 @@ export async function applyResource(
         }
         break;
       }
-        break;
       case "PersistentVolumeClaim":
         try {
           await core.readNamespacedPersistentVolumeClaim({ name, namespace });
