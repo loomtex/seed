@@ -178,6 +178,12 @@ in {
     boot.kernel.sysctl."net.ipv6.conf.all.accept_ra" = lib.mkIf cfg.k3s.dualStack (lib.mkDefault 2);
     boot.kernel.sysctl."net.ipv6.conf.default.accept_ra" = lib.mkIf cfg.k3s.dualStack (lib.mkDefault 2);
 
+    # Disable IPv6 privacy/temporary addresses — infrastructure servers need
+    # stable SLAAC addresses for BGP source binding (MD5 auth is keyed to
+    # the EUI-64 address, not ephemeral privacy addresses).
+    boot.kernel.sysctl."net.ipv6.conf.all.use_tempaddr" = lib.mkIf cfg.k3s.dualStack (lib.mkDefault 0);
+    boot.kernel.sysctl."net.ipv6.conf.default.use_tempaddr" = lib.mkIf cfg.k3s.dualStack (lib.mkDefault 0);
+
     # Kernel modules for Kata VM isolation
     boot.kernelModules = [ "vhost_net" "vhost_vsock" ];
 
