@@ -307,7 +307,7 @@ let
               { name = "pods-mount-dir"; hostPath = { path = "/var/lib/kubelet/pods"; type = "Directory"; }; }
               { name = "host-dev"; hostPath.path = "/dev"; }
               { name = "host-sys"; hostPath.path = "/sys"; }
-              { name = "lib-modules"; hostPath = { path = "/lib/modules"; type = "Directory"; }; }
+              { name = "lib-modules"; hostPath = { path = "/run/current-system/kernel-modules/lib/modules"; type = "Directory"; }; }
               { name = "ceph-csi-config"; configMap.name = "ceph-csi-config"; }
               { name = "ceph-config"; configMap.name = "ceph-config"; }
               { name = "ceph-csi-kms-config"; configMap.name = "ceph-csi-encryption-kms-config"; }

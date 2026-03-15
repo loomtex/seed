@@ -67,19 +67,30 @@ in {
         ${ceph.out}/bin/ceph -k ${adminKeyring} osd pool set k8s-rbd size 3
         ${ceph.out}/bin/ceph -k ${adminKeyring} osd pool set k8s-rbd min_size 2
         ${ceph.out}/bin/ceph -k ${adminKeyring} osd pool application enable k8s-rbd rbd
-        ${ceph.out}/bin/rbd -k ${adminKeyring} pool init k8s-rbd
+        ${ceph.out}/bin/rbd -k ${adminKeyring} --id admin pool init k8s-rbd
       else
         echo "Pool k8s-rbd already exists"
       fi
 
-      # Create CSI user with pre-generated key from sops
-      # get-or-create: returns existing if user exists (ignores --key), creates otherwise
-      CSI_KEY=$(cat ${csiKeyFile})
-      ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-or-create client.k8s \
-        mon 'profile rbd' \
-        osd 'profile rbd pool=k8s-rbd' \
-        mgr 'profile rbd pool=k8s-rbd' \
-        --key "$CSI_KEY"
+      # Create CSI user with pre-generated key from sops.
+      # ceph auth import replaces get-or-create because --key authenticates
+      # the client, not the new user. Import a keyring with our key instead.
+      if ! ${ceph.out}/bin/ceph -k ${adminKeyring} auth get client.k8s &>/dev/null; then
+        echo "Creating client.k8s with sops-managed key..."
+        CSI_KEY=$(cat ${csiKeyFile})
+        TMPKR=$(mktemp)
+        ${ceph.out}/bin/ceph-authtool "$TMPKR" \
+          --create-keyring \
+          --name client.k8s \
+          --add-key "$CSI_KEY" \
+          --cap mon 'profile rbd' \
+          --cap osd 'profile rbd pool=k8s-rbd' \
+          --cap mgr 'profile rbd pool=k8s-rbd'
+        ${ceph.out}/bin/ceph -k ${adminKeyring} auth import -i "$TMPKR"
+        rm -f "$TMPKR"
+      else
+        echo "client.k8s already exists"
+      fi
 
       echo "Ceph CSI bootstrap complete"
     '';
