@@ -216,6 +216,11 @@ remote_ssh root "$STAKE_IP" '
     /nix/store
   systemctl start nix-daemon.socket
 
+  # Use disk for nix build sandboxes (Go builds like k3s exhaust tmpfs)
+  mkdir -p /mnt/disk/nix-build-tmp
+  chmod 0755 /mnt/disk/nix-build-tmp
+  echo "build-dir = /mnt/disk/nix-build-tmp" >> /etc/nix/nix.conf
+
   DISK_AVAIL=$(df -BG /mnt/disk | tail -1 | awk "{print \$4}")
   echo "nix store overlay: disk-backed at /dev/vda, ${DISK_AVAIL} available"
 '
