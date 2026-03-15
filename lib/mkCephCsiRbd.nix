@@ -196,6 +196,7 @@ let
                   "--csi-address=/csi/csi.sock"
                   "--leader-election=true"
                   "--extra-create-metadata=true"
+                  "--feature-gates=Topology=false"
                   "--timeout=150s"
                 ];
                 volumeMounts = [ socketDir ];
