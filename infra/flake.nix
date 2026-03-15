@@ -223,6 +223,7 @@
       packages = with pkgs; [
         nixos-anywhere sops age ssh-to-age jq git
         curl clevis jose yq-go vultr-cli
+        nodejs_22  # TypeScript controller tests (node --import tsx/esm --test)
       ];
     };
   };
