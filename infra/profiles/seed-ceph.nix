@@ -12,9 +12,10 @@ let
   osdId = nodeCeph.osdId;
   osdDevice = nodeCeph.osdDevice;
   ceph = pkgs.ceph;
-  # Slash-separated MON v2 addresses for kernel CephFS mount (mon_addr option)
+  # Slash-separated MON addresses for kernel CephFS mount (mon_addr option).
+  # Use port 6789 (v1/v2 dual-mode) — the kernel CephFS client auto-negotiates.
   monAddrOption = lib.concatStringsSep "/" (
-    map (ip: "${ip}:3300") (lib.splitString "," clusterCeph.monHost)
+    map (ip: "${ip}:6789") (lib.splitString "," clusterCeph.monHost)
   );
 in {
   services.ceph = {
