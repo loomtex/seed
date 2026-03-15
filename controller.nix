@@ -108,8 +108,8 @@ let
       }
       {
         apiGroups = [ "metallb.io" ];
-        resources = [ "ipaddresspools" "l2advertisements" ];
-        verbs = [ "get" "list" "create" "update" "patch" ];
+        resources = [ "ipaddresspools" "l2advertisements" "bgppeers" "bgpadvertisements" ];
+        verbs = [ "get" "list" "create" "update" "patch" "delete" ];
       }
       {
         apiGroups = [ "seed.loom.farm" ];
