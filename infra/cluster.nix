@@ -11,7 +11,7 @@
 
     bgp = {
       myASN = 4288000272;     # Vultr-assigned account ASN
-      peerASN = 64515;        # Vultr infrastructure ASN
+      peerASN = 20473;        # Vultr public ASN (AS20473) — required for bare metal (64515 is VMs only)
       password = "V6kyAKcCav5byJ08";
     };
 

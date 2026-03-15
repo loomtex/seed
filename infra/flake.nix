@@ -106,8 +106,6 @@
             myASN = cluster.bgp.myASN;
             peerASN = cluster.bgp.peerASN;
             password = cluster.bgp.password;
-            sourceAddress = node.publicIp;
-            sourceAddressIPv6 = node.publicIpv6 or "";
           };
         }
       ];
