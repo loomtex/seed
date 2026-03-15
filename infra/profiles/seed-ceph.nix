@@ -12,8 +12,10 @@ let
   osdId = nodeCeph.osdId;
   osdDevice = nodeCeph.osdDevice;
   ceph = pkgs.ceph;
-  # Colon-separated MON addresses for kernel CephFS mount
-  monAddrsKernel = builtins.replaceStrings [","] [":"] clusterCeph.monHost;
+  # Slash-separated MON v2 addresses for kernel CephFS mount (mon_addr option)
+  monAddrOption = lib.concatStringsSep "/" (
+    map (ip: "${ip}:3300") (lib.splitString "," clusterCeph.monHost)
+  );
 in {
   services.ceph = {
     enable = true;
@@ -299,11 +301,11 @@ in {
       ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-key client.cephfs > /run/ceph/cephfs.secret
       chmod 600 /run/ceph/cephfs.secret
 
-      # Mount CephFS (idempotent)
+      # Mount CephFS (kernel 5.11+ syntax: name@fsid.fsname=/)
       mkdir -p /var/lib/seed-controller/tpm
       if ! mountpoint -q /var/lib/seed-controller/tpm; then
-        mount -t ceph ${monAddrsKernel}:/ /var/lib/seed-controller/tpm \
-          -o name=cephfs,secretfile=/run/ceph/cephfs.secret,fs=seed-fs
+        mount -t ceph cephfs@${clusterCeph.fsid}.seed-fs=/ /var/lib/seed-controller/tpm \
+          -o secretfile=/run/ceph/cephfs.secret,mon_addr=${monAddrOption}
       fi
     '';
     path = with pkgs; [ coreutils gnugrep util-linux ];
