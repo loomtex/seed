@@ -296,16 +296,14 @@ in {
         osd 'allow rw pool=cephfs-metadata, allow rw pool=cephfs-data' \
         mds 'allow rw'
 
-      # Extract secret for kernel mount
-      mkdir -p /run/ceph
-      ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-key client.cephfs > /run/ceph/cephfs.secret
-      chmod 600 /run/ceph/cephfs.secret
+      # Get client key for kernel mount
+      CEPHFS_SECRET=$(${ceph.out}/bin/ceph -k ${adminKeyring} auth get-key client.cephfs)
 
       # Mount CephFS (kernel 5.11+ syntax: name@fsid.fsname=/)
       mkdir -p /var/lib/seed-controller/tpm
       if ! mountpoint -q /var/lib/seed-controller/tpm; then
         mount -t ceph cephfs@${clusterCeph.fsid}.seed-fs=/ /var/lib/seed-controller/tpm \
-          -o secretfile=/run/ceph/cephfs.secret,mon_addr=${monAddrOption}
+          -o secret="$CEPHFS_SECRET",mon_addr=${monAddrOption}
       fi
     '';
     path = with pkgs; [ coreutils gnugrep util-linux ];
