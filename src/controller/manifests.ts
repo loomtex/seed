@@ -43,14 +43,17 @@ export function generateDeployment(
     });
   }
 
-  // TPM identity volume
+  // TPM state volume (CephFS-backed hostPath)
   if (tpmSocketPath) {
     volumes.push({
-      name: "tpm-identity",
-      persistentVolumeClaim: { claimName: `seed-${name}-tpm-identity` },
+      name: "tpm",
+      hostPath: {
+        path: `/var/lib/seed-controller/tpm/${namespace}-${name}`,
+        type: "DirectoryOrCreate",
+      },
     });
     mounts.push({
-      name: "tpm-identity",
+      name: "tpm",
       mountPath: "/seed/tpm",
     });
   }

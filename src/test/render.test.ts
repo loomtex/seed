@@ -157,7 +157,7 @@ describe("renderDesiredState", () => {
     assert.equal(pvcs[0].metadata?.name, "seed-web-data");
   });
 
-  it("generates TPM identity PVC when swtpm enabled", () => {
+  it("does not generate TPM identity PVC (TPM state on CephFS hostPath)", () => {
     const results = makeBuildResults({
       web: {
         imagePath: "/nix/store/abc",
@@ -168,8 +168,7 @@ describe("renderDesiredState", () => {
     const state = renderDesiredState(DEFAULT_NAMESPACE, true, DEFAULT_IPV4, "", results, null, null, new Map());
     const pvcs = state.instances.get("web")!.pvcs;
     const tpmPvc = pvcs.find((p) => p.metadata?.name === "seed-web-tpm-identity");
-    assert.ok(tpmPvc, "TPM identity PVC should exist");
-    assert.equal(tpmPvc!.spec?.resources?.requests?.storage, "10Mi");
+    assert.equal(tpmPvc, undefined, "TPM identity PVC should not exist");
   });
 
   it("generates SeedHostTask when swtpm enabled", () => {

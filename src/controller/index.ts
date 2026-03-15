@@ -165,11 +165,6 @@ export function renderDesiredState(
       pvcs.push(generatePVC(name, key, entry.size, generation, namespace));
     }
 
-    // TPM identity PVC
-    if (swtpmEnabled) {
-      pvcs.push(generatePVC(name, "tpm-identity", "10Mi", generation, namespace));
-    }
-
     const hostTask = swtpmEnabled
       ? generateHostTask(name, namespace, generation)
       : null;

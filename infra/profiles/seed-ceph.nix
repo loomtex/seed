@@ -12,6 +12,8 @@ let
   osdId = nodeCeph.osdId;
   osdDevice = nodeCeph.osdDevice;
   ceph = pkgs.ceph;
+  # Colon-separated MON addresses for kernel CephFS mount
+  monAddrsKernel = builtins.replaceStrings [","] [":"] clusterCeph.monHost;
 in {
   services.ceph = {
     enable = true;
@@ -42,6 +44,10 @@ in {
     osd = {
       enable = true;
       daemons = [ osdId ];
+    };
+    mds = {
+      enable = true;
+      daemons = [ hostname ];
     };
   };
 
@@ -209,6 +215,102 @@ in {
     '';
     path = with pkgs; [ util-linux lvm2 cryptsetup coreutils gnugrep ];
   };
+
+  # 4. Bootstrap MDS: create keyring (needs running mon + quorum)
+  systemd.services."ceph-bootstrap-mds" = {
+    description = "Bootstrap Ceph MDS for ${hostname}";
+    wantedBy = [ "ceph-mds-${hostname}.service" ];
+    before = [ "ceph-mds-${hostname}.service" ];
+    after = [ "ceph-mon-${hostname}.service" ];
+    requires = [ "ceph-mon-${hostname}.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    unitConfig.ConditionPathExists = "!/var/lib/ceph/mds/ceph-${hostname}/keyring";
+    script = let
+      adminKeyring = config.sops.templates."ceph-admin-keyring".path;
+      mdsDir = "/var/lib/ceph/mds/ceph-${hostname}";
+    in ''
+      set -euo pipefail
+
+      # Wait for mon to be in quorum
+      for i in $(seq 1 60); do
+        if ${ceph.out}/bin/ceph -k ${adminKeyring} mon stat 2>/dev/null | grep -q "quorum"; then
+          break
+        fi
+        echo "Waiting for mon quorum... ($i/60)"
+        sleep 2
+      done
+
+      install -d -o ceph -g ceph ${mdsDir}
+      ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-or-create \
+        mds.${hostname} \
+        mon 'profile mds' \
+        osd 'allow *' \
+        mds 'allow' \
+        -o ${mdsDir}/keyring
+      chown -R ceph:ceph ${mdsDir}
+    '';
+    path = with pkgs; [ coreutils gnugrep ];
+  };
+
+  # 5. Bootstrap CephFS: create pools, filesystem, client auth, and mount
+  systemd.services."ceph-bootstrap-cephfs" = {
+    description = "Bootstrap CephFS filesystem and mount";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "ceph-mds-${hostname}.service" ];
+    wants = [ "ceph-mds-${hostname}.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = let
+      adminKeyring = config.sops.templates."ceph-admin-keyring".path;
+    in ''
+      set -euo pipefail
+
+      # Wait for mon quorum
+      for i in $(seq 1 60); do
+        if ${ceph.out}/bin/ceph -k ${adminKeyring} mon stat 2>/dev/null | grep -q "quorum"; then
+          break
+        fi
+        echo "Waiting for mon quorum... ($i/60)"
+        sleep 2
+      done
+
+      # Create pools (idempotent — osd pool create is a no-op if exists)
+      ${ceph.out}/bin/ceph -k ${adminKeyring} osd pool create cephfs-metadata 16 || true
+      ${ceph.out}/bin/ceph -k ${adminKeyring} osd pool create cephfs-data 32 || true
+      ${ceph.out}/bin/ceph -k ${adminKeyring} osd pool application enable cephfs-metadata cephfs || true
+      ${ceph.out}/bin/ceph -k ${adminKeyring} osd pool application enable cephfs-data cephfs || true
+
+      # Create filesystem (idempotent)
+      ${ceph.out}/bin/ceph -k ${adminKeyring} fs new seed-fs cephfs-metadata cephfs-data 2>/dev/null || true
+
+      # Create/update client auth for host mount
+      ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-or-create client.cephfs \
+        mon 'allow r' \
+        osd 'allow rw pool=cephfs-metadata, allow rw pool=cephfs-data' \
+        mds 'allow rw'
+
+      # Extract secret for kernel mount
+      mkdir -p /run/ceph
+      ${ceph.out}/bin/ceph -k ${adminKeyring} auth get-key client.cephfs > /run/ceph/cephfs.secret
+      chmod 600 /run/ceph/cephfs.secret
+
+      # Mount CephFS (idempotent)
+      mkdir -p /var/lib/seed-controller/tpm
+      if ! mountpoint -q /var/lib/seed-controller/tpm; then
+        mount -t ceph ${monAddrsKernel}:/ /var/lib/seed-controller/tpm \
+          -o name=cephfs,secretfile=/run/ceph/cephfs.secret,fs=seed-fs
+      fi
+    '';
+    path = with pkgs; [ coreutils gnugrep util-linux ];
+  };
+
+  # CephFS kernel client module
+  boot.kernelModules = [ "ceph" ];
 
   # --- Secrets ---
 

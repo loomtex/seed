@@ -156,20 +156,21 @@ describe("generateDeployment", () => {
     );
   });
 
-  it("adds TPM identity volume when TPM socket provided", () => {
+  it("adds TPM volume as hostPath when TPM socket provided", () => {
     const meta = makeMeta();
     const socketPath = "/run/swtpm/s-gaydazldmnsg-web/swtpm-sock";
     const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
 
     const tmpl = dep.spec?.template?.spec;
-    const tpmVol = tmpl?.volumes?.find((v) => v.name === "tpm-identity");
-    assert.ok(tpmVol, "tpm-identity volume should exist");
-    assert.equal(tpmVol?.persistentVolumeClaim?.claimName, "seed-web-tpm-identity");
+    const tpmVol = tmpl?.volumes?.find((v) => v.name === "tpm");
+    assert.ok(tpmVol, "tpm volume should exist");
+    assert.equal(tpmVol?.hostPath?.path, `/var/lib/seed-controller/tpm/${ns}-web`);
+    assert.equal(tpmVol?.hostPath?.type, "DirectoryOrCreate");
 
     const tpmMount = tmpl?.containers[0].volumeMounts?.find(
-      (m) => m.name === "tpm-identity",
+      (m) => m.name === "tpm",
     );
-    assert.ok(tpmMount, "tpm-identity mount should exist");
+    assert.ok(tpmMount, "tpm mount should exist");
     assert.equal(tpmMount?.mountPath, "/seed/tpm");
   });
 
@@ -230,7 +231,7 @@ describe("generateDeployment", () => {
     assert.equal(tmpl?.containers[0].volumeMounts?.length, 2);
 
     const volNames = tmpl?.volumes?.map((v) => v.name).sort();
-    assert.deepEqual(volNames, ["data", "tpm-identity"]);
+    assert.deepEqual(volNames, ["data", "tpm"]);
   });
 });
 
