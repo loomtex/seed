@@ -26,9 +26,10 @@ let
     (builtins.readFile "${pkgs.kata-runtime}/share/defaults/kata-containers/${hypervisorConfigFile}");
 
   # MetalLB: bare-metal LoadBalancer implementation (L2/BGP)
+  # Using FRR mode for IPv6 BGP support (native mode only supports IPv4 BGP)
   metallbManifest = pkgs.fetchurl {
-    url = "https://raw.githubusercontent.com/metallb/metallb/v0.15.3/config/manifests/metallb-native.yaml";
-    hash = "sha256-hLThAvK2X11pCF9YFsKTYrdGQYc9isPemW5fhqghkXY=";
+    url = "https://raw.githubusercontent.com/metallb/metallb/v0.15.3/config/manifests/metallb-frr.yaml";
+    hash = "sha256-WgxErUBZ6ZEtivCxL7A11Hp1YZ6RNzf1onWWIOerV2k=";
   };
 
   runtimeClassManifest = pkgs.writeText "seed-kata-runtime-class.yaml" ''
