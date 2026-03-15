@@ -75,11 +75,11 @@
           time.timeZone = cluster.timeZone;
         }
         # Static node IPs from cluster inventory
-        (lib.mkIf ((node.ipv6 or "") != "") {
-          seed.k3s.nodeIp = "${node.vpcIp},${node.ipv6}";
-          seed.k3s.nodeExternalIp = "${node.publicIp},${node.ipv6}";
+        (lib.mkIf ((node.vpcIpv6 or "") != "") {
+          seed.k3s.nodeIp = "${node.vpcIp},${node.vpcIpv6}";
+          seed.k3s.nodeExternalIp = "${node.publicIp},${node.publicIpv6}";
         })
-        (lib.mkIf ((node.ipv6 or "") == "" && (node.publicIp or "") != "") {
+        (lib.mkIf ((node.vpcIpv6 or "") == "" && (node.publicIp or "") != "") {
           seed.k3s.nodeIp = node.vpcIp;
           seed.k3s.nodeExternalIp = node.publicIp;
         })

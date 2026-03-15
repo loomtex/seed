@@ -19,6 +19,12 @@ in {
     description = "Static IPv4 address for the Vultr VPC interface. Auto-resolved from data/vpc.nix by hostname.";
   };
 
+  options.seed.vpcIpv6 = lib.mkOption {
+    type = lib.types.nullOr lib.types.str;
+    default = if myEntry != null then myEntry.ipv6 or null else null;
+    description = "ULA IPv6 address for the VPC interface. Used for dual-stack k3s so cluster traffic stays on VPC.";
+  };
+
   options.seed.vpcPublicNic = lib.mkOption {
     type = lib.types.str;
     default = if myEntry != null then myEntry.publicNic or "enp1s0f0" else "enp1s0f0";
@@ -58,9 +64,12 @@ in {
           [ -d "/sys/class/net/$name/device" ] || continue
 
           ip addr add ${cfg.vpcAddress}/24 dev "$name" 2>/dev/null || true
+          ${lib.optionalString (cfg.vpcIpv6 != null) ''
+            ip -6 addr add ${cfg.vpcIpv6}/64 dev "$name" 2>/dev/null || true
+          ''}
           ip link set dev "$name" mtu 1450
           ip link set dev "$name" up
-          echo "Configured VPC: $name = ${cfg.vpcAddress}/24 (mtu 1450)"
+          echo "Configured VPC: $name = ${cfg.vpcAddress}/24${lib.optionalString (cfg.vpcIpv6 != null) " + ${cfg.vpcIpv6}/64"} (mtu 1450)"
           exit 0
         done
 
@@ -74,7 +83,8 @@ in {
     # Uses systemd-networkd match: any enp* device except the primary NIC.
     boot.initrd.systemd.network.networks."20-vpc" = {
       matchConfig.Name = "enp* !${cfg.vpcPublicNic}";
-      address = [ "${cfg.vpcAddress}/24" ];
+      address = [ "${cfg.vpcAddress}/24" ]
+        ++ lib.optionals (cfg.vpcIpv6 != null) [ "${cfg.vpcIpv6}/64" ];
       linkConfig.MTUBytes = "1450";
       networkConfig.DHCP = "no";
     };

@@ -30,22 +30,27 @@
         type = "bm";
         plan = "vbm-6c-32gb";
         vpcIp = "10.0.0.10";
+        vpcIpv6 = "fd00::10";  # ULA on VPC interface — internal cluster traffic
         publicIp = "96.30.205.16";
-        ipv6 = "2001:19f0:5401:05cd:3eec:efff:feb9:888e";
+        publicIpv6 = "2001:19f0:5401:05cd:3eec:efff:feb9:888e";
         clusterInit = true;
         controller = true;
         ceph = { osdId = "0"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; };
       };
       seed-atl1-2 = {
-        type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.11";
+        type = "bm"; plan = "vbm-6c-32gb";
+        vpcIp = "10.0.0.11";
+        vpcIpv6 = "fd00::11";
         publicIp = "144.202.24.202";
-        ipv6 = "2001:19f0:5400:14fc:3eec:efff:feb9:ef16";
+        publicIpv6 = "2001:19f0:5400:14fc:3eec:efff:feb9:ef16";
         ceph = { osdId = "1"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; };
       };
       seed-atl1-3 = {
-        type = "bm"; plan = "vbm-6c-32gb"; vpcIp = "10.0.0.12";
+        type = "bm"; plan = "vbm-6c-32gb";
+        vpcIp = "10.0.0.12";
+        vpcIpv6 = "fd00::12";
         publicIp = "155.138.232.75";
-        ipv6 = "2001:19f0:5400:2052:3eec:efff:feb9:897e";
+        publicIpv6 = "2001:19f0:5400:2052:3eec:efff:feb9:897e";
         ceph = { osdId = "2"; osdDevice = "/dev/disk/by-path/pci-0000:00:17.0-ata-4"; };
       };
     };

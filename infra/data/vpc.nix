@@ -3,11 +3,12 @@
 # Add new machines here — the seed-vpc.nix profile handles the rest.
 {
   subnet = "10.0.0.0/24";
+  ipv6Prefix = "fd00::/64";  # ULA range on VPC interface for dual-stack k3s
   hosts = {
     "stake"          = { ip = "10.0.0.2"; publicNic = "enp1s0"; };   # VM: virtio NIC
     "puncher-atl1-1" = { ip = "10.0.0.1"; publicNic = "enp1s0"; };  # VM: virtio NIC
-    "seed-atl1-1"    = { ip = "10.0.0.10"; };  # BM: default publicNic = enp1s0f0
-    "seed-atl1-2"    = { ip = "10.0.0.11"; };
-    "seed-atl1-3"    = { ip = "10.0.0.12"; };
+    "seed-atl1-1"    = { ip = "10.0.0.10"; ipv6 = "fd00::10"; };  # BM: default publicNic = enp1s0f0
+    "seed-atl1-2"    = { ip = "10.0.0.11"; ipv6 = "fd00::11"; };
+    "seed-atl1-3"    = { ip = "10.0.0.12"; ipv6 = "fd00::12"; };
   };
 }
