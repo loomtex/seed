@@ -15,6 +15,7 @@
 #   reserve-ipv6 <region>              Reserve an IPv6 /64 block
 #   attach-reserved-ip <ip-id> <instance-id>  Attach reserved IP to instance
 #   list-reserved-ips                  List all reserved IPs
+#   reinstall-bm <id> <script-id>      Reinstall BM with iPXE (forces PXE boot)
 
 VULTR_API="https://api.vultr.com/v2"
 
@@ -164,6 +165,20 @@ case "${1:-help}" in
     vultr "$VULTR_API/reserved-ips?per_page=500" | jq '.reserved_ips[] | {id, region, ip_type, subnet, subnet_size, instance_id, label}'
     ;;
 
+  reinstall-bm)
+    ID="${2:?bm-id required}"
+    SCRIPT_ID="${3:-}"
+    BODY="{\"os_id\":159"
+    if [ -n "$SCRIPT_ID" ]; then
+      BODY="$BODY,\"script_id\":\"$SCRIPT_ID\""
+    fi
+    BODY="$BODY}"
+    vultr -X POST "$VULTR_API/bare-metals/$ID/reinstall" \
+      -H "Content-Type: application/json" \
+      -d "$BODY" | jq .
+    echo "Reinstalling BM $ID with iPXE (os_id=159)"
+    ;;
+
   help|*)
     echo "Usage: seed-vultr <command> [args...]"
     echo ""
@@ -181,6 +196,7 @@ case "${1:-help}" in
     echo "  reserve-ipv6 <region>"
     echo "  attach-reserved-ip <reserved-ip-id> <instance-id>"
     echo "  list-reserved-ips"
+    echo "  reinstall-bm <id> [script-id]"
     echo ""
     echo "Environment: VULTR_API_KEY or VULTR_API_KEY_FILE"
     ;;

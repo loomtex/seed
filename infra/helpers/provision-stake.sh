@@ -194,6 +194,8 @@ log "S3 binary cache configured in installer (pull + push)"
 log "Phase 4: Swapping nix store overlay to disk..."
 remote_ssh root "$STAKE_IP" '
   set -euo pipefail
+
+  # Format disk and prepare overlay directories
   umount -f /dev/vda 2>/dev/null || true
   umount -f /mnt/disk 2>/dev/null || true
   mkfs.ext4 -q -F /dev/vda
@@ -201,19 +203,20 @@ remote_ssh root "$STAKE_IP" '
   mount /dev/vda /mnt/disk
   mkdir -p /mnt/disk/nix-upper /mnt/disk/nix-work
 
-  LOWER=/nix/.ro-store
-  UPPER=/nix/.rw-store/store
-
-  if [ -d "$UPPER" ]; then
-    echo "Copying overlay upper to disk..."
-    cp -a "$UPPER"/. /mnt/disk/nix-upper/ 2>/dev/null || true
-  fi
-
   systemctl stop nix-daemon.socket nix-daemon.service
-  umount -l /nix/store
+
+  # Mount disk-backed overlay on top of /nix/store.
+  # Use /nix/.ro-store as lower dir — this is the accessible squashfs mount.
+  # Do NOT use the path from `mount` output (/mnt-root/nix/.ro-store) — those
+  # paths are stale after pivot_root (kernel cached inodes, but userspace can't
+  # resolve them for new mounts).
+  # The tmpfs upper has minimal content in a fresh kexec env — no need to copy.
+  # Stacking (new overlay on top of old) is harmless: nix-daemon uses the
+  # topmost mount for all reads and writes.
   mount -t overlay overlay \
-    -o "lowerdir=$LOWER,upperdir=/mnt/disk/nix-upper,workdir=/mnt/disk/nix-work" \
+    -o "lowerdir=/nix/.ro-store,upperdir=/mnt/disk/nix-upper,workdir=/mnt/disk/nix-work" \
     /nix/store
+
   systemctl start nix-daemon.socket
 
   # Use disk for nix build sandboxes (Go builds like k3s exhaust tmpfs)
@@ -256,7 +259,12 @@ remote_ssh root "$STAKE_IP" "
   echo 'nameserver 1.1.1.1' > /etc/resolv.conf
   echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
 
-  # Restart nix-daemon with fixed DNS
+  # Activation overwrites /etc/nix/nix.conf from NixOS config (no post-build-hook
+  # since stake doesn't use sops). Append it to the system nix.conf so the daemon
+  # signs + pushes every build to S3. The signing key and hook script are from Phase 3.
+  echo 'post-build-hook = /root/upload-to-cache.sh' >> /etc/nix/nix.conf
+
+  # Restart nix-daemon with fixed DNS + post-build-hook
   systemctl restart nix-daemon.socket nix-daemon.service || true
 
   # Install setuid/setgid wrappers (sudo, su)
@@ -284,6 +292,10 @@ sleep 3
 wait_for_ssh "$STAKE_IP" ada 60
 
 remote_ssh ada "$STAKE_IP" "
+  # Phase 5's sshd restart may have dropped the root session, so re-inject
+  # credentials via ada (NOPASSWD sudo). The signing key and hook script
+  # from Phase 3 survive activation (they're in /root/, not /etc/), but
+  # re-write them to be safe.
   sudo mkdir -p /root/.aws
   sudo tee /root/.aws/credentials > /dev/null << 'AWSEOF'
 [default]
@@ -312,12 +324,6 @@ HOOKEOF
   # Inject env vars into nix-daemon
   sudo systemctl set-environment AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials
   sudo systemctl set-environment AWS_EC2_METADATA_DISABLED=true
-
-  # Add post-build-hook to nix config
-  sudo mkdir -p /root/.config/nix
-  sudo tee /root/.config/nix/nix.conf > /dev/null << 'NIXEOF'
-post-build-hook = /root/upload-to-cache.sh
-NIXEOF
 
   sudo systemctl restart nix-daemon.socket nix-daemon.service
 "

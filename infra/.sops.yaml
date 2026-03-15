@@ -1,9 +1,9 @@
 keys:
   - &admin_josh 2EE325D71601671696EBF687E45953D34C8829ED
   - &ada_age age1ujjm7feyd3p2e0qtfa6zr2rzf593yd2z0xjn0ytvd8jcje68nansxy4zuu
-  - &seed_atl1_1_age age15qrgp59tesw5mjjugrnq096fwdkt3wx7szazuauy5wn7cql8fffsx8hu54
-  - &seed_atl1_2_age age1n5x4rwnefx433nqs9ld72z0947wa6t4zyh80s7ypga7wtrsjfe3qwsvepa
-  - &seed_atl1_3_age age1maf9p3nxzmsc05u44czxc5g38j8du68tuv9xnazlzr79vmc7fv0s6udkvf
+  - &seed_atl1_1_age age1nachhe6fxyqj8wzzypxg7lh8utg2pdn7mrg5jty77keunemcau8q0pxnhx
+  - &seed_atl1_2_age age1ggj5uuyt5x0vrt4fmcu8lnt0f3qzqkxjm8qpqrplckvpz2s2ugdquuzn78
+  - &seed_atl1_3_age age1uzcjxhj5jnu0r5h0q8cqf7rj4tzdcp5zs6xk4rv0257n32pfxvysj7lvm3
   - &seed_tang_1_age age1s3qkxjd29dd6mvttvruf6mpzue2lun3qmyfnycgk8t6c7ftz7vpqa87flk
   - &stake_age age1uzdjpvu5ftf5um2veavl85r2hht89afk2l3sajxj3ehc7wa9ya5s9fqlrh
   - &puncher_atl1_1_age age1kazl566j80pl3eshzqv9c0wyq843g8ep7vt27su03e4jg6eg64gqv6qnwl
@@ -22,6 +22,7 @@ creation_rules:
           - *admin_josh
         age:
           - *seed_atl1_1_age
+          - *ada_age
 
   - path_regex: secrets/seed-atl1-2\.yaml$
     key_groups:
@@ -29,6 +30,7 @@ creation_rules:
           - *admin_josh
         age:
           - *seed_atl1_2_age
+          - *ada_age
 
   - path_regex: secrets/seed-atl1-3\.yaml$
     key_groups:
@@ -36,6 +38,7 @@ creation_rules:
           - *admin_josh
         age:
           - *seed_atl1_3_age
+          - *ada_age
 
   - path_regex: secrets/seed-tang-1\.yaml$
     key_groups:

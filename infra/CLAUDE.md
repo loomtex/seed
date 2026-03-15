@@ -83,6 +83,12 @@ infra/
   - `ssh seed-atl1-1`, `ssh stake`, etc. (configured in ~/.ssh/config)
 - **sops**: ada's age key at `~/.config/sops/age/keys.txt`
   - Josh's PGP key is the other recipient for all secrets
+  - **IMPORTANT**: `infra/.sops.yaml` is separate from the root `.sops.yaml`.
+    sops picks up config based on working directory. Always run sops commands
+    from `infra/` (or use `cd infra && sops ...`) so the infra creation rules
+    match. Running from the repo root uses the seed instance `.sops.yaml`
+    instead, which has different rules and will fail with "no matching
+    creation rules found".
 - **S3 cache**: credentials in sops template, deployed via seed-cache.nix profile
 
 ## Helper Scripts

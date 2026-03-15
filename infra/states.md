@@ -210,6 +210,10 @@ absent → created
          Prefer VPC at creation. Hot-attach works for BMs (verified):
          NIC gets carrier, but only has link-local IP. Must manually
          assign 10.0.0.x/24 for VPC connectivity. Tang reachable.
+         IMPORTANT: Vultr BMs only PXE boot ONCE after provisioning.
+         A normal reboot boots from disk, not PXE. To force PXE boot
+         again, use the Vultr "reinstall" API with the iPXE script:
+           vultr.sh reinstall-bm <id> 159 <script-id>
 
 created → phone-homed
   needs: BM boots into installer, gets DHCP, runs phone-home service
@@ -245,18 +249,39 @@ keys-enrolled → nixos-installed
     Phase 2: Configure S3 binary cache + swap overlay to disk
       SSH to root@<ip>, then:
       a. Swap nix store overlay from tmpfs to disk:
-         mkfs.ext4 -F /dev/sda
-         mount /dev/sda /mnt/disk
-         mkdir -p /mnt/disk/upper /mnt/disk/work
-         cp -a /nix/.rw-store/upper/* /mnt/disk/upper/ (if exists)
-         Stop nix-daemon, lazy unmount /nix/store, remount with disk upper:
+         Use the Ceph OSD disk (ata-4) for the overlay, NOT the OS disk (ata-5).
+         Disko formats ata-5 — using ata-4 avoids destroying the nix store during disko.
+         Device names (sda/sdb) are non-deterministic; use by-path to identify:
+           ls -la /dev/disk/by-path/ | grep ata   # find ata-4 → /dev/sdX
+         Then:
+           OVERLAY_DISK=/dev/disk/by-path/pci-0000:00:17.0-ata-4  # Ceph OSD disk
+           mkfs.ext4 -F $OVERLAY_DISK
+           mkdir -p /mnt/disk
+           mount $OVERLAY_DISK /mnt/disk
+           mkdir -p /mnt/disk/upper /mnt/disk/work
            systemctl stop nix-daemon.socket nix-daemon.service
-           umount -l /nix/store
            mount -t overlay overlay \
-             -o lowerdir=/nix/.ro-store,upperdir=/mnt/disk/upper,workdir=/mnt/disk/work \
+             -o 'lowerdir=/nix/.ro-store,upperdir=/mnt/disk/upper,workdir=/mnt/disk/work' \
              /nix/store
-         This prevents tmpfs overflow (16GB) when building kata-guest-kernel.
-         Disko will reformat sda later — this is a temporary overlay.
+           systemctl start nix-daemon.socket
+
+         IMPORTANT: Use `/nix/.ro-store` as the lower dir, NOT the path shown
+         in `mount` output (`/mnt-root/nix/.ro-store`). The `/mnt-root/...`
+         paths are stale after pivot_root — the kernel overlay driver cached
+         those inodes internally, but they're no longer resolvable for new
+         mounts. `/nix/.ro-store` is the accessible squashfs mount.
+
+         The kexec overlay's tmpfs upper (`/nix/.rw-store/store`) has minimal
+         content in a fresh kexec environment — no need to copy it. The new
+         overlay stacks on top with the disk-backed upper. nix-daemon (restarted
+         after mount) uses the topmost mount for all operations.
+
+         Do NOT use `umount -l /nix/store` — lazy unmount creates a detached
+         mount that persists. Just mount the new overlay on top; the stacking
+         is harmless since nix-daemon only uses the topmost mount.
+
+         This prevents tmpfs overflow (16GB) when building large derivations.
+         Ceph bootstrap will reformat ata-4 later — this is a temporary overlay.
       b. Write /root/.aws/credentials:
          [default]
          aws_access_key_id = <from seed-system-atl1.yaml>
