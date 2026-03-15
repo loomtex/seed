@@ -123,19 +123,39 @@ export async function applyResource(
 
   try {
     switch (kind) {
-      case "Service":
+      case "Service": {
+        let existing: k8s.V1Service | null = null;
         try {
-          const existing = await core.readNamespacedService({ name, namespace });
-          // Preserve clusterIP on update
+          existing = await core.readNamespacedService({ name, namespace });
+        } catch {
+          // Not found — will create below
+        }
+
+        if (existing) {
           const svc = manifest as k8s.V1Service;
-          if (existing.spec?.clusterIP) {
-            svc.spec = svc.spec || {};
-            svc.spec.clusterIP = existing.spec.clusterIP;
+          svc.metadata = svc.metadata || {};
+          svc.spec = svc.spec || {};
+          // Preserve server-assigned fields to avoid replace → generation bump → watch loop
+          svc.metadata.resourceVersion = existing.metadata?.resourceVersion;
+          if (existing.spec?.clusterIP) svc.spec.clusterIP = existing.spec.clusterIP;
+          if (existing.spec?.clusterIPs) svc.spec.clusterIPs = existing.spec.clusterIPs;
+          // Preserve nodePort assignments (matched by port name)
+          if (existing.spec?.ports && svc.spec.ports) {
+            const existingPorts = new Map(
+              existing.spec.ports.map((p) => [p.name ?? `${p.port}/${p.protocol}`, p.nodePort]),
+            );
+            for (const p of svc.spec.ports) {
+              const key = p.name ?? `${p.port}/${p.protocol}`;
+              const np = existingPorts.get(key);
+              if (np !== undefined) p.nodePort = np;
+            }
           }
           await core.replaceNamespacedService({ name, namespace, body: svc });
-        } catch {
+        } else {
           await core.createNamespacedService({ namespace, body: manifest as k8s.V1Service });
         }
+        break;
+      }
         break;
       case "PersistentVolumeClaim":
         try {
