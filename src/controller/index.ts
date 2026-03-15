@@ -15,7 +15,7 @@ import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } f
 import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, BuildResult } from "../shared/types.js";
 import { generateDeployment, generatePVC, generateService, generateHostTask } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
-import { configureMetalLB } from "./metallb.js";
+import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
@@ -923,7 +923,7 @@ async function main(): Promise<void> {
 
   // Configure MetalLB pools (once at startup)
   try {
-    await configureMetalLB(clients, config.ipv4Address, config.ipv6Block);
+    await configureMetalLB(clients, config.ipv4Address, config.ipv6Block, readBGPConfig());
   } catch (err) {
     log("controller", `MetalLB configuration failed: ${err}`);
   }

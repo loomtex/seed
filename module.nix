@@ -152,6 +152,7 @@ in {
   config = lib.mkIf cfg.enable {
     # k3s cluster communication ports
     networking.firewall.allowedTCPPorts = lib.mkIf (cfg.role == "server") [
+      179   # BGP (MetalLB speaker ↔ upstream router)
       2379  # etcd client
       2380  # etcd peer
       7946  # MetalLB memberlist (speaker gossip)

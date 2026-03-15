@@ -1,17 +1,46 @@
-// MetalLB IPAddressPool + L2Advertisement configuration.
+// MetalLB IPAddressPool + BGP/L2 advertisement configuration.
 
 import type { KubeClients } from "../shared/kube.js";
 import { log, waitFor } from "../shared/kube.js";
 
 const CRD_GROUP = "metallb.io";
 const CRD_VERSION = "v1beta1";
+const CRD_VERSION_V2 = "v1beta2";
 const METALLB_NAMESPACE = "metallb-system";
 
-/** Configure MetalLB address pools from IPv4/IPv6 addresses. */
+interface BGPConfig {
+  myASN: number;
+  peerASN: number;
+  peerAddress: string;
+  peerAddressIPv6: string;
+  password: string;
+  sourceAddress: string;
+  sourceAddressIPv6: string;
+}
+
+/** Read BGP config from env vars. Returns null if BGP is not configured. */
+export function readBGPConfig(): BGPConfig | null {
+  const myASN = process.env["SEED_BGP_MY_ASN"];
+  const peerASN = process.env["SEED_BGP_PEER_ASN"];
+  if (!myASN || !peerASN) return null;
+
+  return {
+    myASN: parseInt(myASN, 10),
+    peerASN: parseInt(peerASN, 10),
+    peerAddress: process.env["SEED_BGP_PEER_ADDRESS"] || "169.254.169.254",
+    peerAddressIPv6: process.env["SEED_BGP_PEER_ADDRESS_IPV6"] || "2001:19f0:ffff::1",
+    password: process.env["SEED_BGP_PASSWORD"] || "",
+    sourceAddress: process.env["SEED_BGP_SOURCE_ADDRESS"] || "",
+    sourceAddressIPv6: process.env["SEED_BGP_SOURCE_ADDRESS_IPV6"] || "",
+  };
+}
+
+/** Configure MetalLB address pools and advertisements. */
 export async function configureMetalLB(
   clients: KubeClients,
   ipv4Address: string,
   ipv6Block: string,
+  bgp: BGPConfig | null,
 ): Promise<void> {
   if (!ipv4Address && !ipv6Block) return;
 
@@ -80,7 +109,124 @@ export async function configureMetalLB(
     pool,
   );
 
-  // Apply L2Advertisement
+  if (bgp) {
+    await configureBGP(clients, bgp, ipv4Address, ipv6Block);
+  } else {
+    await configureL2(clients);
+  }
+
+  log("metallb", "pool configuration complete");
+}
+
+/** Configure BGP peering and advertisements. */
+async function configureBGP(
+  clients: KubeClients,
+  bgp: BGPConfig,
+  ipv4Address: string,
+  ipv6Block: string,
+): Promise<void> {
+  log("metallb", `configuring BGP: myASN=${bgp.myASN} peerASN=${bgp.peerASN}`);
+
+  // IPv4 BGP peer
+  if (ipv4Address) {
+    const peer4: Record<string, unknown> = {
+      apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
+      kind: "BGPPeer",
+      metadata: {
+        name: "seed-bgp-ipv4",
+        namespace: METALLB_NAMESPACE,
+      },
+      spec: {
+        myASN: bgp.myASN,
+        peerASN: bgp.peerASN,
+        peerAddress: bgp.peerAddress,
+        ebgpMultiHop: true,
+        ...(bgp.password ? { password: bgp.password } : {}),
+        ...(bgp.sourceAddress ? { sourceAddress: bgp.sourceAddress } : {}),
+      },
+    };
+
+    await applyCustomResource(
+      clients.custom,
+      CRD_GROUP,
+      CRD_VERSION_V2,
+      METALLB_NAMESPACE,
+      "bgppeers",
+      "seed-bgp-ipv4",
+      peer4,
+    );
+  }
+
+  // IPv6 BGP peer
+  if (ipv6Block) {
+    const peer6: Record<string, unknown> = {
+      apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
+      kind: "BGPPeer",
+      metadata: {
+        name: "seed-bgp-ipv6",
+        namespace: METALLB_NAMESPACE,
+      },
+      spec: {
+        myASN: bgp.myASN,
+        peerASN: bgp.peerASN,
+        peerAddress: bgp.peerAddressIPv6,
+        ebgpMultiHop: true,
+        ...(bgp.password ? { password: bgp.password } : {}),
+        ...(bgp.sourceAddressIPv6 ? { sourceAddress: bgp.sourceAddressIPv6 } : {}),
+      },
+    };
+
+    await applyCustomResource(
+      clients.custom,
+      CRD_GROUP,
+      CRD_VERSION_V2,
+      METALLB_NAMESPACE,
+      "bgppeers",
+      "seed-bgp-ipv6",
+      peer6,
+    );
+  }
+
+  // BGP advertisement for the pool
+  const advert = {
+    apiVersion: `${CRD_GROUP}/${CRD_VERSION}`,
+    kind: "BGPAdvertisement",
+    metadata: {
+      name: "seed-bgp",
+      namespace: METALLB_NAMESPACE,
+    },
+    spec: {
+      ipAddressPools: ["seed-pool"],
+    },
+  };
+
+  await applyCustomResource(
+    clients.custom,
+    CRD_GROUP,
+    CRD_VERSION,
+    METALLB_NAMESPACE,
+    "bgpadvertisements",
+    "seed-bgp",
+    advert,
+  );
+
+  // Clean up old L2 advertisement if it exists
+  try {
+    await clients.custom.deleteNamespacedCustomObject({
+      group: CRD_GROUP,
+      version: CRD_VERSION,
+      namespace: METALLB_NAMESPACE,
+      plural: "l2advertisements",
+      name: "seed-l2",
+    });
+    log("metallb", "removed old L2 advertisement");
+  } catch {
+    // Doesn't exist, that's fine
+  }
+}
+
+/** Configure L2 advertisement (fallback when BGP is not configured). */
+async function configureL2(clients: KubeClients): Promise<void> {
   const l2 = {
     apiVersion: `${CRD_GROUP}/${CRD_VERSION}`,
     kind: "L2Advertisement",
@@ -102,8 +248,6 @@ export async function configureMetalLB(
     "seed-l2",
     l2,
   );
-
-  log("metallb", "pool configuration complete");
 }
 
 /** Create-or-update a custom resource. */

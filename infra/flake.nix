@@ -101,6 +101,14 @@
             poolSize = 4;
             image = "${seed.packages.${system}.poolManagerImage}";
           };
+          seed.controller.bgp = {
+            enable = true;
+            myASN = cluster.bgp.myASN;
+            peerASN = cluster.bgp.peerASN;
+            password = cluster.bgp.password;
+            sourceAddress = node.publicIp;
+            sourceAddressIPv6 = node.publicIpv6 or "";
+          };
         }
       ];
     };

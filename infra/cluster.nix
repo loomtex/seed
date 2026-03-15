@@ -9,6 +9,12 @@
     reservedIpv4 = "96.30.193.227";
     reservedIpv6 = "2001:19f0:5400:20a7::/64";
 
+    bgp = {
+      myASN = 4288000272;     # Vultr-assigned account ASN
+      peerASN = 64515;        # Vultr infrastructure ASN
+      password = "V6kyAKcCav5byJ08";
+    };
+
     ceph.fsid = "58ec6b96-5df6-49f2-86c3-182501b0602d";
 
     stake = {

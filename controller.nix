@@ -216,6 +216,16 @@ let
               name = "SEED_IPV4_ADDRESS"; value = cfg.ipv4Address;
             } ++ lib.optional (cfg.ipv6Block != "") {
               name = "SEED_IPV6_BLOCK"; value = cfg.ipv6Block;
+            } ++ lib.optionals cfg.bgp.enable [
+              { name = "SEED_BGP_MY_ASN"; value = toString cfg.bgp.myASN; }
+              { name = "SEED_BGP_PEER_ASN"; value = toString cfg.bgp.peerASN; }
+              { name = "SEED_BGP_PEER_ADDRESS"; value = cfg.bgp.peerAddress; }
+              { name = "SEED_BGP_PEER_ADDRESS_IPV6"; value = cfg.bgp.peerAddressIPv6; }
+              { name = "SEED_BGP_PASSWORD"; value = cfg.bgp.password; }
+            ] ++ lib.optional (cfg.bgp.enable && cfg.bgp.sourceAddress != "") {
+              name = "SEED_BGP_SOURCE_ADDRESS"; value = cfg.bgp.sourceAddress;
+            } ++ lib.optional (cfg.bgp.enable && cfg.bgp.sourceAddressIPv6 != "") {
+              name = "SEED_BGP_SOURCE_ADDRESS_IPV6"; value = cfg.bgp.sourceAddressIPv6;
             } ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
             } ++ lib.optional cfg.poolManager.enable {
@@ -414,6 +424,51 @@ in {
       type = lib.types.str;
       default = "";
       description = "Reserved IPv6 /64 block for public LoadBalancer services (e.g. 2001:db8::/64).";
+    };
+
+    bgp = {
+      enable = lib.mkEnableOption "BGP peering with upstream router (e.g. Vultr) for reserved IP announcement";
+
+      myASN = lib.mkOption {
+        type = lib.types.int;
+        default = 64512;
+        description = "Local (cluster-side) BGP ASN. Use a private ASN unless you have your own.";
+      };
+
+      peerASN = lib.mkOption {
+        type = lib.types.int;
+        description = "Upstream router BGP ASN (e.g. Vultr account ASN).";
+      };
+
+      peerAddress = lib.mkOption {
+        type = lib.types.str;
+        default = "169.254.169.254";
+        description = "IPv4 BGP peer address (upstream router).";
+      };
+
+      peerAddressIPv6 = lib.mkOption {
+        type = lib.types.str;
+        default = "2001:19f0:ffff::1";
+        description = "IPv6 BGP peer address (upstream router).";
+      };
+
+      password = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "BGP TCP MD5 authentication password.";
+      };
+
+      sourceAddress = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Source IPv4 address for BGP peering (node's public IP).";
+      };
+
+      sourceAddressIPv6 = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Source IPv6 address for BGP peering (node's SLAAC address).";
+      };
     };
 
     controllerImage = lib.mkOption {
