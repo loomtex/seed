@@ -24,7 +24,7 @@
       inputs.impermanence.follows = "impermanence";
     };
     seed = {
-      url = "github:loomtex/seed";
+      url = "path:..";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.sops-nix.follows = "sops-nix";
     };
