@@ -106,7 +106,7 @@ let
             else . end'
           NOTE=$(echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.note // empty')
           if [ -n "$NOTE" ]; then
-            echo "\u001b[33mnote: $NOTE\u001b[0m" >&2
+            printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
           fi
         fi
         ;;
