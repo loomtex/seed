@@ -133,7 +133,11 @@
 
       # Split-path NVRAM backend for multi-host TPM: routes permall to
       # shared storage (CephFS) and volatile state to local tmpfs.
-      swtpm = prev.swtpm.overrideAttrs (old: {
+      # IMPORTANT: This is a separate package, NOT an override of pkgs.swtpm.
+      # Overriding swtpm globally would cascade: tpm2-tss (test dep on swtpm)
+      # → systemd → zfs → ceph → everything, rebuilding the entire closure.
+      swtpm-seed = prev.swtpm.overrideAttrs (old: {
+        pname = "swtpm-seed";
         patches = (old.patches or []) ++ [
           ./patches/swtpm-seed-backend.patch
         ];
@@ -290,7 +294,7 @@
           mkdir -p $out/{app,tmp,nix/store,usr/bin}
           cp ${seedController}/app/host-agent.mjs $out/app/
           cp -r ${seedController}/app/node_modules $out/app/
-          ln -s ${pkgs.swtpm}/bin/swtpm $out/usr/bin/swtpm
+          ln -s ${pkgs.swtpm-seed}/bin/swtpm $out/usr/bin/swtpm
         '';
         config.entrypoint = [ "${pkgs.nodejs_22}/bin/node" "/app/host-agent.mjs" ];
       };
@@ -315,7 +319,7 @@
         copyToRoot = pkgs.runCommand "swtpm-rootfs" {} ''
           mkdir -p $out/{tmp,nix/store,run}
         '';
-        config.entrypoint = [ "${pkgs.swtpm}/bin/swtpm" ];
+        config.entrypoint = [ "${pkgs.swtpm-seed}/bin/swtpm" ];
       };
 
       # Pool VM initramfs: cpio+gzip initramfs for snapshot-based nix eval/build VMs
