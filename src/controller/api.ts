@@ -11,6 +11,7 @@
 // namespace endpoints.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { RequestOptions } from "node:https";
 import type * as k8s from "@kubernetes/client-node";
 import type { KubeClients } from "../shared/kube.js";
 import { LABELS, MANAGED_SELECTOR } from "../shared/labels.js";
@@ -73,14 +74,18 @@ export async function handleApiRequest(
   }
 
   try {
+    // Strip query string for route matching, parse params separately
+    const [pathname, queryString] = url.split("?", 2);
+    const params = new URLSearchParams(queryString || "");
+
     // GET /api/keys
-    if (req.method === "GET" && url === "/api/keys") {
+    if (req.method === "GET" && pathname === "/api/keys") {
       jsonResponse(res, 200, keyIndex);
       return true;
     }
 
     // Parse /api/ns/:namespace/...
-    const nsMatch = url.match(/^\/api\/ns\/([a-z0-9-]+)\/(.+)$/);
+    const nsMatch = pathname.match(/^\/api\/ns\/([a-z0-9-]+)\/(.+)$/);
     if (!nsMatch) {
       jsonResponse(res, 404, { error: "not found" });
       return true;
@@ -100,10 +105,12 @@ export async function handleApiRequest(
       return true;
     }
 
-    // GET /api/ns/:namespace/logs/:instance
+    // GET /api/ns/:namespace/logs/:instance?lines=N&follow=true
     const logsMatch = rest.match(/^logs\/([a-z0-9-]+)$/);
     if (req.method === "GET" && logsMatch) {
-      await handleLogs(res, routeCtx.clients, namespace, logsMatch[1]);
+      const lines = Math.min(Math.max(parseInt(params.get("lines") || "100", 10) || 100, 1), 10000);
+      const follow = params.get("follow") === "true";
+      await handleLogs(res, routeCtx.clients, routeCtx.kc, namespace, logsMatch[1], lines, follow);
       return true;
     }
 
@@ -179,11 +186,28 @@ async function handleStatus(
   jsonResponse(res, 200, { namespace, instances });
 }
 
+/** Parse a journal JSON line into a human-readable string. */
+function parseLogLine(line: string): string {
+  try {
+    const entry = JSON.parse(line);
+    if (entry.MESSAGE) {
+      const unit = entry.UNIT || entry.SYSLOG_IDENTIFIER || "";
+      return unit ? `${unit}: ${entry.MESSAGE}` : entry.MESSAGE;
+    }
+    return line;
+  } catch {
+    return line; // Not JSON, return as-is
+  }
+}
+
 async function handleLogs(
   res: ServerResponse,
   clients: KubeClients,
+  kc: k8s.KubeConfig,
   namespace: string,
   instance: string,
+  tailLines: number,
+  follow: boolean,
 ): Promise<void> {
   // Find the pod for this instance
   const pods = await clients.core.listNamespacedPod({
@@ -202,29 +226,23 @@ async function handleLogs(
     return;
   }
 
+  if (follow) {
+    await handleLogFollow(res, kc, namespace, instance, podName, tailLines);
+    return;
+  }
+
   try {
     const logResponse = await clients.core.readNamespacedPodLog({
       name: podName,
       namespace,
-      tailLines: 100,
+      tailLines,
     });
 
     // readNamespacedPodLog returns raw log text as a string.
     // For Kata VMs with journal forwarding, each line is a JSON object.
     // Extract the MESSAGE field for human-readable output.
     const rawLines = (logResponse as string).split("\n").filter(Boolean);
-    const lines = rawLines.map((line) => {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.MESSAGE) {
-          const unit = entry.UNIT || entry.SYSLOG_IDENTIFIER || "";
-          return unit ? `${unit}: ${entry.MESSAGE}` : entry.MESSAGE;
-        }
-        return line;
-      } catch {
-        return line; // Not JSON, return as-is
-      }
-    });
+    const lines = rawLines.map(parseLogLine);
 
     jsonResponse(res, 200, {
       instance,
@@ -239,6 +257,89 @@ async function handleLogs(
       lines: [],
       note: "Logs may be unavailable for Kata VM pods. Use service APIs for debugging.",
     });
+  }
+}
+
+/** Stream logs via chunked newline-delimited JSON (one line object per chunk). */
+async function handleLogFollow(
+  res: ServerResponse,
+  kc: k8s.KubeConfig,
+  namespace: string,
+  instance: string,
+  podName: string,
+  tailLines: number,
+): Promise<void> {
+  // The @kubernetes/client-node readNamespacedPodLog doesn't support streaming.
+  // Use the raw k8s API via https request for follow=true.
+  const cluster = kc.getCurrentCluster();
+  const user = kc.getCurrentUser();
+  if (!cluster) {
+    jsonResponse(res, 500, { error: "no cluster configured" });
+    return;
+  }
+
+  const logUrl = `${cluster.server}/api/v1/namespaces/${namespace}/pods/${podName}/log?follow=true&tailLines=${tailLines}`;
+
+  try {
+    const https = await import("node:https");
+    const { URL } = await import("node:url");
+
+    const opts: RequestOptions = {};
+    await kc.applyToHTTPSOptions(opts);
+    const parsed = new URL(logUrl);
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    const k8sReq = https.request(
+      {
+        ...opts,
+        hostname: parsed.hostname,
+        port: parsed.port || 443,
+        path: parsed.pathname + parsed.search,
+        method: "GET",
+        rejectUnauthorized: !cluster.skipTLSVerify,
+      },
+      (k8sRes) => {
+        let buffer = "";
+        k8sRes.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString();
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // Keep incomplete line in buffer
+          for (const line of lines) {
+            if (!line) continue;
+            const msg = parseLogLine(line);
+            res.write(`data: ${JSON.stringify({ line: msg })}\n\n`);
+          }
+        });
+        k8sRes.on("end", () => {
+          if (buffer) {
+            const msg = parseLogLine(buffer);
+            res.write(`data: ${JSON.stringify({ line: msg })}\n\n`);
+          }
+          res.end();
+        });
+        k8sRes.on("error", (err) => {
+          log("api", `follow stream error for ${instance}/${podName}: ${err}`);
+          res.end();
+        });
+      },
+    );
+
+    // If the client disconnects, abort the k8s request
+    res.on("close", () => k8sReq.destroy());
+    k8sReq.on("error", (err: Error) => {
+      log("api", `follow request error for ${instance}/${podName}: ${err}`);
+      if (!res.writableEnded) res.end();
+    });
+    k8sReq.end();
+  } catch (err) {
+    log("api", `follow setup error for ${instance}/${podName}: ${err}`);
+    jsonResponse(res, 500, { error: "failed to start log stream" });
   }
 }
 

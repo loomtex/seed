@@ -56,14 +56,26 @@ let
     # For now, use the first namespace (multi-namespace support later)
     NS=$(echo "$NAMESPACES" | ${pkgs.coreutils}/bin/cut -d, -f1)
 
-    # Parse command from SSH_ORIGINAL_COMMAND or show status by default
-    CMD="''${SSH_ORIGINAL_COMMAND:-status}"
-    ACTION=$(echo "$CMD" | ${pkgs.gawk}/bin/awk '{print $1}')
-    ARG=$(echo "$CMD" | ${pkgs.gawk}/bin/awk '{print $2}')
+    # Parse command from SSH_ORIGINAL_COMMAND into words
+    # shellcheck disable=SC2086
+    set -- ''${SSH_ORIGINAL_COMMAND:-status}
 
-    # Check for --json flag anywhere in the command
+    ACTION="$1"; shift || true
+    ARG=""
     JSON_OUT=false
-    case "$CMD" in *--json*) JSON_OUT=true ;; esac
+    FOLLOW=false
+    LINES=""
+
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --json)   JSON_OUT=true ;;
+        --follow) FOLLOW=true ;;
+        -f)       FOLLOW=true ;;
+        --lines)  shift; LINES="''${1:-}" ;;
+        *)        [ -z "$ARG" ] && ARG="$1" ;;
+      esac
+      shift
+    done
 
     case "$ACTION" in
       status)
@@ -88,25 +100,54 @@ let
         ;;
 
       logs)
-        if [ -z "$ARG" ] || [ "$ARG" = "--json" ]; then
-          echo "usage: logs <instance> [--json]" >&2
+        if [ -z "$ARG" ]; then
+          echo "usage: logs <instance> [-f|--follow] [--lines N] [--json]" >&2
           exit 1
         fi
-        RESULT=$(${pkgs.curl}/bin/curl -sf "$API/ns/$NS/logs/$ARG") || {
-          echo "error: failed to fetch logs for $ARG" >&2
-          exit 1
-        }
-        if [ "$JSON_OUT" = true ]; then
-          echo "$RESULT" | ${pkgs.jq}/bin/jq .
+
+        # Build query string
+        QUERY=""
+        [ -n "$LINES" ] && QUERY="lines=$LINES"
+        if [ "$FOLLOW" = true ]; then
+          [ -n "$QUERY" ] && QUERY="$QUERY&follow=true" || QUERY="follow=true"
+        fi
+        LOG_URL="$API/ns/$NS/logs/$ARG"
+        [ -n "$QUERY" ] && LOG_URL="$LOG_URL?$QUERY"
+
+        if [ "$FOLLOW" = true ]; then
+          # Streaming mode — read SSE events line by line
+          ${pkgs.curl}/bin/curl -sfN "$LOG_URL" | while IFS= read -r line; do
+            case "$line" in
+              data:\ *)
+                DATA="''${line#data: }"
+                if [ "$JSON_OUT" = true ]; then
+                  echo "$DATA"
+                else
+                  echo "$DATA" | ${pkgs.jq}/bin/jq -r '.line |
+                    if test(":") then
+                      "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
+                    else . end'
+                fi
+                ;;
+            esac
+          done
         else
-          echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.lines[] |
-            # Colorize unit prefix in cyan
-            if test(":") then
-              "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
-            else . end'
-          NOTE=$(echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.note // empty')
-          if [ -n "$NOTE" ]; then
-            printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
+          RESULT=$(${pkgs.curl}/bin/curl -sf "$LOG_URL") || {
+            echo "error: failed to fetch logs for $ARG" >&2
+            exit 1
+          }
+          if [ "$JSON_OUT" = true ]; then
+            echo "$RESULT" | ${pkgs.jq}/bin/jq .
+          else
+            echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.lines[] |
+              # Colorize unit prefix in cyan
+              if test(":") then
+                "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
+              else . end'
+            NOTE=$(echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.note // empty')
+            if [ -n "$NOTE" ]; then
+              printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
+            fi
           fi
         fi
         ;;
@@ -127,13 +168,15 @@ let
         echo "seed shell — manage your seed instances"
         echo ""
         echo "commands:"
-        echo "  status              show instance status (default)"
-        echo "  logs <instance>     show recent logs"
-        echo "  restart <instance>  restart an instance"
-        echo "  help                show this help"
+        echo "  status                show instance status (default)"
+        echo "  logs <instance>       show recent logs (default: 100 lines)"
+        echo "  restart <instance>    restart an instance"
+        echo "  help                  show this help"
         echo ""
         echo "flags:"
-        echo "  --json              output raw JSON (for scripting)"
+        echo "  --json                output raw JSON (for scripting)"
+        echo "  -f, --follow          stream logs in real time"
+        echo "  --lines N             number of log lines to show (max 10000)"
         ;;
 
       *)
