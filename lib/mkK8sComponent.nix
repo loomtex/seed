@@ -38,6 +38,7 @@ let
     resolvedByNix = true;
     copyToRoot = pkgs.runCommand "${name}-rootfs" {} ''
       mkdir -p $out/{tmp,nix/store}
+      ln -s ${entrypoint} $out/.entrypoint
       ${extraRootfs}
     '';
     config.entrypoint = [ entrypoint ];
