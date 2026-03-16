@@ -113,6 +113,7 @@ let
         clusterID = fsid;
         inherit pool;
         imageFeatures = "layering";
+        "csi.storage.k8s.io/fstype" = "ext4";
         "csi.storage.k8s.io/provisioner-secret-name" = secretName;
         "csi.storage.k8s.io/provisioner-secret-namespace" = namespace;
         "csi.storage.k8s.io/controller-expand-secret-name" = secretName;
