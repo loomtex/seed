@@ -36,8 +36,9 @@ let
       exit 0  # Key not found — deny
     fi
 
-    # Emit authorized_keys line with forced command and namespace context
-    echo "restrict,command=\"seed-shell\",environment=\"SEED_NAMESPACES=$NAMESPACES\",environment=\"SEED_KEY_TYPE=$KEY_TYPE\",environment=\"SEED_KEY_BLOB=$KEY_BLOB\" $FULL_KEY seed-user"
+    # Emit authorized_keys line with forced command and namespace context.
+    # restrict disables everything, then permit-user-env re-enables environment= options.
+    echo "restrict,permit-user-env,command=\"seed-shell\",environment=\"SEED_NAMESPACES=$NAMESPACES\",environment=\"SEED_KEY_TYPE=$KEY_TYPE\",environment=\"SEED_KEY_BLOB=$KEY_BLOB\" $FULL_KEY seed-user"
   '';
 
   # seed-shell — forced command for management operations
@@ -140,6 +141,8 @@ in
       # Skip PAM entirely — we only do key auth via AuthorizedKeysCommand.
       # unix_chkpwd fails in Kata VMs (setuid not supported on virtiofs).
       UsePAM = false;
+      # Allow environment= in authorized_keys (for namespace context).
+      PermitUserEnvironment = "yes";
     };
   };
 
