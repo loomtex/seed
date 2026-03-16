@@ -23,26 +23,28 @@ let
 
     export AWS_SHARED_CREDENTIALS_FILE="${awsCreds}"
     export AWS_EC2_METADATA_DISABLED=true
-    export PATH="${lib.makeBinPath [ ceph age pkgs.gnutar pkgs.awscli2 pkgs.coreutils pkgs.gzip pkgs.util-linux ]}:$PATH"
+    export PATH="${lib.makeBinPath [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux ]}:$PATH"
 
     BUCKET="${cfg.bucket}"
     ENDPOINT="${cfg.endpoint}"
-    REGION="${cfg.region}"
     TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
     AGE_RECIPIENTS="${lib.concatStringsSep " " (map (r: "-r ${r}") cfg.recipients)}"
     BLACKLIST="${lib.concatStringsSep " " cfg.blacklistPools}"
     STATE_DIR="/persist/seed-backup"
+    MC_ALIAS="seed-s3"
 
     mkdir -p "$STATE_DIR"
+
+    # Configure mc alias from AWS credentials file
+    ACCESS_KEY=$(grep aws_access_key_id "$AWS_SHARED_CREDENTIALS_FILE" | cut -d= -f2 | tr -d ' ')
+    SECRET_KEY=$(grep aws_secret_access_key "$AWS_SHARED_CREDENTIALS_FILE" | cut -d= -f2 | tr -d ' ')
+    mc alias set "$MC_ALIAS" "https://$ENDPOINT" "$ACCESS_KEY" "$SECRET_KEY" --api S3v4 >/dev/null
 
     log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
     s3_put() {
       local src="$1" key="$2"
-      aws s3 cp "$src" "s3://$BUCKET/$key" \
-        --endpoint-url "https://$ENDPOINT" \
-        --region "$REGION" \
-        --quiet
+      mc cp --quiet "$src" "$MC_ALIAS/$BUCKET/$key"
     }
 
     is_blacklisted() {
@@ -177,12 +179,6 @@ in {
       type = lib.types.str;
       default = "atl2.vultrobjects.com";
       description = "S3 endpoint URL";
-    };
-
-    region = lib.mkOption {
-      type = lib.types.str;
-      default = "us-east-1";
-      description = "S3 region";
     };
 
     recipients = lib.mkOption {
