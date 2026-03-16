@@ -31,6 +31,7 @@ let
     AGE_RECIPIENTS="${lib.concatStringsSep " " (map (r: "-r ${r}") cfg.recipients)}"
     BLACKLIST="${lib.concatStringsSep " " cfg.blacklistPools}"
     STATE_DIR="/persist/seed-backup"
+    export MC_CONFIG_DIR="$STATE_DIR/mc"
     MC_ALIAS="seed-s3"
 
     mkdir -p "$STATE_DIR"
