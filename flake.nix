@@ -131,6 +131,14 @@
         ldflags = [ "-s" "-w" "-X main.version=v${version}" ];
       };
 
+      # Split-path NVRAM backend for multi-host TPM: routes permall to
+      # shared storage (CephFS) and volatile state to local tmpfs.
+      swtpm = prev.swtpm.overrideAttrs (old: {
+        patches = (old.patches or []) ++ [
+          ./patches/swtpm-seed-backend.patch
+        ];
+      });
+
       kata-runtime = prev.kata-runtime.overrideAttrs (old: {
         # Patch kata shim to support multi-mount rootfs from snapshotters
         # like nix-snapshotter that return overlay + bind mounts:

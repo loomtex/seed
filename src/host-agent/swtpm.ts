@@ -53,8 +53,10 @@ export async function ensureSwtpm(
   }
 
   // Ensure directories
+  const volatileDir = `${socketDir}/volatile`;
   await mkdir(stateDir, { recursive: true });
   await mkdir(socketDir, { recursive: true });
+  await mkdir(volatileDir, { recursive: true });
 
   // Clean stale socket
   try {
@@ -67,7 +69,7 @@ export async function ensureSwtpm(
 
   const child = spawn(SWTPM_BIN, [
     "socket",
-    "--tpmstate", `dir=${stateDir}`,
+    "--tpmstate", `backend-uri=seed://${stateDir}`,
     "--ctrl", `type=unixio,path=${socketPath}`,
     "--flags", "startup-clear",
     "--tpm2",
@@ -75,6 +77,7 @@ export async function ensureSwtpm(
   ], {
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
+    env: { ...process.env, SWTPM_SEED_VOLATILE_DIR: volatileDir },
   });
 
   // Log stderr for debugging

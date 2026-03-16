@@ -1,0 +1,463 @@
+Split-path swtpm NVRAM backend for multi-host TPM.
+
+Routes "permall" (persistent keys/certs) to a shared directory (CephFS)
+and all other state (volatilestate, savestate) to a local tmpfs directory.
+No session-level lock — only a brief flock during permall writes.
+
+This enables concurrent swtpm instances on multiple hosts sharing the
+same TPM identity without lock contention from the dir:// backend.
+
+URI format: seed:///path/to/shared/dir
+Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
+
+--- a/src/swtpm/Makefile.am
++++ b/src/swtpm/Makefile.am
+@@ -59,6 +59,7 @@
+ 	swtpm_nvstore.c \
+ 	swtpm_nvstore_dir.c \
+ 	swtpm_nvstore_linear.c \
++	swtpm_nvstore_seed.c \
+ 	swtpm_nvstore_linear_file.c \
+ 	tlv.c \
+ 	tpmlib.c \
+
+--- a/src/swtpm/swtpm_nvstore.h
++++ b/src/swtpm/swtpm_nvstore.h
+@@ -135,6 +135,7 @@
+ /* backend interfaces */
+ extern struct nvram_backend_ops nvram_dir_ops;
+ extern struct nvram_backend_ops nvram_linear_ops;
++extern struct nvram_backend_ops nvram_seed_ops;
+
+
+ int SWTPM_NVRAM_PrintJson(void);
+
+--- a/src/swtpm/swtpm_nvstore.c
++++ b/src/swtpm/swtpm_nvstore.c
+@@ -186,6 +186,8 @@
+     } else if (strncmp(backend_uri, "dir://", 6) == 0) {
+         g_nvram_backend_ops = &nvram_dir_ops;
+     } else if (strncmp(backend_uri, "file://", 7) == 0) {
+         g_nvram_backend_ops = &nvram_linear_ops;
++    } else if (strncmp(backend_uri, "seed://", 7) == 0) {
++        g_nvram_backend_ops = &nvram_seed_ops;
+     } else {
+         logprintf(STDERR_FILENO,
+                   "SWTPM_NVRAM_Init: Unsupported backend.\n");
+
+--- /dev/null
++++ b/src/swtpm/swtpm_nvstore_seed.c
+@@ -0,0 +1,413 @@
++/*
++ * swtpm_nvstore_seed.c — Split-path NVRAM backend for multi-host TPM.
++ *
++ * Routes "permall" (persistent TPM state: keys, NV indices, certs) to a
++ * shared directory (e.g. CephFS) and all other blobs (volatilestate,
++ * savestate) to a local directory (e.g. tmpfs).
++ *
++ * No session-level lock — only a brief flock during permall writes.
++ * This enables multiple hosts to run swtpm for the same TPM identity
++ * concurrently, each with independent volatile state.
++ *
++ * URI format: seed:///path/to/shared/dir
++ * Volatile dir: SWTPM_SEED_VOLATILE_DIR environment variable
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include "config.h"
++
++#define _GNU_SOURCE
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <errno.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++
++#include <libtpms/tpm_error.h>
++
++#include "swtpm.h"
++#include "swtpm_debug.h"
++#include "swtpm_nvstore.h"
++#include "logging.h"
++#include "tpmstate.h"
++#include "utils.h"
++
++#define TPM_FILENAME_MAX 20
++#define PERMALL_LOCK_RETRIES 1000
++#define PERMALL_LOCK_USLEEP  1000
++
++static char *g_shared_dir;
++static char *g_volatile_dir;
++
++/*
++ * Route a blob name to the appropriate directory.
++ * "permall" goes to the shared (CephFS) directory.
++ * Everything else goes to the local volatile directory.
++ */
++static const char *
++route_dir(const char *name)
++{
++    if (strcmp(name, "permall") == 0)
++        return g_shared_dir;
++    return g_volatile_dir;
++}
++
++static TPM_RESULT
++seed_get_filepath(char *filepath, size_t bufsize,
++                  uint32_t tpm_number, const char *name,
++                  TPM_BOOL is_tempfile, const char *dir)
++{
++    TPM_RESULT rc = 0;
++    int n;
++    char filename[FILENAME_MAX];
++
++    if (rc == 0)
++        rc = SWTPM_NVRAM_GetFilenameForName(filename, sizeof(filename),
++                                            tpm_number, name, is_tempfile);
++    if (rc == 0) {
++        n = snprintf(filepath, bufsize, "%s/%s", dir, filename);
++        if ((size_t)n >= bufsize)
++            rc = TPM_FAIL;
++    }
++
++    return rc;
++}
++
++static TPM_RESULT
++SWTPM_NVRAM_Prepare_Seed(const char *uri)
++{
++    const char *shared_path;
++    const char *volatile_env;
++    size_t len;
++
++    /* Strip seed:// prefix */
++    shared_path = uri + strlen("seed://");
++    if (!shared_path || *shared_path == '\0') {
++        logprintf(STDERR_FILENO,
++                  "SWTPM_NVRAM_Prepare_Seed: Empty shared path in URI\n");
++        return TPM_FAIL;
++    }
++
++    /* Validate path length */
++    len = strlen(shared_path);
++    if ((len + TPM_FILENAME_MAX) > FILENAME_MAX) {
++        logprintf(STDERR_FILENO,
++                  "SWTPM_NVRAM_Prepare_Seed: Shared path too long: %s\n",
++                  shared_path);
++        return TPM_FAIL;
++    }
++
++    /* Get volatile dir from environment */
++    volatile_env = getenv("SWTPM_SEED_VOLATILE_DIR");
++    if (!volatile_env || *volatile_env == '\0') {
++        logprintf(STDERR_FILENO,
++                  "SWTPM_NVRAM_Prepare_Seed: SWTPM_SEED_VOLATILE_DIR not set\n");
++        return TPM_FAIL;
++    }
++
++    len = strlen(volatile_env);
++    if ((len + TPM_FILENAME_MAX) > FILENAME_MAX) {
++        logprintf(STDERR_FILENO,
++                  "SWTPM_NVRAM_Prepare_Seed: Volatile path too long: %s\n",
++                  volatile_env);
++        return TPM_FAIL;
++    }
++
++    g_shared_dir = strdup(shared_path);
++    g_volatile_dir = strdup(volatile_env);
++    if (!g_shared_dir || !g_volatile_dir) {
++        logprintf(STDERR_FILENO,
++                  "SWTPM_NVRAM_Prepare_Seed: Out of memory\n");
++        return TPM_FAIL;
++    }
++
++    TPM_DEBUG("SWTPM_NVRAM_Prepare_Seed: shared=%s volatile=%s\n",
++              g_shared_dir, g_volatile_dir);
++
++    return 0;
++}
++
++/*
++ * No session-level lock — return success immediately.
++ * Permall writes use their own brief flock internally.
++ */
++static TPM_RESULT
++SWTPM_NVRAM_Lock_Seed(const char *uri __attribute__((unused)),
++                      unsigned int retries __attribute__((unused)))
++{
++    return 0;
++}
++
++static void
++SWTPM_NVRAM_Unlock_Seed(void)
++{
++    /* No session lock to release */
++}
++
++static TPM_RESULT
++SWTPM_NVRAM_LoadData_Seed(unsigned char **data,
++                          uint32_t *length,
++                          uint32_t tpm_number,
++                          const char *name,
++                          const char *uri __attribute__((unused)))
++{
++    TPM_RESULT rc = 0;
++    int fd = -1;
++    int irc;
++    size_t src;
++    char filepath[FILENAME_MAX];
++    struct stat statbuf;
++    const char *dir;
++
++    dir = route_dir(name);
++
++    if (rc == 0)
++        rc = seed_get_filepath(filepath, sizeof(filepath),
++                               tpm_number, name, false, dir);
++
++    if (rc == 0) {
++        fd = open(filepath, O_RDONLY);
++        if (fd < 0) {
++            if (errno == ENOENT) {
++                TPM_DEBUG("SWTPM_NVRAM_LoadData_Seed: No such file %s\n",
++                          filepath);
++                rc = TPM_RETRY;
++            } else {
++                logprintf(STDERR_FILENO,
++                          "SWTPM_NVRAM_LoadData_Seed: Error opening %s: %s\n",
++                          filepath, strerror(errno));
++                rc = TPM_FAIL;
++            }
++        }
++    }
++
++    if (rc == 0) {
++        irc = fstat(fd, &statbuf);
++        if (irc == -1) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_LoadData_Seed: Error fstat %s: %s\n",
++                      filepath, strerror(errno));
++            rc = TPM_FAIL;
++        }
++    }
++
++    if (rc == 0) {
++        *length = statbuf.st_size;
++    }
++
++    if ((rc == 0) && *length != 0) {
++        *data = malloc(*length);
++        if (!*data) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_LoadData_Seed: Error allocating %u bytes\n",
++                      *length);
++            rc = TPM_FAIL;
++        }
++    }
++
++    if ((rc == 0) && *length != 0) {
++        src = read(fd, *data, *length);
++        if (src != *length) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_LoadData_Seed: Short read %lu/%u\n",
++                      (unsigned long)src, *length);
++            rc = TPM_FAIL;
++        }
++    }
++
++    if (fd >= 0)
++        close(fd);
++
++    return rc;
++}
++
++static TPM_RESULT
++SWTPM_NVRAM_StoreData_Seed(unsigned char *filedata,
++                           uint32_t filedata_length,
++                           uint32_t tpm_number,
++                           const char *name,
++                           const char *uri __attribute__((unused)))
++{
++    TPM_RESULT rc = 0;
++    int fd = -1;
++    int irc;
++    uint32_t lrc;
++    char tmpfile[FILENAME_MAX];
++    char filepath[FILENAME_MAX];
++    const char *dir;
++    int lock_fd = -1;
++    TPM_BOOL is_permall;
++
++    dir = route_dir(name);
++    is_permall = (strcmp(name, "permall") == 0);
++
++    if (rc == 0)
++        rc = seed_get_filepath(filepath, sizeof(filepath),
++                               tpm_number, name, false, dir);
++    if (rc == 0)
++        rc = seed_get_filepath(tmpfile, sizeof(tmpfile),
++                               tpm_number, name, true, dir);
++
++    /* Brief flock for permall writes only */
++    if (rc == 0 && is_permall) {
++        char lockpath[FILENAME_MAX];
++        unsigned int retries = PERMALL_LOCK_RETRIES;
++        struct flock fl = {
++            .l_type = F_WRLCK,
++            .l_whence = SEEK_SET,
++            .l_start = 0,
++            .l_len = 0,
++        };
++
++        snprintf(lockpath, sizeof(lockpath), "%s/.lock", g_shared_dir);
++        lock_fd = open(lockpath, O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW, 0660);
++        if (lock_fd < 0) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_StoreData_Seed: Cannot open lock: %s\n",
++                      strerror(errno));
++            rc = TPM_FAIL;
++        }
++
++        while (rc == 0) {
++            if (fcntl(lock_fd, F_SETLK, &fl) == 0)
++                break;
++            if (retries == 0) {
++                logprintf(STDERR_FILENO,
++                          "SWTPM_NVRAM_StoreData_Seed: Lock timeout on permall\n");
++                rc = TPM_FAIL;
++                break;
++            }
++            retries--;
++            usleep(PERMALL_LOCK_USLEEP);
++        }
++    }
++
++    /* Write to temp file */
++    if (rc == 0) {
++        fd = open(tmpfile, O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW, 0640);
++        if (fd < 0) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_StoreData_Seed: Error opening %s: %s\n",
++                      tmpfile, strerror(errno));
++            rc = TPM_FAIL;
++        }
++    }
++
++    if (rc == 0) {
++        lrc = write_full(fd, filedata, filedata_length);
++        if (lrc != filedata_length) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_StoreData_Seed: Short write %u/%u\n",
++                      lrc, filedata_length);
++            rc = TPM_FAIL;
++        }
++    }
++
++    if (fd >= 0) {
++        irc = close(fd);
++        if (irc != 0 && rc == 0)
++            rc = TPM_FAIL;
++    }
++
++    /* Atomic rename */
++    if (rc == 0) {
++        irc = rename(tmpfile, filepath);
++        if (irc != 0) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_StoreData_Seed: Rename failed: %s\n",
++                      strerror(errno));
++            rc = TPM_FAIL;
++        }
++    }
++
++    if (rc != 0 && fd >= 0)
++        unlink(tmpfile);
++
++    /* Release permall lock */
++    if (lock_fd >= 0)
++        close(lock_fd);
++
++    return rc;
++}
++
++static TPM_RESULT
++SWTPM_NVRAM_DeleteName_Seed(uint32_t tpm_number,
++                            const char *name,
++                            TPM_BOOL mustExist,
++                            const char *uri __attribute__((unused)))
++{
++    TPM_RESULT rc = 0;
++    int irc;
++    char filepath[FILENAME_MAX];
++    const char *dir;
++
++    dir = route_dir(name);
++
++    rc = seed_get_filepath(filepath, sizeof(filepath),
++                           tpm_number, name, false, dir);
++    if (rc == 0) {
++        irc = remove(filepath);
++        if ((irc != 0) && (mustExist || (errno != ENOENT))) {
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_DeleteName_Seed: Remove %s failed: %s\n",
++                      filepath, strerror(errno));
++            rc = TPM_FAIL;
++        }
++    }
++
++    return rc;
++}
++
++static TPM_RESULT
++SWTPM_NVRAM_CheckState_Seed(const char *uri __attribute__((unused)),
++                            const char *name,
++                            size_t *blobsize)
++{
++    TPM_RESULT rc = 0;
++    char filepath[FILENAME_MAX];
++    struct stat statbuf;
++    const char *dir;
++    int irc;
++
++    dir = route_dir(name);
++
++    rc = seed_get_filepath(filepath, sizeof(filepath),
++                           0, name, false, dir);
++    if (rc == 0) {
++        irc = stat(filepath, &statbuf);
++        if (irc != 0 && errno == ENOENT)
++            rc = TPM_RETRY;
++        else if (irc != 0)
++            rc = TPM_FAIL;
++        else if (!S_ISREG(statbuf.st_mode))
++            rc = TPM_FAIL;
++
++        if (rc == 0)
++            *blobsize = statbuf.st_size;
++    }
++
++    return rc;
++}
++
++static void
++SWTPM_NVRAM_Cleanup_Seed(void)
++{
++    free(g_shared_dir);
++    g_shared_dir = NULL;
++    free(g_volatile_dir);
++    g_volatile_dir = NULL;
++}
++
++struct nvram_backend_ops nvram_seed_ops = {
++    .prepare     = SWTPM_NVRAM_Prepare_Seed,
++    .lock        = SWTPM_NVRAM_Lock_Seed,
++    .unlock      = SWTPM_NVRAM_Unlock_Seed,
++    .load        = SWTPM_NVRAM_LoadData_Seed,
++    .store       = SWTPM_NVRAM_StoreData_Seed,
++    .delete      = SWTPM_NVRAM_DeleteName_Seed,
++    .cleanup     = SWTPM_NVRAM_Cleanup_Seed,
++    .check_state = SWTPM_NVRAM_CheckState_Seed,
++};
