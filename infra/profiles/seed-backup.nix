@@ -23,7 +23,7 @@ let
 
     export AWS_SHARED_CREDENTIALS_FILE="${awsCreds}"
     export AWS_EC2_METADATA_DISABLED=true
-    export PATH="${lib.makeBinPath [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.glibc.bin ]}:$PATH"
+    export PATH="${lib.makeBinPath [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.getent ]}:$PATH"
 
     BUCKET="${cfg.bucket}"
     ENDPOINT="${cfg.endpoint}"
@@ -222,7 +222,7 @@ in {
       description = "Ceph backup to S3 (encrypted)";
       after = [ "ceph.target" "network-online.target" ];
       wants = [ "network-online.target" ];
-      path = [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.glibc.bin ];
+      path = [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.getent ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = backupScript;
