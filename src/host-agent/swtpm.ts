@@ -3,6 +3,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, rm, access, constants } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { log, waitFor } from "../shared/kube.js";
 
 const COMPONENT = "host-agent";
@@ -154,14 +155,28 @@ export function stopAll(): void {
   managed.clear();
 }
 
-/** Check if a socket file exists. */
+/** Check if a socket is connectable (not just that the file exists). */
 export async function isSocketAlive(socketPath: string): Promise<boolean> {
   try {
     await access(socketPath, constants.F_OK);
-    return true;
   } catch {
     return false;
   }
+  // File exists — try to actually connect to detect stale sockets
+  return new Promise((resolve) => {
+    const sock = createConnection(socketPath, () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.on("error", () => {
+      sock.destroy();
+      resolve(false);
+    });
+    sock.setTimeout(2000, () => {
+      sock.destroy();
+      resolve(false);
+    });
+  });
 }
 
 /** Get the number of actively managed swtpm processes. */
