@@ -3,8 +3,8 @@
 # Backs up all Ceph storage (RBD images, CephFS filesystems) to S3
 # using age encryption. Import on a single node (the backup leader).
 #
-# RBD: full export → age → S3 (no incremental chain to manage)
-# CephFS: tar → gzip → age → S3
+# RBD: full export → zstd → age → S3 (no incremental chain to manage)
+# CephFS: tar → zstd → age → S3
 #
 # Flexible: discovers RBD pools/images automatically, handles any number of
 # pools and CephFS filesystems. Blacklist pools you don't want backed up.
@@ -72,9 +72,10 @@ let
         tmp_export=$(mktemp)
 
         rbd export "$pool/$image" - \
+          | zstd -T0 \
           | age -e $AGE_RECIPIENTS -o "$tmp_export"
 
-        s3_put "$tmp_export" "backup/rbd/$pool/$image/$TIMESTAMP.age"
+        s3_put "$tmp_export" "backup/rbd/$pool/$image/$TIMESTAMP.zst.age"
         rm -f "$tmp_export"
 
         log "RBD $pool/$image: done"
@@ -105,7 +106,7 @@ let
       done
 
       tar -C "$mount_path" -cf - . \
-        | gzip \
+        | zstd -T0 \
         | age -e $AGE_RECIPIENTS -o "$tmp_export"
 
       # Release locks
@@ -113,7 +114,7 @@ let
         eval "exec ''${fd}<&-"
       done
 
-      s3_put "$tmp_export" "backup/cephfs/$fs_name/$TIMESTAMP.tar.gz.age"
+      s3_put "$tmp_export" "backup/cephfs/$fs_name/$TIMESTAMP.tar.zst.age"
       rm -f "$tmp_export"
 
       log "CephFS $fs_name: done"
@@ -230,7 +231,7 @@ in {
       description = "Ceph backup to S3 (encrypted)";
       after = [ "ceph.target" "network-online.target" ];
       wants = [ "network-online.target" ];
-      path = [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.getent pkgs.gawk ];
+      path = [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.zstd pkgs.util-linux pkgs.getent pkgs.gawk ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = backupScript;
