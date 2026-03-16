@@ -23,9 +23,9 @@ let
   lib = pkgs.lib;
 
   # --- Combinable components ---
-  # ceph-csi execs `rbd` for krbd map/unmap — ceph (which provides rbd) must be in PATH.
+  # ceph-csi execs rbd (map/unmap), blkid/mkfs (format detection), and mount/umount.
   cephCsiEntrypoint = pkgs.writeShellScript "cephcsi-wrapper" ''
-    export PATH="${pkgs.ceph}/bin:$PATH"
+    export PATH="${pkgs.ceph}/bin:${pkgs.util-linux}/bin:${pkgs.e2fsprogs}/bin:$PATH"
     exec ${pkgs.ceph-csi}/bin/cephcsi "$@"
   '';
 
