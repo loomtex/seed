@@ -209,13 +209,30 @@ async function handleLogs(
       tailLines: 100,
     });
 
+    // readNamespacedPodLog returns raw log text as a string.
+    // For Kata VMs with journal forwarding, each line is a JSON object.
+    // Extract the MESSAGE field for human-readable output.
+    const rawLines = (logResponse as string).split("\n").filter(Boolean);
+    const lines = rawLines.map((line) => {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.MESSAGE) {
+          const unit = entry.UNIT || entry.SYSLOG_IDENTIFIER || "";
+          return unit ? `${unit}: ${entry.MESSAGE}` : entry.MESSAGE;
+        }
+        return line;
+      } catch {
+        return line; // Not JSON, return as-is
+      }
+    });
+
     jsonResponse(res, 200, {
       instance,
       pod: podName,
-      lines: (logResponse as string).split("\n").filter(Boolean),
+      lines,
     });
   } catch (err) {
-    // Kata VMs don't always support kubectl logs well
+    log("api", `logs error for ${instance}/${podName}: ${err}`);
     jsonResponse(res, 200, {
       instance,
       pod: podName,
