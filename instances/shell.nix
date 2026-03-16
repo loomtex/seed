@@ -61,37 +61,53 @@ let
     ACTION=$(echo "$CMD" | ${pkgs.gawk}/bin/awk '{print $1}')
     ARG=$(echo "$CMD" | ${pkgs.gawk}/bin/awk '{print $2}')
 
+    # Check for --json flag anywhere in the command
+    JSON_OUT=false
+    case "$CMD" in *--json*) JSON_OUT=true ;; esac
+
     case "$ACTION" in
       status)
         RESULT=$(${pkgs.curl}/bin/curl -sf "$API/ns/$NS/status") || {
           echo "error: failed to fetch status" >&2
           exit 1
         }
-        echo "$RESULT" | ${pkgs.jq}/bin/jq -r '
-          "namespace: \(.namespace)\n",
-          (.instances | to_entries[] |
-            "\(.key):" +
-            "  \(if .value.ready then "ready" else "not ready" end)" +
-            "  phase=\(.value.phase)" +
-            "  restarts=\(.value.restarts)" +
-            "  age=\(.value.age)" +
-            ""
-          )'
+        if [ "$JSON_OUT" = true ]; then
+          echo "$RESULT" | ${pkgs.jq}/bin/jq .
+        else
+          echo "$RESULT" | ${pkgs.jq}/bin/jq -r '
+            "\u001b[1mnamespace: \(.namespace)\u001b[0m\n",
+            (.instances | to_entries[] |
+              "\u001b[1m\(.key)\u001b[0m " +
+              (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
+              (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
+              "  phase=\(.value.phase)" +
+              "  restarts=\(.value.restarts)" +
+              "  age=\(.value.age)"
+            )'
+        fi
         ;;
 
       logs)
-        if [ -z "$ARG" ]; then
-          echo "usage: logs <instance>" >&2
+        if [ -z "$ARG" ] || [ "$ARG" = "--json" ]; then
+          echo "usage: logs <instance> [--json]" >&2
           exit 1
         fi
         RESULT=$(${pkgs.curl}/bin/curl -sf "$API/ns/$NS/logs/$ARG") || {
           echo "error: failed to fetch logs for $ARG" >&2
           exit 1
         }
-        echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.lines[]'
-        NOTE=$(echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.note // empty')
-        if [ -n "$NOTE" ]; then
-          echo "note: $NOTE" >&2
+        if [ "$JSON_OUT" = true ]; then
+          echo "$RESULT" | ${pkgs.jq}/bin/jq .
+        else
+          echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.lines[] |
+            # Colorize unit prefix in cyan
+            if test(":") then
+              "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
+            else . end'
+          NOTE=$(echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.note // empty')
+          if [ -n "$NOTE" ]; then
+            echo "\u001b[33mnote: $NOTE\u001b[0m" >&2
+          fi
         fi
         ;;
 
@@ -115,6 +131,9 @@ let
         echo "  logs <instance>     show recent logs"
         echo "  restart <instance>  restart an instance"
         echo "  help                show this help"
+        echo ""
+        echo "flags:"
+        echo "  --json              output raw JSON (for scripting)"
         ;;
 
       *)
