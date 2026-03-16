@@ -137,6 +137,9 @@ in
       PermitRootLogin = "no";
       PasswordAuthentication = false;
       KbdInteractiveAuthentication = false;
+      # Skip PAM entirely — we only do key auth via AuthorizedKeysCommand.
+      # unix_chkpwd fails in Kata VMs (setuid not supported on virtiofs).
+      UsePAM = false;
     };
   };
 
