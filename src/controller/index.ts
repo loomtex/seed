@@ -19,8 +19,10 @@ import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
+import { initApi, updateKeyIndex, updateValidNamespaces, type KeyIndex } from "./api.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFile } from "node:fs/promises";
 
 const execFileAsync = promisify(execFile);
 
@@ -110,6 +112,64 @@ async function getFlakeRevision(flakePath: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// --- Authorized keys extraction ---
+
+/**
+ * Extract .authorized_keys from a flake's root directory.
+ * The controller evaluates the flake's self attribute to find the source tree,
+ * then reads .authorized_keys from it. Returns an array of SSH public key lines.
+ */
+async function extractAuthorizedKeys(
+  flakePath: string,
+  refresh: boolean,
+): Promise<string[]> {
+  try {
+    // Get the flake's source tree path via `nix flake metadata`
+    const args = ["flake", "metadata", flakePath, "--json"];
+    if (refresh) args.push("--refresh");
+    const { stdout } = await execFileAsync("nix", args, { timeout: 60_000 });
+    const meta = JSON.parse(stdout);
+    const storePath = meta.path;
+    if (!storePath) return [];
+
+    // Read .authorized_keys from the flake root
+    const keysPath = `${storePath}/.authorized_keys`;
+    const content = await readFile(keysPath, "utf-8").catch(() => "");
+    if (!content.trim()) return [];
+
+    // Parse: skip empty lines and comments
+    return content
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build a key→namespace index from all flake states.
+ * Called after reconciliation to update the API's key index.
+ */
+async function buildKeyIndex(
+  flakeStates: Map<string, FlakeState>,
+  refresh: boolean,
+): Promise<KeyIndex> {
+  const keys: Record<string, string[]> = {};
+
+  for (const [flakePath, fs] of flakeStates) {
+    const authorizedKeys = await extractAuthorizedKeys(flakePath, refresh);
+    for (const key of authorizedKeys) {
+      if (!keys[key]) keys[key] = [];
+      if (!keys[key].includes(fs.namespace)) {
+        keys[key].push(fs.namespace);
+      }
+    }
+  }
+
+  return { keys };
 }
 
 // --- Reconciliation ---
@@ -923,6 +983,10 @@ async function main(): Promise<void> {
     log("controller", `MetalLB configuration failed: ${err}`);
   }
 
+  // Initialize management API
+  const validNamespaces = new Set([...flakeStates.values()].map((fs) => fs.namespace));
+  initApi(clients, kc, validNamespaces);
+
   // Webhook signaling: per-flake refresh tracking.
   const pendingRefresh = new Set<string>(); // flakePaths waiting to reconcile
   let webhookResolve: (() => void) | null = null;
@@ -1082,6 +1146,14 @@ async function main(): Promise<void> {
     }
   }
 
+  // Build initial key index from all flakes
+  try {
+    const index = await buildKeyIndex(flakeStates, false);
+    updateKeyIndex(index);
+  } catch (err) {
+    log("controller", `initial key index build failed: ${err}`);
+  }
+
   // Start k8s API watches for drift correction (cluster-wide).
   startWatches(kc, clients, flakeStates, namespaceToFlake);
 
@@ -1102,9 +1174,14 @@ async function main(): Promise<void> {
       log("controller", `webhook triggered reconciliation`, flakePath);
       await reconcile(flakePath, fs.namespace, true);
     }
-    // Clear any webhooks that arrived during the run — we already used --refresh,
-    // so the latest commit was captured. Don't clear ALL — only the ones we just processed.
-    // New webhooks for different flakes should be preserved.
+
+    // Rebuild key index after reconciliation (keys may have changed)
+    try {
+      const index = await buildKeyIndex(flakeStates, true);
+      updateKeyIndex(index);
+    } catch (err) {
+      log("controller", `key index rebuild failed: ${err}`);
+    }
   }
 }
 

@@ -236,6 +236,7 @@
       web = mkSeed { name = "web"; module = ./instances/web.nix; };
       dns = mkSeed { name = "dns"; module = ./instances/dns.nix; };
       silo = mkSeed { name = "silo"; module = ./instances/silo.nix; };
+      shell = mkSeed { name = "shell"; module = ./instances/shell.nix; };
     };
 
     # Controller + host agent TypeScript packages
@@ -534,6 +535,7 @@ INITEOF
           http = { host = "3"; port = 80; protocol = "tcp"; instance = "web"; };
           https = { host = "3"; port = 443; protocol = "tcp"; instance = "web"; };
           ssh = { host = "3"; port = 22; protocol = "tcp"; instance = "web"; };
+          shell-ssh = { host = "5"; port = 22; protocol = "tcp"; instance = "shell"; };
         };
       };
     };
@@ -542,6 +544,8 @@ INITEOF
     checks.${system} = {
       # Tests metadata eval + image build (no KVM needed)
       image = import ./tests/image.nix { inherit self pkgs nixpkgs; };
+      # Tests shell instance eval + image build
+      shell = import ./tests/shell.nix { inherit self pkgs nixpkgs; };
       # Tests Vultr metadata API jq parsing (canned payloads, no network)
       metadata = import ./tests/metadata.nix { inherit pkgs; };
     };

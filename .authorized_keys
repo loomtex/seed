@@ -1,0 +1,12 @@
+# SSH keys authorized for seed shell management access.
+# Each key listed here gets full access to all seed instances
+# in this flake's namespace.
+#
+# The controller reads this file during reconciliation and builds
+# a key→namespace index for the shell's AuthorizedKeysCommand.
+
+# josh (yubikey)
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDb0+aftJY+E+fkZJKq7rAptzhp65YzQlc7+En0/RTYx
+
+# ada (pre-rename key)
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp

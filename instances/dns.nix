@@ -39,6 +39,10 @@ let
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
 
+    # Seed shell — SSH management interface
+    { name = "seed.${zone}"; type = "AAAA"; ttl = 300;
+      records = [{ content = "2001:19f0:5400:20a7::5"; }]; }
+
     # Zone apex — can't CNAME at apex, use A/AAAA
     { name = zone; type = "A"; ttl = 300;
       records = [{ content = "96.30.193.227"; }]; }
