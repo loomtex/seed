@@ -31,7 +31,19 @@ in {
     description = "Name of the primary (public) NIC — excluded from VPC auto-detection. Auto-resolved from data/vpc.nix.";
   };
 
+  options.seed.vpcNic = lib.mkOption {
+    type = lib.types.nullOr lib.types.str;
+    default = if myEntry != null then myEntry.vpcNic or null else null;
+    description = "Name of the VPC NIC. When set with IPv6, forces flannel VXLAN to use this interface.";
+  };
+
   config = lib.mkIf (cfg.vpcAddress != null) {
+    # Force flannel VXLAN to use the VPC NIC so IPv6 tunnels go over VPC
+    # instead of public addresses. Without this, flannel auto-detects the
+    # public IPv6 and cross-node pod traffic fails.
+    seed.k3s.extraFlags = lib.mkIf (cfg.vpcNic != null && cfg.vpcIpv6 != null) [
+      "--flannel-iface" cfg.vpcNic
+    ];
     # --- Runtime: auto-detect VPC NIC and assign static IP ---
     systemd.services.seed-vpc = {
       description = "Configure Vultr VPC network interface";

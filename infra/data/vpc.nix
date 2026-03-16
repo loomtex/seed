@@ -7,8 +7,8 @@
   hosts = {
     "stake"          = { ip = "10.0.0.2"; publicNic = "enp1s0"; };   # VM: virtio NIC
     "puncher-atl1-1" = { ip = "10.0.0.1"; publicNic = "enp1s0"; };  # VM: virtio NIC
-    "seed-atl1-1"    = { ip = "10.0.0.10"; ipv6 = "fd02::10"; };  # BM: default publicNic = enp1s0f0
-    "seed-atl1-2"    = { ip = "10.0.0.11"; ipv6 = "fd02::11"; };
-    "seed-atl1-3"    = { ip = "10.0.0.12"; ipv6 = "fd02::12"; };
+    "seed-atl1-1"    = { ip = "10.0.0.10"; ipv6 = "fd02::10"; vpcNic = "enp1s0f1"; };  # BM: dual-port NIC
+    "seed-atl1-2"    = { ip = "10.0.0.11"; ipv6 = "fd02::11"; vpcNic = "enp1s0f1"; };
+    "seed-atl1-3"    = { ip = "10.0.0.12"; ipv6 = "fd02::12"; vpcNic = "enp1s0f1"; };
   };
 }

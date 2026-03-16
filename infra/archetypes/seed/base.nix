@@ -29,10 +29,6 @@
     persistence.enable = true;
     persistence.path = "/persist";
     k3s.dualStack = true;
-    # Force flannel VXLAN to use the VPC NIC so IPv6 tunnels go over VPC (fd02::)
-    # instead of public addresses. Without this, flannel auto-detects the public
-    # IPv6 and cross-node pod traffic fails (public IPv6 != VPC IPv6).
-    k3s.extraFlags = [ "--flannel-iface" "enp1s0f1" ];
   };
 
   # Impermanence mappings
