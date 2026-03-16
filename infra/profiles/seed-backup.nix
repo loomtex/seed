@@ -92,9 +92,26 @@ let
       local tmp_export
       tmp_export=$(mktemp)
 
+      # Grab flock on each instance's .lock file during tar to ensure
+      # consistent swtpm NVRAM state (swtpm uses flock for write serialization).
+      local lock_fds=()
+      local lock_fd=10
+      for lockfile in "$mount_path"/*/.lock; do
+        [ -f "$lockfile" ] || continue
+        eval "exec ''${lock_fd}<$lockfile"
+        flock -s "$lock_fd"
+        lock_fds+=("$lock_fd")
+        lock_fd=$((lock_fd + 1))
+      done
+
       tar -C "$mount_path" -cf - . \
         | gzip \
         | age -e $AGE_RECIPIENTS -o "$tmp_export"
+
+      # Release locks
+      for fd in "''${lock_fds[@]}"; do
+        eval "exec ''${fd}<&-"
+      done
 
       s3_put "$tmp_export" "backup/cephfs/$fs_name/$TIMESTAMP.tar.gz.age"
       rm -f "$tmp_export"
