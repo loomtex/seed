@@ -92,6 +92,11 @@ let
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
       {
+        apiGroups = [ "" ];
+        resources = [ "pods/log" ];
+        verbs = [ "get" ];
+      }
+      {
         apiGroups = [ "apps" ];
         resources = [ "deployments" ];
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
