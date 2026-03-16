@@ -1,13 +1,13 @@
-# Ceph backup to S3 — encrypted pool snapshots on a timer.
+# Ceph backup to S3 — encrypted full exports on a timer.
 #
 # Backs up all Ceph storage (RBD images, CephFS filesystems) to S3
 # using age encryption. Import on a single node (the backup leader).
 #
-# RBD: per-image snapshots + incremental export-diff → age → S3
-# CephFS: filesystem snapshot → tar → age → S3
+# RBD: full export → age → S3 (no incremental chain to manage)
+# CephFS: tar → gzip → age → S3
 #
-# Flexible: discovers pools/images automatically, handles any number of
-# RBD pools and CephFS filesystems. Blacklist pools you don't want backed up.
+# Flexible: discovers RBD pools/images automatically, handles any number of
+# pools and CephFS filesystems. Blacklist pools you don't want backed up.
 { config, lib, pkgs, ... }:
 
 let
@@ -23,7 +23,6 @@ let
 
     export AWS_SHARED_CREDENTIALS_FILE="${awsCreds}"
     export AWS_EC2_METADATA_DISABLED=true
-    export PATH="${lib.makeBinPath [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.getent ]}:$PATH"
 
     BUCKET="${cfg.bucket}"
     ENDPOINT="${cfg.endpoint}"
@@ -33,6 +32,7 @@ let
     STATE_DIR="/persist/seed-backup"
     export MC_CONFIG_DIR="$STATE_DIR/mc"
     MC_ALIAS="seed-s3"
+    RETAIN=${toString cfg.retainSnapshots}
 
     mkdir -p "$STATE_DIR"
 
@@ -45,7 +45,7 @@ let
 
     s3_put() {
       local src="$1" key="$2"
-      mc cp --quiet "$src" "$MC_ALIAS/$BUCKET/$key"
+      mc cp "$src" "$MC_ALIAS/$BUCKET/$key"
     }
 
     is_blacklisted() {
@@ -58,7 +58,7 @@ let
 
     # --- RBD backup ---
     # Enumerate all RBD pools, then all images in each pool.
-    # For each image: create snapshot, export-diff from last snapshot, encrypt, upload.
+    # Full export each image: rbd export → age → S3.
 
     backup_rbd() {
       local pool="$1"
@@ -66,78 +66,62 @@ let
       images=$(rbd ls "$pool" 2>/dev/null) || return 0
 
       for image in $images; do
-        local snap_name="backup-$TIMESTAMP"
-        local last_snap_file="$STATE_DIR/rbd-''${pool}-''${image}-last-snap"
-        local last_snap=""
+        log "RBD $pool/$image: full export"
 
-        if [ -f "$last_snap_file" ]; then
-          last_snap=$(cat "$last_snap_file")
-        fi
-
-        # Create new snapshot
-        log "RBD $pool/$image: creating snapshot $snap_name"
-        rbd snap create "$pool/$image@$snap_name"
-
-        # Export (incremental if we have a previous snapshot)
         local tmp_export
         tmp_export=$(mktemp)
 
-        if [ -n "$last_snap" ] && rbd snap ls "$pool/$image" | grep -q "$last_snap"; then
-          log "RBD $pool/$image: incremental export from $last_snap"
-          rbd export-diff --from-snap "$last_snap" "$pool/$image@$snap_name" - \
-            | age -e $AGE_RECIPIENTS -o "$tmp_export"
-          s3_put "$tmp_export" "backup/rbd/$pool/$image/$TIMESTAMP.incremental.age"
-        else
-          log "RBD $pool/$image: full export"
-          rbd export-diff "$pool/$image@$snap_name" - \
-            | age -e $AGE_RECIPIENTS -o "$tmp_export"
-          s3_put "$tmp_export" "backup/rbd/$pool/$image/$TIMESTAMP.full.age"
-        fi
+        rbd export "$pool/$image" - \
+          | age -e $AGE_RECIPIENTS -o "$tmp_export"
 
+        s3_put "$tmp_export" "backup/rbd/$pool/$image/$TIMESTAMP.age"
         rm -f "$tmp_export"
 
-        # Clean up old snapshot (keep only current)
-        if [ -n "$last_snap" ] && [ "$last_snap" != "$snap_name" ]; then
-          rbd snap rm "$pool/$image@$last_snap" 2>/dev/null || true
-        fi
-
-        # Record current snapshot for next incremental
-        echo "$snap_name" > "$last_snap_file"
         log "RBD $pool/$image: done"
       done
     }
 
     # --- CephFS backup ---
-    # For each CephFS filesystem: create snapshot, tar, encrypt, upload.
+    # Tar the mount point, compress, encrypt, upload.
 
     backup_cephfs() {
       local fs_name="$1" mount_path="$2"
-      local snap_name="backup-$TIMESTAMP"
 
-      log "CephFS $fs_name: creating snapshot $snap_name"
-      mkdir -p "$mount_path/.snap/$snap_name"
+      log "CephFS $fs_name: tar + compress + encrypt"
 
       local tmp_export
       tmp_export=$(mktemp)
 
-      log "CephFS $fs_name: tar + encrypt snapshot"
-      tar -C "$mount_path/.snap/$snap_name" -cf - . \
+      tar -C "$mount_path" -cf - . \
         | gzip \
         | age -e $AGE_RECIPIENTS -o "$tmp_export"
 
       s3_put "$tmp_export" "backup/cephfs/$fs_name/$TIMESTAMP.tar.gz.age"
       rm -f "$tmp_export"
 
-      # Clean up old snapshots (keep last N)
-      local keep=${toString cfg.retainSnapshots}
-      local snaps
-      snaps=$(ls -1d "$mount_path/.snap/backup-"* 2>/dev/null | sort | head -n -"$keep") || true
-      for old in $snaps; do
-        log "CephFS $fs_name: removing old snapshot $(basename "$old")"
-        rmdir "$old" 2>/dev/null || true
-      done
-
       log "CephFS $fs_name: done"
+    }
+
+    # --- Prune old backups from S3 ---
+
+    prune_prefix() {
+      local prefix="$1"
+      local objects
+      objects=$(mc ls "$MC_ALIAS/$BUCKET/$prefix" 2>/dev/null \
+        | awk '{print $NF}' | sort) || return 0
+
+      local count
+      count=$(echo "$objects" | wc -l)
+      if [ "$count" -le "$RETAIN" ]; then
+        return 0
+      fi
+
+      local to_delete
+      to_delete=$(echo "$objects" | head -n -"$RETAIN")
+      for obj in $to_delete; do
+        log "Pruning $prefix$obj"
+        mc rm "$MC_ALIAS/$BUCKET/$prefix$obj" >/dev/null 2>&1 || true
+      done
     }
 
     # --- Main ---
@@ -156,12 +140,19 @@ let
       POOL_APP=$(ceph osd pool application get "$pool" 2>/dev/null || echo "")
       if echo "$POOL_APP" | grep -q '"rbd"'; then
         backup_rbd "$pool"
+
+        # Prune old backups for each image
+        images=$(rbd ls "$pool" 2>/dev/null) || true
+        for image in $images; do
+          prune_prefix "backup/rbd/$pool/$image/"
+        done
       fi
     done
 
     # Back up CephFS filesystems
     ${lib.concatMapStringsSep "\n" (fs: ''
       backup_cephfs "${fs.name}" "${fs.mountPoint}"
+      prune_prefix "backup/cephfs/${fs.name}/"
     '') cfg.cephfs}
 
     log "=== Backup complete ==="
@@ -213,7 +204,7 @@ in {
     retainSnapshots = lib.mkOption {
       type = lib.types.int;
       default = 7;
-      description = "Number of CephFS snapshots and RBD incremental chains to retain on-cluster";
+      description = "Number of backups to retain in S3 per image/filesystem";
     };
   };
 
@@ -222,7 +213,7 @@ in {
       description = "Ceph backup to S3 (encrypted)";
       after = [ "ceph.target" "network-online.target" ];
       wants = [ "network-online.target" ];
-      path = [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.getent ];
+      path = [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.getent pkgs.gawk ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = backupScript;
