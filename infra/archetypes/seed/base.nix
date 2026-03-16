@@ -29,6 +29,7 @@
     persistence.enable = true;
     persistence.path = "/persist";
     k3s.dualStack = true;
+
   };
 
   # Impermanence mappings

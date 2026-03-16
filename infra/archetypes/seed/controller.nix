@@ -1,8 +1,24 @@
-# Seed controller node: webhook, flake paths, ingress firewall ports.
+# Seed controller node: webhook, flake paths, ingress firewall ports, backup.
 # Applied only to nodes with `controller = true` in cluster.nix.
 { config, ... }:
 
 {
+  imports = [
+    ../../profiles/seed-backup.nix
+  ];
+
+  combine.backup = {
+    enable = true;
+    bucket = "seed-nix-cache";
+    recipients = [
+      "age14xasgltzglzdnnkk4hqpyhwve2ku590lftj5mmgdrmr2ecc3eacqzuqlvx"  # josh (yubikey)
+      "age1ujjm7feyd3p2e0qtfa6zr2rzf593yd2z0xjn0ytvd8jcje68nansxy4zuu"  # ada
+    ];
+    cephfs = [
+      { name = "seed-fs"; mountPoint = "/var/lib/seed-controller/tpm"; }
+    ];
+  };
+
   seed.controller = {
     enable = true;
     flakePaths = [ "github:loomtex/seed" ];
