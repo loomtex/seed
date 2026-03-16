@@ -23,9 +23,15 @@ let
   lib = pkgs.lib;
 
   # --- Combinable components ---
+  # ceph-csi execs `rbd` for krbd map/unmap — ceph (which provides rbd) must be in PATH.
+  cephCsiEntrypoint = pkgs.writeShellScript "cephcsi-wrapper" ''
+    export PATH="${pkgs.ceph}/bin:$PATH"
+    exec ${pkgs.ceph-csi}/bin/cephcsi "$@"
+  '';
+
   cephCsi = mkK8sComponent {
     name = "ceph-csi";
-    entrypoint = "${pkgs.ceph-csi}/bin/cephcsi";
+    entrypoint = "${cephCsiEntrypoint}";
     extraRootfs = "mkdir -p $out/etc/ceph";
   };
 
@@ -144,7 +150,7 @@ let
         { apiGroups = ["snapshot.storage.k8s.io"]; resources = ["volumesnapshotclasses"]; verbs = ["get" "list" "watch"]; }
         { apiGroups = ["storage.k8s.io"]; resources = ["csinodes"]; verbs = ["get" "list" "watch"]; }
         { apiGroups = [""]; resources = ["nodes"]; verbs = ["get" "list" "watch"]; }
-        { apiGroups = ["storage.k8s.io"]; resources = ["volumeattachments"]; verbs = ["get" "list" "watch"]; }
+        { apiGroups = ["storage.k8s.io"]; resources = ["volumeattachments"]; verbs = ["get" "list" "watch" "patch"]; }
         { apiGroups = ["storage.k8s.io"]; resources = ["volumeattachments/status"]; verbs = ["patch"]; }
         { apiGroups = [""]; resources = ["persistentvolumeclaims/status"]; verbs = ["patch"]; }
         { apiGroups = ["coordination.k8s.io"]; resources = ["leases"]; verbs = ["get" "watch" "list" "delete" "update" "create"]; }
