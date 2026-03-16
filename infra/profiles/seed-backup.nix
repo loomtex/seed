@@ -222,6 +222,7 @@ in {
       description = "Ceph backup to S3 (encrypted)";
       after = [ "ceph.target" "network-online.target" ];
       wants = [ "network-online.target" ];
+      path = [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.glibc.bin ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = backupScript;
