@@ -140,6 +140,19 @@ in
     };
   };
 
+  # In Kata VMs, unix_chkpwd doesn't work (no setuid support with
+  # boot.isContainer). Use a minimal PAM config that skips account checks.
+  security.pam.services.sshd = {
+    allowNullPassword = true;
+    account = lib.mkForce [{
+      name = "permit";
+      enable = true;
+      order = 0;
+      control = "required";
+      modulePath = "pam_permit.so";
+    }];
+  };
+
   users.users.seed = {
     isNormalUser = true;
     home = "/home/seed";
