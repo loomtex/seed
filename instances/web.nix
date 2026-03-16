@@ -144,9 +144,19 @@ in
 
   services.caddy = {
     enable = true;
+    globalConfig = ''
+      log {
+        output stderr
+        format json
+      }
+    '';
     virtualHosts."loom.farm" = {
       extraConfig = ''
         tls ${certDir}/fullchain.pem ${certDir}/key.pem
+        log {
+          output stderr
+          format json
+        }
         handle_path /_hook/* {
           reverse_proxy seed-controller.seed-system.svc.cluster.local:9876
         }
@@ -159,6 +169,10 @@ in
     virtualHosts."silo.loom.farm" = {
       extraConfig = ''
         tls ${certDir}/fullchain.pem ${certDir}/key.pem
+        log {
+          output stderr
+          format json
+        }
         reverse_proxy seed-silo.s-gaydazldmnsg.svc.cluster.local:8080
       '';
     };
