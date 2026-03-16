@@ -23,7 +23,7 @@ let
 
     export AWS_SHARED_CREDENTIALS_FILE="${awsCreds}"
     export AWS_EC2_METADATA_DISABLED=true
-    export PATH="${lib.makeBinPath [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux ]}:$PATH"
+    export PATH="${lib.makeBinPath [ ceph age pkgs.gnutar pkgs.minio-client pkgs.coreutils pkgs.gzip pkgs.util-linux pkgs.glibc.bin ]}:$PATH"
 
     BUCKET="${cfg.bucket}"
     ENDPOINT="${cfg.endpoint}"
