@@ -154,7 +154,11 @@ in
           reverse_proxy ${controllerBackend}:9876
         }
         handle {
-          reverse_proxy ${webBackend}:80
+          reverse_proxy https://${webBackend}:443 {
+            transport http {
+              tls_insecure_skip_verify
+            }
+          }
         }
       '';
     };
