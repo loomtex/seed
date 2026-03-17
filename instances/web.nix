@@ -12,6 +12,9 @@
     enable = true;
     virtualHosts.":8080" = {
       extraConfig = ''
+        log {
+          output stderr
+        }
         root * ${../site}
         file_server
       '';
