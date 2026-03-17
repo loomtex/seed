@@ -39,11 +39,11 @@ let
     #
     (
       trap "" TERM HUP PIPE
-      while true; do
-        while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
-        TERM=dumb journalctl -f --output=json --no-pager 2>/dev/null || true
-        sleep 1
-      done
+      # Write immediately to establish the pipe before entering the
+      # sleep loop. The Kata agent may close idle pipes.
+      echo '{"MESSAGE":"seed-log-streamer: waiting for journald","PRIORITY":"6","SYSLOG_IDENTIFIER":"seed"}' 2>/dev/null
+      while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
+      TERM=dumb exec journalctl -f --output=json --no-pager
     ) &
 
     exec ${toplevel}/init
