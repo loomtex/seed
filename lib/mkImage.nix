@@ -40,25 +40,19 @@ let
     # Diagnostics: write lifecycle trace to /run/seed-log-debug so we can
     # check the file after boot to understand failures (the file persists
     # even when stdout is broken).
+    # Save container stdout as fd 3 before anything can close it.
+    # The background streamer writes to fd 3, not fd 1 — this survives
+    # even if NixOS init or systemd manipulates fd 1.
+    exec 3>&1
+
     (
-      dbg=/run/seed-log-debug
-      log() { echo "$(date +%s.%N) $1" >> "$dbg" 2>/dev/null; echo "$1"; }
-
-      # Trap every signal to see what kills us
-      for s in HUP INT QUIT TERM PIPE USR1 USR2 ALRM; do
-        trap "log 'signal=$s'" $s
-      done
-      trap "" TERM HUP PIPE  # then override the killers
-
-      log "streamer:started pid=$BASHPID ppid=$PPID"
-      log "streamer:fd1=$(readlink /proc/self/fd/1 2>/dev/null || echo unknown)"
-      log "streamer:fd2=$(readlink /proc/self/fd/2 2>/dev/null || echo unknown)"
-
-      while [ ! -S /run/systemd/journal/stdout ]; do
-        sleep 1
-      done
-      log "streamer:socket-found"
-      TERM=dumb exec journalctl -f --output=json --no-pager
+      trap "" TERM HUP PIPE
+      echo "streamer:started pid=$BASHPID" >&3
+      echo "streamer:fd1=$(readlink /proc/self/fd/1 2>/dev/null)" >&3
+      echo "streamer:fd3=$(readlink /proc/self/fd/3 2>/dev/null)" >&3
+      while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
+      echo "streamer:socket-found" >&3
+      TERM=dumb journalctl -f --output=json --no-pager >&3
     ) &
 
     exec ${toplevel}/init
