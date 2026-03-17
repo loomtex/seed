@@ -36,9 +36,28 @@ let
     #
     # trap: systemd sends SIGTERM to stray processes on startup — ignore it.
     # TERM=dumb: prevent journalctl from adding ANSI color codes to JSON.
+    #
+    # Diagnostics: write lifecycle trace to /run/seed-log-debug so we can
+    # check the file after boot to understand failures (the file persists
+    # even when stdout is broken).
     (
-      trap "" TERM HUP PIPE
-      while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
+      dbg=/run/seed-log-debug
+      log() { echo "$(date +%s.%N) $1" >> "$dbg" 2>/dev/null; echo "$1"; }
+
+      # Trap every signal to see what kills us
+      for s in HUP INT QUIT TERM PIPE USR1 USR2 ALRM; do
+        trap "log 'signal=$s'" $s
+      done
+      trap "" TERM HUP PIPE  # then override the killers
+
+      log "streamer:started pid=$BASHPID ppid=$PPID"
+      log "streamer:fd1=$(readlink /proc/self/fd/1 2>/dev/null || echo unknown)"
+      log "streamer:fd2=$(readlink /proc/self/fd/2 2>/dev/null || echo unknown)"
+
+      while [ ! -S /run/systemd/journal/stdout ]; do
+        sleep 1
+      done
+      log "streamer:socket-found"
       TERM=dumb exec journalctl -f --output=json --no-pager
     ) &
 
