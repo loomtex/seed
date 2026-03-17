@@ -43,6 +43,10 @@ let
     { name = "seed.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::6"; }]; }
 
+    # www.loom.farm → web instance
+    { name = "www.${zone}"; type = "CNAME"; ttl = 300;
+      records = [{ content = zone; }]; }
+
     # Zone apex — can't CNAME at apex, use A/AAAA
     # IPv4 still goes through gateway (shared IP), IPv6 goes direct to web
     { name = zone; type = "A"; ttl = 300;

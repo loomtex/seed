@@ -27,7 +27,7 @@ in
         acme_ca {$SEED_ACME_URL}
       }
 
-      {$SEED_FQDN}, loom.farm {
+      {$SEED_FQDN}, loom.farm, www.loom.farm {
         handle_path /_hook/* {
           reverse_proxy seed-controller.seed-system.svc.cluster.local:9876
         }

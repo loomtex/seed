@@ -588,44 +588,8 @@ async function deployedGeneration(
 }
 
 /**
- * Read the commit annotation from a namespace.
- */
-async function getDeployedCommit(
-  clients: ReturnType<typeof makeClients>,
-  namespace: string,
-): Promise<string> {
-  try {
-    const ns = await clients.core.readNamespace({ name: namespace });
-    return ns.metadata?.annotations?.[ANNOTATIONS.COMMIT] || "";
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Set the commit annotation on a namespace.
- */
-async function setDeployedCommit(
-  clients: ReturnType<typeof makeClients>,
-  namespace: string,
-  commit: string,
-): Promise<void> {
-  try {
-    const ns = await clients.core.readNamespace({ name: namespace });
-    ns.metadata = ns.metadata || {};
-    ns.metadata.annotations = {
-      ...ns.metadata.annotations,
-      [ANNOTATIONS.COMMIT]: commit,
-    };
-    await clients.core.replaceNamespace({ name: namespace, body: ns });
-  } catch (err) {
-    log("controller", `failed to set commit annotation on ${namespace}: ${err}`);
-  }
-}
-
-/**
  * Load existing desired state from cluster resources.
- * Used for unchanged flakes to populate the watch drift-correction state.
+ * Used by drift-correction watches to rebuild state after reconnection.
  */
 async function loadExistingDesired(
   clients: ReturnType<typeof makeClients>,
@@ -1263,30 +1227,15 @@ async function main(): Promise<void> {
 
       fs.desired = desired;
 
-      // Annotate namespace with commit hash for startup optimization
-      const rev = await getFlakeRevision(flakePath);
-      if (rev) {
-        await setDeployedCommit(clients, namespace, rev);
-      }
-
       log("controller", `reconciliation complete (generation=${generation})`, flakePath);
     } finally {
       fs.reconciling = false;
     }
   }
 
-  // Startup: reconcile all flakes. Skip unchanged ones via commit hash.
+  // Startup: always reconcile all flakes to ensure desired state is correct.
   for (const [flakePath, fs] of flakeStates) {
-    const rev = await getFlakeRevision(flakePath);
-    const deployedRev = await getDeployedCommit(clients, fs.namespace);
-
-    if (rev && deployedRev && rev === deployedRev) {
-      log("controller", `flake unchanged (rev=${rev}), loading existing state`, flakePath);
-      fs.desired = await loadExistingDesired(clients, fs.namespace);
-    } else {
-      log("controller", `flake changed or first deploy (rev=${rev || "unknown"}, deployed=${deployedRev || "none"})`, flakePath);
-      await reconcile(flakePath, fs.namespace, false);
-    }
+    await reconcile(flakePath, fs.namespace, false);
   }
 
   // Build initial key index from all flakes
