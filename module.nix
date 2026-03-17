@@ -281,11 +281,11 @@ in {
       script = let
         applyCommands = lib.concatStringsSep "\n" (lib.mapAttrsToList (name: svc: ''
           echo "Applying k8s service: ${name}"
-          kubectl apply --server-side -f ${svc.manifests}/
+          kubectl apply --server-side --force-conflicts -f ${svc.manifests}/
           ${lib.concatMapStringsSep "\n" (p: ''
             if [ -f "${p}" ]; then
               echo "Applying extra manifest: ${p}"
-              kubectl apply --server-side -f "${p}"
+              kubectl apply --server-side --force-conflicts -f "${p}"
             fi
           '') svc.extraManifestPaths}
         '') cfg.k8s.services);
