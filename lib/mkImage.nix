@@ -37,16 +37,13 @@ let
     # trap: systemd sends SIGTERM to stray processes on startup — ignore it.
     # TERM=dumb: prevent journalctl from adding ANSI color codes to JSON.
     #
-    # Save container stdout to fd 100 — a high fd number unlikely to be
-    # reused by the kata agent or NixOS init. The streamer writes all
-    # output to this fd instead of fd 1, protecting against anything that
-    # might close or reassign low-numbered fds during VM startup.
-    exec 100>&1
-
     (
       trap "" TERM HUP PIPE
-      while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
-      TERM=dumb exec journalctl -f --output=json --no-pager >&100
+      while true; do
+        while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
+        TERM=dumb journalctl -f --output=json --no-pager 2>/dev/null || true
+        sleep 1
+      done
     ) &
 
     exec ${toplevel}/init
