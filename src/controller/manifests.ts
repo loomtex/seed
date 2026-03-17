@@ -14,6 +14,7 @@ export function generateDeployment(
   meta: SeedMeta,
   tpmSocketPath?: string,
   poolManagerUrl?: string,
+  acmeUrl?: string,
 ): k8s.V1Deployment {
   const podAnnotations: Record<string, string> = {
     [ANNOTATIONS.KATA_VCPUS]: String(meta.resources.vcpus),
@@ -102,6 +103,16 @@ export function generateDeployment(
                   name: "SEED_SHOOT_URL",
                   value: poolManagerUrl,
                 }] : []),
+                ...(meta.acme && acmeUrl ? [
+                  {
+                    name: "SEED_ACME_URL",
+                    value: acmeUrl,
+                  },
+                  {
+                    name: "SEED_FQDN",
+                    value: `${name}.${namespace}.loom.farm`,
+                  },
+                ] : []),
               ],
               ...(probePort ? {
                 readinessProbe: {

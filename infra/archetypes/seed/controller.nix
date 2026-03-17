@@ -25,13 +25,23 @@
     netpol.enable = true;
     webhook = {
       enable = true;
-      secretFile = config.sops.secrets."seed/controller/gh-webhook-secret".path;
+      secretFile = "/etc/seed/secrets/gh-webhook-secret";
     };
     dns = {
       apiUrl = "http://seed-dns.s-gaydazldmnsg.svc.cluster.local:8081";
-      apiKeyFile = config.sops.secrets."seed/controller/pdns-api-key".path;
+      apiKeyFile = "/etc/seed/secrets/pdns-api-key";
     };
+    acme.accountKey = config.sops.placeholder."seed/controller/acme-account-key";
   };
+
+  sops.templates."seed-acme-secret.json" = {
+    content = config.seed.controller.acme._secretManifestJSON;
+  };
+
+  seed.k8s.services.seed-controller.extraManifestPaths = [
+    config.sops.templates."seed-controller-secrets.json".path
+    config.sops.templates."seed-acme-secret.json".path
+  ];
 
   networking.firewall = {
     allowedTCPPorts = [

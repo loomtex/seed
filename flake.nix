@@ -535,6 +535,8 @@ INITEOF
         routes = {
           dns = { host = "1"; port = 53; protocol = "dns"; instance = "dns"; };
           dns2 = { host = "2"; port = 53; protocol = "dns"; instance = "dns"; };
+          web-http = { host = "7"; port = 80; protocol = "tcp"; instance = "web"; };
+          web-https = { host = "7"; port = 443; protocol = "tcp"; instance = "web"; };
           http = { host = "3"; port = 80; protocol = "tcp"; instance = "gateway"; };
           https = { host = "3"; port = 443; protocol = "tcp"; instance = "gateway"; };
           ssh = { host = "3"; port = 22; protocol = "tcp"; instance = "gateway"; };

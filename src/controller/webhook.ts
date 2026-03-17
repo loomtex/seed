@@ -8,6 +8,7 @@ import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { log } from "../shared/kube.js";
 import { handleApiRequest } from "./api.js";
+import { handleAcmeRequest } from "./acme.js";
 
 export type RefreshCallback = (flakePath: string) => void;
 
@@ -55,6 +56,9 @@ export function startWebhookServer(
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Try API routes first (no HMAC — internal cluster traffic only)
     if (await handleApiRequest(req, res)) return;
+
+    // ACME endpoint (no HMAC — namespace identity enforced by network policy)
+    if (await handleAcmeRequest(req, res)) return;
 
     if (req.method !== "POST" || req.url !== "/refresh") {
       res.writeHead(404, { "Content-Length": "0" });

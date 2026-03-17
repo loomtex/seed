@@ -39,15 +39,16 @@ let
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
 
-    # Seed shell — SSH management interface
+    # Seed shell — SSH management interface (shell ingress service)
     { name = "seed.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::5"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::6"; }]; }
 
     # Zone apex — can't CNAME at apex, use A/AAAA
+    # IPv4 still goes through gateway (shared IP), IPv6 goes direct to web
     { name = zone; type = "A"; ttl = 300;
       records = [{ content = "96.30.193.227"; }]; }
     { name = zone; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::7"; }]; }
   ];
 
   zoneData = pkgs.writeText "loom-farm-zone.json" (builtins.toJSON {

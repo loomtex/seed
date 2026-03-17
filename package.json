@@ -9,7 +9,8 @@
     "test": "node --import tsx/esm --test src/test/*.test.ts"
   },
   "dependencies": {
-    "@kubernetes/client-node": "^1.0.0"
+    "@kubernetes/client-node": "^1.0.0",
+    "jose": "^6.1.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

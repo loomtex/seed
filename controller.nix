@@ -235,6 +235,10 @@ let
               name = "SEED_PDNS_ZONE"; value = cfg.dns.zone;
             } ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
+            } ++ lib.optional (cfg.acme.accountKey != "") {
+              name = "SEED_ACME_ACCOUNT_KEY_FILE"; value = "/etc/seed/acme/account-key.pem";
+            } ++ lib.optional (cfg.acme.accountKey != "") {
+              name = "SEED_ACME_ENABLED"; value = "1";
             } ++ lib.optional cfg.poolManager.enable {
               name = "SEED_POOL_MANAGER_URL"; value = "http://seed-pool-manager.${seedSystemNS}.svc.cluster.local:${toString cfg.poolManager.port}";
             };
@@ -243,33 +247,24 @@ let
               name = "webhook";
               protocol = "TCP";
             }];
-            volumeMounts = let
-              # Deduplicate mounts — webhook secret and pdns key may share a directory
-              secretPaths = lib.unique (
-                lib.optional (cfg.webhook.secretFile != "") (builtins.dirOf cfg.webhook.secretFile)
-                ++ lib.optional (cfg.dns.apiKeyFile != "") (builtins.dirOf cfg.dns.apiKeyFile)
-              );
-            in [
+            volumeMounts = [
               { name = "nix-daemon"; mountPath = "/nix/var/nix/daemon-socket"; }
               { name = "nix-store"; mountPath = "/nix/store"; readOnly = true; }
-            ] ++ lib.imap0 (i: path: {
-              name = "secrets-${toString i}";
-              mountPath = path;
+              { name = "secrets"; mountPath = "/etc/seed/secrets"; readOnly = true; }
+            ] ++ lib.optional (cfg.acme.accountKey != "") {
+              name = "acme-account-key";
+              mountPath = "/etc/seed/acme";
               readOnly = true;
-            }) secretPaths;
+            };
           }];
-          volumes = let
-            secretPaths = lib.unique (
-              lib.optional (cfg.webhook.secretFile != "") (builtins.dirOf cfg.webhook.secretFile)
-              ++ lib.optional (cfg.dns.apiKeyFile != "") (builtins.dirOf cfg.dns.apiKeyFile)
-            );
-          in [
+          volumes = [
             { name = "nix-daemon"; hostPath.path = "/nix/var/nix/daemon-socket"; }
             { name = "nix-store"; hostPath.path = "/nix/store"; }
-          ] ++ lib.imap0 (i: path: {
-            name = "secrets-${toString i}";
-            hostPath = { inherit path; type = "Directory"; };
-          }) secretPaths;
+            { name = "secrets"; secret = { secretName = "seed-controller-secrets"; optional = true; }; }
+          ] ++ lib.optional (cfg.acme.accountKey != "") {
+            name = "acme-account-key";
+            secret.secretName = "seed-acme-account-key";
+          };
         };
       };
     };
@@ -431,6 +426,21 @@ let
     metadata.name = seedSystemNS;
   });
 
+  # ACME account key k8s Secret — JSON with sops placeholder for runtime substitution.
+  # The calling profile creates sops.templates from this and passes the rendered
+  # path via extraManifestPaths. Same pattern as mkCephCsiRbd.secretManifestJSON.
+  acmeSecretJSON = builtins.toJSON {
+    apiVersion = "v1";
+    kind = "Secret";
+    metadata = {
+      name = "seed-acme-account-key";
+      namespace = seedSystemNS;
+    };
+    stringData = {
+      "account-key.pem" = cfg.acme.accountKey;
+    };
+  };
+
   # Combined manifests directory for seed.k8s.services
   controllerManifests = pkgs.linkFarm "seed-controller-manifests" (
     [
@@ -560,6 +570,27 @@ in {
       };
     };
 
+    acme = {
+      accountKey = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = ''
+          Let's Encrypt account key PEM. Use sops.placeholder for runtime
+          substitution — the value is embedded in a k8s Secret JSON template,
+          rendered by sops.templates at activation time, and applied to the
+          cluster by the k8s-apply service.
+        '';
+      };
+
+      _secretManifestJSON = lib.mkOption {
+        type = lib.types.str;
+        internal = true;
+        readOnly = true;
+        default = "";
+        description = "Generated k8s Secret JSON for sops.templates wiring.";
+      };
+    };
+
     netpol = {
       enable = lib.mkEnableOption "Network policy enforcement via iptables in host-agent";
     };
@@ -609,5 +640,8 @@ in {
   config = lib.mkIf cfg.enable {
     # Deploy controller manifests via kubectl apply on activation
     seed.k8s.services.seed-controller.manifests = controllerManifests;
+
+    # Expose ACME secret JSON for sops.templates wiring in infra profiles
+    seed.controller.acme._secretManifestJSON = lib.mkIf (cfg.acme.accountKey != "") acmeSecretJSON;
   };
 }

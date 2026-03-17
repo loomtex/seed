@@ -59,6 +59,7 @@ export interface SeedMeta {
   storage: Record<string, SeedStorageEntry>;
   connect: Record<string, SeedConnectEntry>;
   rollout?: "recreate" | "rolling";
+  acme?: boolean;
   shoot?: SeedShootConfig;
 }
 
@@ -132,4 +133,6 @@ export interface ControllerConfig {
   pdnsApiUrl: string;
   pdnsApiKeyFile: string;
   pdnsZone: string;
+  acmeEnabled: boolean;
+  acmeAccountKeyFile: string;
 }

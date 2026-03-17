@@ -120,6 +120,22 @@ in {
       '';
     };
 
+    acme = lib.mkOption {
+      type = lib.types.bool;
+      default = builtins.any (e: e.protocol == "http" || e.protocol == "grpc")
+        (builtins.attrValues cfg.expose);
+      defaultText = lib.literalExpression "true when any expose entry has protocol \"http\" or \"grpc\"";
+      description = ''
+        Enable platform ACME for TLS certificates. When true, the controller
+        injects SEED_ACME_URL pointing to its embedded ACME endpoint. Instances
+        use their web server's built-in ACME client (e.g. Caddy's ca directive)
+        to obtain Let's Encrypt-signed certificates automatically.
+
+        Defaults to true when any expose entry uses "http" or "grpc" protocol.
+        Set explicitly for services not on the whitelist, or false to opt out.
+      '';
+    };
+
     shoot = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -156,6 +172,7 @@ in {
         port = c.port;
       }) cfg.connect;
       rollout = cfg.rollout;
+      acme = cfg.acme;
       shoot = lib.optionalAttrs cfg.shoot.enable { enable = true; };
     };
 
@@ -236,6 +253,10 @@ in {
         (lib.filterAttrs (_: e: e.protocol == "udp" || e.protocol == "dns"))
         (lib.mapAttrsToList (_: e: e.port))
       ];
+
+    # ACME directory URL is injected as SEED_ACME_URL env var by the controller.
+    # Write it to /seed/acme/directory for services that read files.
+    # The env var is captured from PID 1 at /run/seed/env by instance-base.nix.
 
     # Service discovery: environment variables
     environment.sessionVariables = lib.mapAttrs'

@@ -21,6 +21,7 @@ import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
 import { initApi, updateKeyIndex, updateValidNamespaces, type KeyIndex } from "./api.js";
 import { registerDNSRecords, deleteDNSRecords, loadPdnsApiKey } from "./dns.js";
+import { initAcme, updateAcmeNamespaces } from "./acme.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -56,6 +57,8 @@ function loadConfig(): ControllerConfig {
     pdnsApiUrl: process.env["SEED_PDNS_API_URL"] || "",
     pdnsApiKeyFile: process.env["SEED_PDNS_API_KEY_FILE"] || "",
     pdnsZone: process.env["SEED_PDNS_ZONE"] || "loom.farm.",
+    acmeEnabled: !!process.env["SEED_ACME_ENABLED"],
+    acmeAccountKeyFile: process.env["SEED_ACME_ACCOUNT_KEY_FILE"] || "",
   };
 }
 
@@ -190,6 +193,7 @@ export function renderDesiredState(
   ipv4Config: IPv4Config | null,
   ipv6Config: IPv6Config | null,
   hostTaskStatuses: Map<string, { ready: boolean; socketPath: string }>,
+  acmeUrl?: string,
 ): DesiredState {
   const generation = computeGeneration(
     new Map([...buildResults].map(([name, r]) => [name, r.imagePath])),
@@ -218,6 +222,7 @@ export function renderDesiredState(
       meta,
       tpmSocketPath,
       poolManagerUrl || undefined,
+      acmeUrl,
     );
 
     const services: k8s.V1Service[] = [];
@@ -1045,6 +1050,25 @@ async function main(): Promise<void> {
     }
   }
 
+  // Initialize ACME endpoint
+  if (config.acmeEnabled && config.acmeAccountKeyFile && pdnsApiKey) {
+    try {
+      const webhookPort = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
+      await initAcme({
+        baseUrl: `http://seed-controller.seed-system.svc.cluster.local:${webhookPort}`,
+        leDirectoryUrl: "https://acme-v02.api.letsencrypt.org/directory",
+        accountKeyFile: config.acmeAccountKeyFile,
+        pdnsApiUrl: config.pdnsApiUrl,
+        pdnsApiKey: pdnsApiKey,
+        pdnsZone: config.pdnsZone,
+        validNamespaces: new Set([...flakeStates.values()].map((fs) => fs.namespace)),
+      });
+      log("controller", "ACME endpoint enabled");
+    } catch (err) {
+      log("controller", `ACME initialization failed: ${err}`);
+    }
+  }
+
   // Wait for k8s API (use listNamespace — we have RBAC for namespaces, not nodes)
   log("controller", "waiting for k8s API...");
   while (true) {
@@ -1209,6 +1233,11 @@ async function main(): Promise<void> {
       const hostTaskStatuses = await readHostTaskStatuses(clients, namespace);
 
       // Render desired state
+      const webhookPort = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
+      const acmeUrl = config.acmeEnabled
+        ? `http://seed-controller.seed-system.svc.cluster.local:${webhookPort}/acme/directory`
+        : undefined;
+
       const desired = renderDesiredState(
         namespace,
         config.swtpmEnabled,
@@ -1218,6 +1247,7 @@ async function main(): Promise<void> {
         ipv4Config,
         ipv6Config,
         hostTaskStatuses,
+        acmeUrl,
       );
 
       // Apply desired state (SeedHostTasks already applied, skipped inside)
