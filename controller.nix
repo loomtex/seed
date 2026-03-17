@@ -585,7 +585,6 @@ in {
       _secretManifestJSON = lib.mkOption {
         type = lib.types.str;
         internal = true;
-        readOnly = true;
         default = "";
         description = "Generated k8s Secret JSON for sops.templates wiring.";
       };
