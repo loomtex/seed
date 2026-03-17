@@ -28,16 +28,14 @@ in
       }
 
       {$SEED_FQDN}, loom.farm {
+        handle_path /_hook/* {
+          reverse_proxy seed-controller.seed-system.svc.cluster.local:9876
+        }
         root * ${siteDir}
         file_server
         log {
           output stderr
         }
-      }
-
-      :80 {
-        root * ${siteDir}
-        file_server
       }
     '';
   };
