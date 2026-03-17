@@ -344,8 +344,10 @@ export function handlePodDelete(pod: k8s.V1Pod): void {
   scheduleReconcile(ns);
 }
 
-// Debounce timers per namespace
+// Debounce timers and serialization locks per namespace
 const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const reconcileLocks = new Map<string, Promise<void>>();
+const reconcilePending = new Set<string>();
 
 function scheduleReconcile(ns: string): void {
   const existing = reconcileTimers.get(ns);
@@ -355,11 +357,34 @@ function scheduleReconcile(ns: string): void {
     ns,
     setTimeout(() => {
       reconcileTimers.delete(ns);
-      reconcileNamespace(ns).catch((err) => {
-        log(COMPONENT, `reconcile error for ${ns}: ${err instanceof Error ? err.message : String(err)}`);
-      });
+      runReconcile(ns);
     }, 500),
   );
+}
+
+/** Serialize reconcileNamespace: only one runs at a time per namespace.
+ *  If a reconciliation is in progress, mark pending and re-run after. */
+function runReconcile(ns: string): void {
+  const lock = reconcileLocks.get(ns);
+  if (lock) {
+    // Already running — mark pending so it re-runs after current finishes
+    reconcilePending.add(ns);
+    return;
+  }
+
+  const p = reconcileNamespace(ns)
+    .catch((err) => {
+      log(COMPONENT, `reconcile error for ${ns}: ${err instanceof Error ? err.message : String(err)}`);
+    })
+    .finally(() => {
+      reconcileLocks.delete(ns);
+      if (reconcilePending.has(ns)) {
+        reconcilePending.delete(ns);
+        runReconcile(ns);
+      }
+    });
+
+  reconcileLocks.set(ns, p);
 }
 
 /** Remove all SEED-* chains and rules. Called on shutdown. */
