@@ -34,6 +34,11 @@ in
           output stderr
         }
       }
+
+      :80 {
+        root * ${siteDir}
+        file_server
+      }
     '';
   };
 
