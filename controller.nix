@@ -406,6 +406,28 @@ let
     kind = "Namespace";
     metadata.name = seedSystemNS;
   });
+
+  # Combined manifests directory for seed.k8s.services
+  controllerManifests = pkgs.linkFarm "seed-controller-manifests" (
+    [
+      { name = "01-namespace.json"; path = seedSystemNamespace; }
+      { name = "02-hosttask-crd.json"; path = seedHostTaskCRD; }
+      { name = "03-controller-sa.json"; path = controllerSA; }
+      { name = "03-builder-sa.json"; path = builderSA; }
+      { name = "04-controller-role.json"; path = controllerRole; }
+      { name = "04-controller-rolebinding.json"; path = controllerRoleBinding; }
+      { name = "04-builder-role.json"; path = builderRole; }
+      { name = "04-builder-rolebinding.json"; path = builderRoleBinding; }
+      { name = "05-controller-deployment.json"; path = controllerDeployment; }
+      { name = "05-controller-service.json"; path = controllerService; }
+    ]
+    ++ lib.optional cfg.swtpmEnabled
+      { name = "05-host-agent-daemonset.json"; path = hostAgentDaemonSet; }
+    ++ lib.optionals cfg.poolManager.enable [
+      { name = "05-pool-manager-daemonset.json"; path = poolManagerDaemonSet; }
+      { name = "05-pool-manager-service.json"; path = poolManagerService; }
+    ]
+  );
 in {
   options.seed.controller = {
     enable = lib.mkEnableOption "Seed instance controller";
@@ -537,29 +559,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    # Deploy k8s manifests via k3s auto-deploy
-    systemd.services.k3s.serviceConfig.ExecStartPre = lib.mkAfter [
-      "+${pkgs.writeShellScript "seed-controller-manifests" ''
-        dir="/var/lib/rancher/k3s/server/manifests"
-        mkdir -p "$dir"
-        ln -sf ${seedSystemNamespace} "$dir/seed-system-namespace.yaml"
-        ln -sf ${seedHostTaskCRD} "$dir/seed-hosttask-crd.yaml"
-        ln -sf ${controllerSA} "$dir/seed-controller-sa.yaml"
-        ln -sf ${builderSA} "$dir/seed-builder-sa.yaml"
-        ln -sf ${controllerRole} "$dir/seed-controller-role.yaml"
-        ln -sf ${controllerRoleBinding} "$dir/seed-controller-rolebinding.yaml"
-        ln -sf ${builderRole} "$dir/seed-builder-role.yaml"
-        ln -sf ${builderRoleBinding} "$dir/seed-builder-rolebinding.yaml"
-        ln -sf ${controllerDeployment} "$dir/seed-controller-deployment.yaml"
-        ln -sf ${controllerService} "$dir/seed-controller-service.yaml"
-        ${lib.optionalString cfg.swtpmEnabled ''
-          ln -sf ${hostAgentDaemonSet} "$dir/seed-host-agent-daemonset.yaml"
-        ''}
-        ${lib.optionalString cfg.poolManager.enable ''
-          ln -sf ${poolManagerDaemonSet} "$dir/seed-pool-manager-daemonset.yaml"
-          ln -sf ${poolManagerService} "$dir/seed-pool-manager-service.yaml"
-        ''}
-      ''}"
-    ];
+    # Deploy controller manifests via kubectl apply on activation
+    seed.k8s.services.seed-controller.manifests = controllerManifests;
   };
 }

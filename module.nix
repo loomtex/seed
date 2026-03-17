@@ -27,18 +27,23 @@ let
 
   # MetalLB: bare-metal LoadBalancer implementation (L2/BGP)
   # Using FRR mode for IPv6 BGP support (native mode only supports IPv4 BGP)
-  metallbManifest = pkgs.fetchurl {
-    url = "https://raw.githubusercontent.com/metallb/metallb/v0.15.3/config/manifests/metallb-frr.yaml";
-    hash = "sha256-WgxErUBZ6ZEtivCxL7A11Hp1YZ6RNzf1onWWIOerV2k=";
-  };
-
-  runtimeClassManifest = pkgs.writeText "seed-kata-runtime-class.yaml" ''
-    apiVersion: node.k8s.io/v1
-    kind: RuntimeClass
-    metadata:
-      name: kata
-    handler: kata
+  metallbManifests = pkgs.runCommand "seed-metallb-manifests" {} ''
+    mkdir -p $out
+    cp ${pkgs.fetchurl {
+      url = "https://raw.githubusercontent.com/metallb/metallb/v0.15.3/config/manifests/metallb-frr.yaml";
+      hash = "sha256-WgxErUBZ6ZEtivCxL7A11Hp1YZ6RNzf1onWWIOerV2k=";
+    }} $out/metallb-frr.yaml
   '';
+
+  seedBaseManifests = pkgs.linkFarm "seed-base-manifests" [{
+    name = "kata-runtime-class.json";
+    path = pkgs.writeText "kata-runtime-class.json" (builtins.toJSON {
+      apiVersion = "node.k8s.io/v1";
+      kind = "RuntimeClass";
+      metadata.name = "kata";
+      handler = "kata";
+    });
+  }];
 
   disableFlags = map (c: "--disable ${c}") cfg.k3s.disableDefaults;
 in {
@@ -180,6 +185,14 @@ in {
       7946  # MetalLB memberlist (speaker gossip)
       8472  # flannel VXLAN (cross-node pod traffic)
     ];
+
+    # Deploy MetalLB + RuntimeClass via kubectl apply (server only)
+    seed.k8s.services.metallb = lib.mkIf (cfg.role == "server") {
+      manifests = metallbManifests;
+    };
+    seed.k8s.services.seed-base = lib.mkIf (cfg.role == "server") {
+      manifests = seedBaseManifests;
+    };
 
     # Kata config with VM sizing annotations enabled
     environment.etc."kata-containers/configuration.toml".text = kataConfig;
@@ -330,14 +343,6 @@ in {
               if [ -f /persist/seed/server-addr ]; then
                 echo "server: \"$(cat /persist/seed/server-addr)\"" >> /run/k3s/node-config.yaml
               fi
-            ''}"
-          ]) ++
-          # Deploy RuntimeClass + MetalLB manifests (server only)
-          (lib.optionals (cfg.role == "server") [
-            "+${pkgs.writeShellScript "seed-manifests" ''
-              mkdir -p /var/lib/rancher/k3s/server/manifests
-              ln -sf ${runtimeClassManifest} /var/lib/rancher/k3s/server/manifests/seed-kata-runtime-class.yaml
-              ln -sf ${metallbManifest} /var/lib/rancher/k3s/server/manifests/seed-metallb.yaml
             ''}"
           ]);
       };
