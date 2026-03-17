@@ -97,6 +97,7 @@ export interface InstanceState {
   meta: SeedMeta;
   deployment: k8s.V1Deployment;
   services: k8s.V1Service[];
+  ingressService: k8s.V1Service | null;
   pvcs: k8s.V1PersistentVolumeClaim[];
   hostTask: SeedHostTask | null;
 }
@@ -128,4 +129,7 @@ export interface ControllerConfig {
   builderImage: string;
   poolManagerUrl: string;
   swtpmEnabled: boolean;
+  pdnsApiUrl: string;
+  pdnsApiKeyFile: string;
+  pdnsZone: string;
 }

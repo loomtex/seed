@@ -13,13 +13,14 @@ import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, makeClients, deriveNamespace, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
 import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, BuildResult } from "../shared/types.js";
-import { generateDeployment, generatePVC, generateService, generateHostTask } from "./manifests.js";
+import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
 import { initApi, updateKeyIndex, updateValidNamespaces, type KeyIndex } from "./api.js";
+import { registerDNSRecords, deleteDNSRecords, loadPdnsApiKey } from "./dns.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -52,6 +53,9 @@ function loadConfig(): ControllerConfig {
     builderImage: process.env["SEED_BUILDER_IMAGE"] || "",
     poolManagerUrl: process.env["SEED_POOL_MANAGER_URL"] || "",
     swtpmEnabled: !!process.env["SEED_SWTPM_ENABLED"],
+    pdnsApiUrl: process.env["SEED_PDNS_API_URL"] || "",
+    pdnsApiKeyFile: process.env["SEED_PDNS_API_KEY_FILE"] || "",
+    pdnsZone: process.env["SEED_PDNS_ZONE"] || "loom.farm.",
   };
 }
 
@@ -225,11 +229,13 @@ export function renderDesiredState(
       pvcs.push(generatePVC(name, key, entry.size, generation, namespace));
     }
 
+    const ingressService = generateIngressService(name, generation, namespace, meta);
+
     const hostTask = swtpmEnabled
       ? generateHostTask(name, namespace, generation)
       : null;
 
-    instances.set(name, { imagePath: result.imagePath, meta, deployment, services, pvcs, hostTask });
+    instances.set(name, { imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, hostTask });
   }
 
   // Route services
@@ -420,6 +426,18 @@ async function applyDesiredState(
         log("controller", `applied service ${svc.metadata!.name}`, name);
       } catch (err) {
         log("controller", `service error: ${err}`, name);
+      }
+    }
+  }
+
+  // Apply ingress services (per-instance IPv6 LoadBalancer)
+  for (const [name, instance] of desired.instances) {
+    if (instance.ingressService) {
+      try {
+        await applyResource(clients.core, "Service", namespace, instance.ingressService);
+        log("controller", `applied ingress service ${instance.ingressService.metadata!.name}`, name);
+      } catch (err) {
+        log("controller", `ingress service error: ${err}`, name);
       }
     }
   }
@@ -628,6 +646,7 @@ async function loadExistingDesired(
         meta: { name: instanceName, system: "", size: "", resources: { vcpus: 0, memory: 0 }, expose: {}, storage: {}, connect: {} },
         deployment: dep,
         services: [],
+        ingressService: null,
         pvcs: [],
         hostTask: null,
       });
@@ -645,7 +664,11 @@ async function loadExistingDesired(
     for (const svc of svcs.items) {
       const instanceName = svc.metadata?.labels?.[LABELS.INSTANCE];
       const serviceType = svc.metadata?.labels?.[LABELS.SERVICE_TYPE];
-      if (serviceType) continue; // Route services handled below
+      if (serviceType === "ipv4" || serviceType === "ipv6") continue; // Route services handled below
+      if (serviceType === "ingress" && instanceName && instances.has(instanceName)) {
+        instances.get(instanceName)!.ingressService = svc;
+        continue;
+      }
       if (instanceName && instances.has(instanceName)) {
         instances.get(instanceName)!.services.push(svc);
       }
@@ -905,11 +928,85 @@ function findDesiredService(
     for (const svc of instance.services) {
       if (svc.metadata?.name === name) return svc;
     }
+    if (instance.ingressService?.metadata?.name === name) return instance.ingressService;
   }
   for (const svc of [...desired.routes.ipv4, ...desired.routes.ipv6]) {
     if (svc.metadata?.name === name) return svc;
   }
   return null;
+}
+
+// --- DNS auto-registration ---
+
+/**
+ * Read assigned IPv6 addresses from ingress services and register AAAA records.
+ * Waits briefly for MetalLB to assign IPs if not yet available.
+ */
+async function registerInstanceDNS(
+  clients: ReturnType<typeof makeClients>,
+  config: ControllerConfig,
+  pdnsApiKey: string,
+  namespace: string,
+  desired: DesiredState,
+): Promise<void> {
+  const instanceIPs = new Map<string, string[]>();
+  const pendingInstances: string[] = [];
+
+  // Collect instances that have ingress services
+  for (const [name, instance] of desired.instances) {
+    if (!instance.ingressService) continue;
+    pendingInstances.push(name);
+  }
+
+  if (pendingInstances.length === 0) return;
+
+  // Wait for MetalLB to assign IPs (up to 30s)
+  const maxWait = 30_000;
+  const pollInterval = 2_000;
+  const start = Date.now();
+
+  while (Date.now() - start < maxWait) {
+    const remaining: string[] = [];
+    for (const name of pendingInstances) {
+      const svcName = `seed-${name}-ingress`;
+      try {
+        const svc = await clients.core.readNamespacedService({ name: svcName, namespace });
+        const ingress = svc.status?.loadBalancer?.ingress;
+        if (ingress && ingress.length > 0) {
+          const ips = ingress.map((i) => i.ip).filter((ip): ip is string => !!ip);
+          if (ips.length > 0) {
+            instanceIPs.set(name, ips);
+            continue;
+          }
+        }
+      } catch {
+        // Service might not exist yet
+      }
+      remaining.push(name);
+    }
+
+    if (remaining.length === 0) break;
+    pendingInstances.length = 0;
+    pendingInstances.push(...remaining);
+    await sleep(pollInterval);
+  }
+
+  if (pendingInstances.length > 0) {
+    log("dns", `warning: no IP assigned for ingress services: ${pendingInstances.map((n) => `seed-${n}-ingress`).join(", ")}`);
+  }
+
+  // Register AAAA records
+  try {
+    await registerDNSRecords(
+      config.pdnsApiUrl,
+      pdnsApiKey,
+      config.pdnsZone,
+      namespace,
+      instanceIPs,
+    );
+  } catch (err) {
+    log("dns", `DNS registration failed: ${err}`);
+  }
 }
 
 // --- Main ---
@@ -935,6 +1032,17 @@ async function main(): Promise<void> {
     });
     namespaceToFlake.set(namespace, flakePath);
     log("controller", `registered flake ${flakePath} → namespace ${namespace}`);
+  }
+
+  // Load pdns API key for DNS auto-registration
+  let pdnsApiKey = "";
+  if (config.pdnsApiUrl && config.pdnsApiKeyFile) {
+    try {
+      pdnsApiKey = await loadPdnsApiKey(config.pdnsApiKeyFile);
+      log("controller", "DNS auto-registration enabled");
+    } catch (err) {
+      log("controller", `DNS auto-registration disabled: ${err}`);
+    }
   }
 
   // Wait for k8s API (use listNamespace — we have RBAC for namespaces, not nodes)
@@ -1117,6 +1225,11 @@ async function main(): Promise<void> {
 
       // Reap old resources
       await reapOldResources(clients, namespace, generation);
+
+      // DNS auto-registration: read assigned IPv6 from ingress services, register AAAA records
+      if (pdnsApiKey) {
+        await registerInstanceDNS(clients, config, pdnsApiKey, namespace, desired);
+      }
 
       fs.desired = desired;
 

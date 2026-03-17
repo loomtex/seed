@@ -174,6 +174,43 @@ export function generateService(
   };
 }
 
+/** Generate an IPv6 LoadBalancer service for direct ingress to an instance.
+ *  MetalLB auto-assigns an IPv6 from the pool. The controller reads the
+ *  assigned IP from service status and registers a AAAA record in pdns. */
+export function generateIngressService(
+  instance: string,
+  generation: string,
+  namespace: string,
+  meta: SeedMeta,
+): k8s.V1Service | null {
+  const ports = buildServicePorts(meta.expose);
+  if (ports.length === 0) return null;
+
+  return {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: {
+      name: `seed-${instance}-ingress`,
+      namespace,
+      labels: {
+        ...seedLabels(instance, generation),
+        [LABELS.SERVICE_TYPE]: "ingress",
+      },
+      annotations: {
+        [ANNOTATIONS.ADDRESS_POOL]: "seed-pool",
+      },
+    },
+    spec: {
+      type: "LoadBalancer",
+      ipFamilyPolicy: "SingleStack",
+      ipFamilies: ["IPv6"],
+      externalTrafficPolicy: "Local",
+      selector: { [LABELS.INSTANCE]: instance },
+      ports,
+    },
+  };
+}
+
 /** Generate a SeedHostTask CRD manifest. */
 export function generateHostTask(
   instance: string,

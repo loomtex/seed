@@ -227,7 +227,13 @@ let
               { name = "SEED_BGP_PEER_ADDRESS"; value = cfg.bgp.peerAddress; }
               { name = "SEED_BGP_PEER_ADDRESS_IPV6"; value = cfg.bgp.peerAddressIPv6; }
               { name = "SEED_BGP_PASSWORD"; value = cfg.bgp.password; }
-            ] ++ lib.optional (cfg.webhook.secretFile != "") {
+            ] ++ lib.optional (cfg.dns.apiUrl != "") {
+              name = "SEED_PDNS_API_URL"; value = cfg.dns.apiUrl;
+            } ++ lib.optional (cfg.dns.apiKeyFile != "") {
+              name = "SEED_PDNS_API_KEY_FILE"; value = cfg.dns.apiKeyFile;
+            } ++ lib.optional (cfg.dns.zone != "loom.farm.") {
+              name = "SEED_PDNS_ZONE"; value = cfg.dns.zone;
+            } ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
             } ++ lib.optional cfg.poolManager.enable {
               name = "SEED_POOL_MANAGER_URL"; value = "http://seed-pool-manager.${seedSystemNS}.svc.cluster.local:${toString cfg.poolManager.port}";
@@ -244,6 +250,10 @@ let
               name = "webhook-secret";
               mountPath = builtins.dirOf cfg.webhook.secretFile;
               readOnly = true;
+            } ++ lib.optional (cfg.dns.apiKeyFile != "") {
+              name = "pdns-api-key";
+              mountPath = builtins.dirOf cfg.dns.apiKeyFile;
+              readOnly = true;
             };
           }];
           volumes = [
@@ -253,6 +263,12 @@ let
             name = "webhook-secret";
             hostPath = {
               path = builtins.dirOf cfg.webhook.secretFile;
+              type = "Directory";
+            };
+          } ++ lib.optional (cfg.dns.apiKeyFile != "") {
+            name = "pdns-api-key";
+            hostPath = {
+              path = builtins.dirOf cfg.dns.apiKeyFile;
               type = "Directory";
             };
           };
@@ -524,6 +540,26 @@ in {
       type = lib.types.bool;
       default = true;
       description = "Enable vTPM (swtpm) for all instances via SeedHostTask CRDs.";
+    };
+
+    dns = {
+      apiUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "PowerDNS HTTP API URL for DNS auto-registration. Empty = disabled.";
+      };
+
+      apiKeyFile = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Path to file containing the PowerDNS API key.";
+      };
+
+      zone = lib.mkOption {
+        type = lib.types.str;
+        default = "loom.farm.";
+        description = "DNS zone for instance AAAA records.";
+      };
     };
 
     netpol = {
