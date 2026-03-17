@@ -199,10 +199,13 @@ async function reconcileNamespace(ns: string): Promise<void> {
     const dnsMatch = v6 ? dnsIp.includes(":") : !dnsIp.includes(":");
 
     for (const ip of ips) {
-      // 1. DNS egress
+      // 1. DNS egress — match on original destination (pre-DNAT) since kube-proxy
+      // DNATs service IP to real coredns pod IP before the FORWARD chain
       if (dnsMatch) {
-        await ipt(["-A", chain, "-s", ip, "-d", dnsIp, "-p", "udp", "--dport", "53", "-j", "ACCEPT"], v6);
-        await ipt(["-A", chain, "-s", ip, "-d", dnsIp, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"], v6);
+        await ipt(["-A", chain, "-s", ip, "-p", "udp", "--dport", "53",
+          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"], v6);
+        await ipt(["-A", chain, "-s", ip, "-p", "tcp", "--dport", "53",
+          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"], v6);
       }
 
       // 2. Intra-namespace (src=this pod, dst=any pod in namespace)
@@ -224,11 +227,23 @@ async function reconcileNamespace(ns: string): Promise<void> {
         }
       }
 
-      // 4. Internet egress
+      // 4. Cluster service egress — allow access to service CIDRs (pre-DNAT).
+      // This permits reaching services in other namespaces (e.g. seed-system controller)
+      // while still blocking direct pod-to-pod cross-namespace traffic.
+      // Uses conntrack original dst since kube-proxy DNATs before FORWARD.
+      const svcCidrsForFamily = v6
+        ? config.serviceCidrs.filter(c => c.includes(":"))
+        : config.serviceCidrs.filter(c => !c.includes(":"));
+      for (const cidr of svcCidrsForFamily) {
+        await ipt(["-A", chain, "-s", ip,
+          "-m", "conntrack", "--ctorigdst", cidr, "-j", "ACCEPT"], v6);
+      }
+
+      // 5. Internet egress
       await ipt(["-A", chain, "-s", ip, "-j", EGRESS_CHAIN], v6);
     }
 
-    // 5. LOG + DROP (default deny)
+    // 6. LOG + DROP (default deny)
     await ipt([
       "-A", chain,
       "-j", "LOG",
