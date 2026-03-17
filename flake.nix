@@ -296,6 +296,8 @@
           cp ${seedController}/app/host-agent.mjs $out/app/
           cp -r ${seedController}/app/node_modules $out/app/
           ln -s ${pkgs.swtpm-seed}/bin/swtpm $out/usr/bin/swtpm
+          ln -s ${pkgs.iptables}/bin/iptables $out/usr/bin/iptables
+          ln -s ${pkgs.iptables}/bin/ip6tables $out/usr/bin/ip6tables
         '';
         config.entrypoint = [ "${pkgs.nodejs_22}/bin/node" "/app/host-agent.mjs" ];
       };

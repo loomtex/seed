@@ -95,7 +95,7 @@ in {
 
       disableDefaults = lib.mkOption {
         type = lib.types.listOf (lib.types.enum [
-          "traefik" "servicelb" "metrics-server" "coredns" "local-storage"
+          "traefik" "servicelb" "metrics-server" "coredns" "local-storage" "network-policy"
         ]);
         default = [ "traefik" "servicelb" "metrics-server" ];
         description = "k3s components to disable (server role only). Keeps the cluster minimal — add back what you need.";

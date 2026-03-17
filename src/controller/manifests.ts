@@ -18,6 +18,7 @@ export function generateDeployment(
   const podAnnotations: Record<string, string> = {
     [ANNOTATIONS.KATA_VCPUS]: String(meta.resources.vcpus),
     [ANNOTATIONS.KATA_MEMORY]: String(meta.resources.memory),
+    [ANNOTATIONS.EXPOSE]: JSON.stringify(meta.expose),
   };
   if (tpmSocketPath) {
     podAnnotations[ANNOTATIONS.KATA_TPM_SOCKET] = tpmSocketPath;

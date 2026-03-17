@@ -9,6 +9,7 @@ import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, makeClients, log } from "../shared/kube.js";
 import type { SeedHostTask } from "../shared/types.js";
 import { ensureSwtpm, stopSwtpm, stopAll, isSocketAlive } from "./swtpm.js";
+import { startPodWatcher, cleanupAll as cleanupNetpol } from "./netpol.js";
 
 const COMPONENT = "host-agent";
 const CRD_GROUP = "seed.loom.farm";
@@ -23,15 +24,40 @@ async function main(): Promise<void> {
 
   // Graceful shutdown
   let shuttingDown = false;
-  const shutdown = () => {
+  const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    log(COMPONENT, "shutting down, killing all swtpm processes");
+    log(COMPONENT, "shutting down");
     stopAll();
+    if (netpolEnabled) {
+      await cleanupNetpol().catch((err) =>
+        log(COMPONENT, `netpol cleanup error: ${err}`),
+      );
+    }
     process.exit(0);
   };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", () => { shutdown(); });
+  process.on("SIGINT", () => { shutdown(); });
+
+  // Network policy enforcement
+  const netpolEnabled = !!process.env.SEED_NETPOL_ENABLED;
+  if (netpolEnabled) {
+    const clusterCidrs = (process.env.SEED_CLUSTER_CIDR ?? "10.42.0.0/16").split(",");
+    const serviceCidrs = (process.env.SEED_SERVICE_CIDR ?? "10.43.0.0/16").split(",");
+    const dnsIp = process.env.SEED_DNS_IP ?? "10.43.0.10";
+    const nodeName = process.env.SEED_NODE_NAME ?? "";
+
+    if (!nodeName) {
+      log(COMPONENT, "SEED_NODE_NAME required for netpol, skipping");
+    } else {
+      await startPodWatcher(kc, clients, {
+        clusterCidrs,
+        serviceCidrs,
+        dnsIp,
+        nodeName,
+      });
+    }
+  }
 
   await watchHostTasks(kc, clients);
 }

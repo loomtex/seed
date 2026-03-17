@@ -303,6 +303,16 @@ let
             image = "nix:0${cfg.hostAgentImage}";
             command = [ "${pkgs.nodejs_22}/bin/node" "/app/host-agent.mjs" ];
             securityContext.privileged = true;
+            env = [
+              { name = "SEED_NETPOL_ENABLED"; value = if cfg.netpol.enable then "1" else ""; }
+              { name = "SEED_CLUSTER_CIDR"; value = "10.42.0.0/16,fd00::/56"; }
+              { name = "SEED_SERVICE_CIDR"; value = "10.43.0.0/16,fd01::/108"; }
+              { name = "SEED_DNS_IP"; value = "10.43.0.10"; }
+              {
+                name = "SEED_NODE_NAME";
+                valueFrom.fieldRef.fieldPath = "spec.nodeName";
+              }
+            ];
             volumeMounts = [
               { name = "tpm-state"; mountPath = "/var/lib/seed-controller/tpm"; }
               { name = "swtpm-sockets"; mountPath = "/run/swtpm"; }
@@ -514,6 +524,10 @@ in {
       type = lib.types.bool;
       default = true;
       description = "Enable vTPM (swtpm) for all instances via SeedHostTask CRDs.";
+    };
+
+    netpol = {
+      enable = lib.mkEnableOption "Network policy enforcement via iptables in host-agent";
     };
 
     webhook = {

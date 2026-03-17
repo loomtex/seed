@@ -22,6 +22,7 @@
   seed.controller = {
     enable = true;
     flakePaths = [ "github:loomtex/seed" ];
+    netpol.enable = true;
     webhook = {
       enable = true;
       secretFile = config.sops.secrets."seed/controller/gh-webhook-secret".path;

@@ -15,6 +15,7 @@ export const MANAGED_BY_VALUE = "seed";
 export const ANNOTATIONS = {
   FLAKE_URI: `${LABEL_DOMAIN}/flake-uri`,
   COMMIT: `${LABEL_DOMAIN}/commit`,
+  EXPOSE: `${LABEL_DOMAIN}/expose`,
   ADDRESS_POOL: "metallb.io/address-pool",
   ALLOW_SHARED_IP: "metallb.io/allow-shared-ip",
   KATA_VCPUS: "io.katacontainers.config.hypervisor.default_vcpus",
