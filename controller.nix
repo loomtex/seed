@@ -243,35 +243,33 @@ let
               name = "webhook";
               protocol = "TCP";
             }];
-            volumeMounts = [
+            volumeMounts = let
+              # Deduplicate mounts — webhook secret and pdns key may share a directory
+              secretPaths = lib.unique (
+                lib.optional (cfg.webhook.secretFile != "") (builtins.dirOf cfg.webhook.secretFile)
+                ++ lib.optional (cfg.dns.apiKeyFile != "") (builtins.dirOf cfg.dns.apiKeyFile)
+              );
+            in [
               { name = "nix-daemon"; mountPath = "/nix/var/nix/daemon-socket"; }
               { name = "nix-store"; mountPath = "/nix/store"; readOnly = true; }
-            ] ++ lib.optional (cfg.webhook.secretFile != "") {
-              name = "webhook-secret";
-              mountPath = builtins.dirOf cfg.webhook.secretFile;
+            ] ++ lib.imap0 (i: path: {
+              name = "secrets-${toString i}";
+              mountPath = path;
               readOnly = true;
-            } ++ lib.optional (cfg.dns.apiKeyFile != "") {
-              name = "pdns-api-key";
-              mountPath = builtins.dirOf cfg.dns.apiKeyFile;
-              readOnly = true;
-            };
+            }) secretPaths;
           }];
-          volumes = [
+          volumes = let
+            secretPaths = lib.unique (
+              lib.optional (cfg.webhook.secretFile != "") (builtins.dirOf cfg.webhook.secretFile)
+              ++ lib.optional (cfg.dns.apiKeyFile != "") (builtins.dirOf cfg.dns.apiKeyFile)
+            );
+          in [
             { name = "nix-daemon"; hostPath.path = "/nix/var/nix/daemon-socket"; }
             { name = "nix-store"; hostPath.path = "/nix/store"; }
-          ] ++ lib.optional (cfg.webhook.secretFile != "") {
-            name = "webhook-secret";
-            hostPath = {
-              path = builtins.dirOf cfg.webhook.secretFile;
-              type = "Directory";
-            };
-          } ++ lib.optional (cfg.dns.apiKeyFile != "") {
-            name = "pdns-api-key";
-            hostPath = {
-              path = builtins.dirOf cfg.dns.apiKeyFile;
-              type = "Directory";
-            };
-          };
+          ] ++ lib.imap0 (i: path: {
+            name = "secrets-${toString i}";
+            hostPath = { inherit path; type = "Directory"; };
+          }) secretPaths;
         };
       };
     };
