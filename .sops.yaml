@@ -2,7 +2,7 @@ keys:
   - &admin_josh 2EE325D71601671696EBF687E45953D34C8829ED
   - &admin_ada age1ujjm7feyd3p2e0qtfa6zr2rzf593yd2z0xjn0ytvd8jcje68nansxy4zuu
   - &dns_tpm age1tpm1qwldjpgyrr4n5qga04hajp6taed7tmwle7mhl3g0kwkxlevamkejqrcmwlh
-  - &web_tpm age1tpm1q22tvh7kmadmw8hms5cfz4eay56xhjvqhmnus4zc92a5k4mtgx636vxl94x
+  - &gateway_tpm age1tpm1qw9qxm64zvnnj5nuhcm2lvx4j9s9sl7huvyjywky7r56hkxzmytmjlrm8cv
   - &silo_tpm age1tpm1qf9a48qekrwlf3gar8skyqmtm03ww5gayr0g8ff9005g77aus8fxcd3vaez
 
 creation_rules:
@@ -14,13 +14,13 @@ creation_rules:
           - *admin_ada
           - *dns_tpm
 
-  - path_regex: secrets/web\.yaml$
+  - path_regex: secrets/gateway\.yaml$
     key_groups:
       - pgp:
           - *admin_josh
         age:
           - *admin_ada
-          - *web_tpm
+          - *gateway_tpm
 
   - path_regex: secrets/silo\.yaml$
     key_groups:

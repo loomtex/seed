@@ -31,7 +31,7 @@ in
   seed.storage.data = "1Gi";
 
   # sops-nix: decrypt pdns API key for ACME DNS-01 challenge
-  sops.defaultSopsFile = ../secrets/web.yaml;
+  sops.defaultSopsFile = ../secrets/gateway.yaml;
   sops.secrets.pdns-api-key = {};
 
   # ACME credentials from sops secret
