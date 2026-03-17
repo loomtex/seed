@@ -206,7 +206,7 @@ export async function handleAcmeRequest(
     }
 
     // Verify JWS signature with account's public key
-    const pubKey = await jose.importJWK(account.jwk);
+    const pubKey = await jose.importJWK(account.jwk, protectedHeader.alg);
     try {
       await jose.flattenedVerify(jws, pubKey);
     } catch {
@@ -299,7 +299,8 @@ async function handleNewAccount(
   }
 
   // Verify signature with provided JWK
-  const pubKey = await jose.importJWK(jwk);
+  const alg = protectedHeader.alg;
+  const pubKey = await jose.importJWK(jwk, alg);
   try {
     await jose.flattenedVerify(jws, pubKey);
   } catch {
