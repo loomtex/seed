@@ -35,9 +35,9 @@ let
     { name = "*.s-mezggnjsgq4t.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::4"; }]; }
 
-    # Silo — routed through web pod (Caddy for HTTPS, socat for SSH), IPv6 only
+    # Silo — direct IPv6 ingress (Caddy for HTTPS, SSH on port 22)
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::8"; }]; }
 
     # Seed shell — SSH management interface (shell ingress service)
     { name = "seed.${zone}"; type = "AAAA"; ttl = 300;

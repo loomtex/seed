@@ -510,7 +510,8 @@ let
 in {
   seed.size = "xs";
   seed.expose.ssh = { port = 22; protocol = "tcp"; };
-  seed.expose.archive = { port = 8080; protocol = "tcp"; };
+  seed.expose.https = { port = 443; protocol = "http"; };
+  seed.expose.http = { port = 80; protocol = "tcp"; };
   seed.storage.repos = "10Gi";
   seed.shoot.enable = true;
 
@@ -566,7 +567,27 @@ in {
     mode = "0755";
   };
 
-  networking.firewall.allowedTCPPorts = [ 22 8080 ];
+  # Caddy — TLS frontend via platform ACME, proxies to nginx for cgit/archive
+  services.caddy = {
+    enable = true;
+    configFile = pkgs.writeText "Caddyfile" ''
+      {
+        acme_ca {$SEED_ACME_URL}
+      }
+
+      {$SEED_FQDN}, silo.loom.farm {
+        reverse_proxy localhost:8080
+        log {
+          output stderr
+        }
+      }
+    '';
+  };
+
+  # Load SEED_* env vars captured from PID 1 into Caddy's environment.
+  systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
+
+  networking.firewall.allowedTCPPorts = [ 22 80 443 ];
 
   environment.systemPackages = [ pkgs.git pkgs.openssl siloShell ];
 
@@ -604,7 +625,7 @@ in {
   services.nginx = {
     enable = true;
     virtualHosts."_" = {
-      listen = [{ addr = "0.0.0.0"; port = 8080; }];
+      listen = [{ addr = "127.0.0.1"; port = 8080; }];
       locations."~ ^/([^/]+)/archive/([^/]+)\\.tar\\.gz$" = {
         extraConfig = ''
           include ${pkgs.nginx}/conf/fastcgi_params;
