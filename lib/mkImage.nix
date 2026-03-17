@@ -37,22 +37,16 @@ let
     # trap: systemd sends SIGTERM to stray processes on startup — ignore it.
     # TERM=dumb: prevent journalctl from adding ANSI color codes to JSON.
     #
-    # Diagnostics: write lifecycle trace to /run/seed-log-debug so we can
-    # check the file after boot to understand failures (the file persists
-    # even when stdout is broken).
-    # Save container stdout as fd 3 before anything can close it.
-    # The background streamer writes to fd 3, not fd 1 — this survives
-    # even if NixOS init or systemd manipulates fd 1.
-    exec 3>&1
+    # Save container stdout to fd 100 — a high fd number unlikely to be
+    # reused by the kata agent or NixOS init. The streamer writes all
+    # output to this fd instead of fd 1, protecting against anything that
+    # might close or reassign low-numbered fds during VM startup.
+    exec 100>&1
 
     (
       trap "" TERM HUP PIPE
-      echo "streamer:started pid=$BASHPID" >&3
-      echo "streamer:fd1=$(readlink /proc/self/fd/1 2>/dev/null)" >&3
-      echo "streamer:fd3=$(readlink /proc/self/fd/3 2>/dev/null)" >&3
       while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
-      echo "streamer:socket-found" >&3
-      TERM=dumb journalctl -f --output=json --no-pager >&3
+      TERM=dumb exec journalctl -f --output=json --no-pager >&100
     ) &
 
     exec ${toplevel}/init
