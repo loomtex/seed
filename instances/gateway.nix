@@ -154,7 +154,7 @@ in
           reverse_proxy ${controllerBackend}:9876
         }
         handle {
-          reverse_proxy ${webBackend}:8080
+          reverse_proxy ${webBackend}:80
         }
       '';
     };
