@@ -80,7 +80,7 @@ function consumeNonce(nonce: string): boolean {
 export async function initAcme(cfg: AcmeConfig): Promise<void> {
   config = cfg;
   const keyPem = await readFile(cfg.accountKeyFile, "utf-8");
-  leAccountKey = await jose.importPKCS8(keyPem.trim(), "ES256");
+  leAccountKey = await jose.importPKCS8(keyPem.trim(), "ES256", { extractable: true });
   log("acme", "ACME endpoint initialized");
 }
 
