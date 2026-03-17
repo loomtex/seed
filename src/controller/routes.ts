@@ -114,9 +114,7 @@ function generateLBService(
       loadBalancerIP,
       ipFamilyPolicy: "SingleStack",
       ipFamilies: [ipFamily],
-      // Local for IPv6 (per-instance IPs → source IP preserved, no ECMP conflict).
-      // Cluster for IPv4 (shared IP across instances → needs cross-node forwarding).
-      externalTrafficPolicy: serviceType === "ipv6" ? "Local" : "Cluster",
+      externalTrafficPolicy: "Local",
       selector: { "seed.loom.farm/instance": instance },
       ports,
     },

@@ -237,6 +237,7 @@
       dns = mkSeed { name = "dns"; module = ./instances/dns.nix; };
       silo = mkSeed { name = "silo"; module = ./instances/silo.nix; };
       shell = mkSeed { name = "shell"; module = ./instances/shell.nix; };
+      gateway = mkSeed { name = "gateway"; module = ./instances/gateway.nix; };
     };
 
     # Controller + host agent TypeScript packages
@@ -522,9 +523,9 @@ INITEOF
       ipv4 = {
         enable = true;
         routes = {
-          dns = { port = 53; protocol = "dns"; instance = "dns"; };
-          http = { port = 80; protocol = "tcp"; instance = "web"; };
-          https = { port = 443; protocol = "tcp"; instance = "web"; };
+          dns = { port = 53; protocol = "dns"; instance = "gateway"; };
+          http = { port = 80; protocol = "tcp"; instance = "gateway"; };
+          https = { port = 443; protocol = "tcp"; instance = "gateway"; };
         };
       };
 
