@@ -38,14 +38,7 @@ let
     # TERM=dumb: prevent journalctl from adding ANSI color codes to JSON.
     (
       trap "" TERM HUP PIPE
-      echo "seed-log-streamer: pid=$$ waiting for journald socket"
-      n=0
-      while [ ! -S /run/systemd/journal/stdout ]; do
-        sleep 1
-        n=$((n+1))
-        if [ $((n % 10)) -eq 0 ]; then echo "seed-log-streamer: still waiting ($n seconds)"; fi
-      done
-      echo "seed-log-streamer: journald socket found, starting journalctl"
+      while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
       TERM=dumb exec journalctl -f --output=json --no-pager
     ) &
 
