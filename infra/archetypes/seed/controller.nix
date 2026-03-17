@@ -27,6 +27,10 @@
       enable = true;
       secretFile = config.sops.secrets."seed/controller/gh-webhook-secret".path;
     };
+    dns = {
+      apiUrl = "http://seed-dns.s-gaydazldmnsg.svc.cluster.local:8081";
+      apiKeyFile = config.sops.secrets."seed/controller/pdns-api-key".path;
+    };
   };
 
   networking.firewall = {
