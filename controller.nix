@@ -436,7 +436,7 @@ let
       name = "seed-acme-account-key";
       namespace = seedSystemNS;
     };
-    stringData = {
+    data = {
       "account-key.pem" = cfg.acme.accountKey;
     };
   };
@@ -575,10 +575,10 @@ in {
         type = lib.types.str;
         default = "";
         description = ''
-          Let's Encrypt account key PEM. Use sops.placeholder for runtime
-          substitution — the value is embedded in a k8s Secret JSON template,
-          rendered by sops.templates at activation time, and applied to the
-          cluster by the k8s-apply service.
+          Base64-encoded Let's Encrypt account key PEM. Stored as base64 in
+          sops to avoid multi-line values breaking JSON templates. The value
+          is placed in a k8s Secret `data` field (which expects base64),
+          rendered by sops.templates at activation time.
         '';
       };
 
