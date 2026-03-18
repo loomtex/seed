@@ -135,7 +135,7 @@ describe("generateIPv4Services", () => {
 
     assert.deepEqual(svc.spec?.ipFamilies, ["IPv4"]);
     assert.equal(svc.spec?.ipFamilyPolicy, "SingleStack");
-    assert.equal(svc.spec?.externalTrafficPolicy, "Cluster");
+    assert.equal(svc.spec?.externalTrafficPolicy, "Local");
   });
 
   it("includes service-type label", () => {
