@@ -41,7 +41,7 @@ let
 
     # Seed shell — SSH management interface (shell ingress service)
     { name = "seed.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::6"; }]; }
+      records = [{ content = "2001:19f0:5400:20a7::5"; }]; }
 
     # www.loom.farm → web instance
     { name = "www.${zone}"; type = "CNAME"; ttl = 300;
