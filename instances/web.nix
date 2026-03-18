@@ -35,7 +35,7 @@ in
         storage file_system /seed/storage/caddy
       }
 
-      {$SEED_FQDN}, loom.farm, bustlimit.loom.farm {
+      {$SEED_FQDN}, loom.farm, bustweblimit.loom.farm {
         handle_path /_hook/* {
           reverse_proxy seed-controller.seed-system.svc.cluster.local:9876
         }
