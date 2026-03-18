@@ -57,6 +57,7 @@ function loadConfig(): ControllerConfig {
     pdnsApiUrl: process.env["SEED_PDNS_API_URL"] || "",
     pdnsApiKeyFile: process.env["SEED_PDNS_API_KEY_FILE"] || "",
     pdnsZone: process.env["SEED_PDNS_ZONE"] || "loom.farm.",
+    instanceDomain: process.env["SEED_INSTANCE_DOMAIN"] || "seed.loom.farm",
     acmeEnabled: !!process.env["SEED_ACME_ENABLED"],
     acmeAccountKeyFile: process.env["SEED_ACME_ACCOUNT_KEY_FILE"] || "",
   };
@@ -194,6 +195,7 @@ export function renderDesiredState(
   ipv6Config: IPv6Config | null,
   hostTaskStatuses: Map<string, { ready: boolean; socketPath: string }>,
   acmeUrl?: string,
+  instanceDomain?: string,
 ): DesiredState {
   const generation = computeGeneration(
     new Map([...buildResults].map(([name, r]) => [name, r.imagePath])),
@@ -223,6 +225,7 @@ export function renderDesiredState(
       tpmSocketPath,
       poolManagerUrl || undefined,
       acmeUrl,
+      instanceDomain,
     );
 
     const services: k8s.V1Service[] = [];
@@ -993,6 +996,7 @@ async function registerInstanceDNS(
       pdnsApiKey,
       config.pdnsZone,
       namespace,
+      config.instanceDomain,
       instanceIPs,
     );
   } catch (err) {
@@ -1047,6 +1051,7 @@ async function main(): Promise<void> {
         pdnsApiUrl: config.pdnsApiUrl,
         pdnsApiKey: pdnsApiKey,
         pdnsZone: config.pdnsZone,
+        instanceDomain: config.instanceDomain,
         validNamespaces: new Set([...flakeStates.values()].map((fs) => fs.namespace)),
       });
       log("controller", "ACME endpoint enabled");
@@ -1234,6 +1239,7 @@ async function main(): Promise<void> {
         ipv6Config,
         hostTaskStatuses,
         acmeUrl,
+        config.instanceDomain,
       );
 
       // Apply desired state (SeedHostTasks already applied, skipped inside)

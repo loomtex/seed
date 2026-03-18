@@ -15,6 +15,7 @@ export function generateDeployment(
   tpmSocketPath?: string,
   poolManagerUrl?: string,
   acmeUrl?: string,
+  instanceDomain?: string,
 ): k8s.V1Deployment {
   const podAnnotations: Record<string, string> = {
     [ANNOTATIONS.KATA_VCPUS]: String(meta.resources.vcpus),
@@ -110,7 +111,7 @@ export function generateDeployment(
                   },
                   {
                     name: "SEED_FQDN",
-                    value: `${name}.${namespace}.loom.farm`,
+                    value: instanceDomain ? `${name}.${namespace}.${instanceDomain}` : `${name}.${namespace}.seed.loom.farm`,
                   },
                 ] : []),
               ],

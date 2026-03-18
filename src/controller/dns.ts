@@ -2,7 +2,7 @@
 //
 // After reconciliation, the controller reads assigned IPv6 addresses from
 // LoadBalancer service status and creates/updates AAAA records in pdns.
-// Record format: <instance>.<namespace>.loom.farm → IPv6 address.
+// Record format: <instance>.<namespace>.seed.loom.farm → IPv6 address.
 
 import { log } from "../shared/kube.js";
 import { readFile } from "node:fs/promises";
@@ -26,13 +26,14 @@ export async function loadPdnsApiKey(keyFile: string): Promise<string> {
  * Register AAAA records for instances with assigned IPv6 LoadBalancer IPs.
  *
  * Takes a map of instance name → IPv6 address(es) and creates/updates
- * AAAA records at <instance>.<namespace>.<zone>.
+ * AAAA records at <instance>.<namespace>.<instanceDomain>.
  */
 export async function registerDNSRecords(
   pdnsApiUrl: string,
   pdnsApiKey: string,
   zone: string,
   namespace: string,
+  instanceDomain: string,
   instanceIPs: Map<string, string[]>,
 ): Promise<void> {
   if (instanceIPs.size === 0) return;
@@ -42,7 +43,7 @@ export async function registerDNSRecords(
   for (const [instance, ips] of instanceIPs) {
     if (ips.length === 0) continue;
 
-    const fqdn = `${instance}.${namespace}.${zone}`;
+    const fqdn = `${instance}.${namespace}.${instanceDomain}`;
     // Ensure trailing dot for pdns
     const name = fqdn.endsWith(".") ? fqdn : `${fqdn}.`;
 
@@ -76,7 +77,7 @@ export async function registerDNSRecords(
 
   for (const [instance, ips] of instanceIPs) {
     if (ips.length > 0) {
-      log("dns", `registered ${instance}.${namespace}.${zone} → ${ips.join(", ")}`);
+      log("dns", `registered ${instance}.${namespace}.${instanceDomain} → ${ips.join(", ")}`);
     }
   }
 }
@@ -89,12 +90,13 @@ export async function deleteDNSRecords(
   pdnsApiKey: string,
   zone: string,
   namespace: string,
+  instanceDomain: string,
   instances: string[],
 ): Promise<void> {
   if (instances.length === 0) return;
 
   const rrsets: RRSet[] = instances.map((instance) => {
-    const fqdn = `${instance}.${namespace}.${zone}`;
+    const fqdn = `${instance}.${namespace}.${instanceDomain}`;
     const name = fqdn.endsWith(".") ? fqdn : `${fqdn}.`;
     return {
       name,
@@ -122,6 +124,6 @@ export async function deleteDNSRecords(
   }
 
   for (const instance of instances) {
-    log("dns", `deleted ${instance}.${namespace}.${zone}`);
+    log("dns", `deleted ${instance}.${namespace}.${instanceDomain}`);
   }
 }

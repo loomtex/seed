@@ -233,6 +233,8 @@ let
               name = "SEED_PDNS_API_KEY_FILE"; value = cfg.dns.apiKeyFile;
             } ++ lib.optional (cfg.dns.zone != "loom.farm.") {
               name = "SEED_PDNS_ZONE"; value = cfg.dns.zone;
+            } ++ lib.optional (cfg.dns.instanceDomain != "seed.loom.farm") {
+              name = "SEED_INSTANCE_DOMAIN"; value = cfg.dns.instanceDomain;
             } ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
             } ++ lib.optional (cfg.acme.accountKey != "") {
@@ -566,7 +568,13 @@ in {
       zone = lib.mkOption {
         type = lib.types.str;
         default = "loom.farm.";
-        description = "DNS zone for instance AAAA records.";
+        description = "PowerDNS zone name (for API calls).";
+      };
+
+      instanceDomain = lib.mkOption {
+        type = lib.types.str;
+        default = "seed.loom.farm";
+        description = "Domain suffix for instance FQDNs (<instance>.<namespace>.<instanceDomain>).";
       };
     };
 

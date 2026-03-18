@@ -26,13 +26,13 @@ let
       records = [{ content = "2001:19f0:5400:20a7::2"; }]; }
 
     # Namespace wildcard — all instances in our namespace
-    { name = "*.s-gaydazldmnsg.${zone}"; type = "A"; ttl = 300;
+    { name = "*.s-gaydazldmnsg.seed.${zone}"; type = "A"; ttl = 300;
       records = [{ content = "96.30.193.227"; }]; }
-    { name = "*.s-gaydazldmnsg.${zone}"; type = "AAAA"; ttl = 300;
+    { name = "*.s-gaydazldmnsg.seed.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
 
     # seed-demo namespace wildcard — IPv6 only
-    { name = "*.s-mezggnjsgq4t.${zone}"; type = "AAAA"; ttl = 300;
+    { name = "*.s-mezggnjsgq4t.seed.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::4"; }]; }
 
     # Silo — direct IPv6 ingress (Caddy for HTTPS, SSH on port 22)

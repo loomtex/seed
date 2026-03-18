@@ -43,6 +43,7 @@ export interface AcmeConfig {
   pdnsApiUrl: string;
   pdnsApiKey: string;
   pdnsZone: string;
+  instanceDomain: string;
   validNamespaces: Set<string>;
 }
 
@@ -92,32 +93,49 @@ export function updateAcmeNamespaces(namespaces: Set<string>): void {
 
 /** Validate that a domain is authorized for a known namespace.
  *  Accepted formats:
- *  - <instance>.<namespace>.<zone>  (e.g. web.s-gaydazldmnsg.loom.farm)
- *  - <zone> itself (e.g. loom.farm) — allowed for any known namespace
- *  - <sub>.<zone> (e.g. silo.loom.farm) — allowed for any known namespace
+ *  - <instance>.<namespace>.<instanceDomain>  (e.g. web.s-gaydazldmnsg.seed.loom.farm)
+ *  - <instanceDomain> itself (e.g. seed.loom.farm) — allowed for any known namespace
+ *  - <sub>.<instanceDomain> (e.g. silo.seed.loom.farm) — allowed for any known namespace
+ *  - apex zone (e.g. loom.farm) — allowed for any known namespace
+ *  - <sub>.<zone> (e.g. silo.loom.farm, www.loom.farm) — allowed for any known namespace
  */
 function validateDomain(domain: string): boolean {
   if (!config) return false;
 
   const zone = config.pdnsZone.replace(/\.$/, "");
+  const instanceDomain = config.instanceDomain;
 
-  // Exact zone match (apex domain)
+  // Exact zone match (apex domain, e.g. loom.farm)
   if (domain === zone) return config.validNamespaces.size > 0;
 
-  const suffix = `.${zone}`;
-  if (!domain.endsWith(suffix)) return false;
+  // Exact instance domain match (e.g. seed.loom.farm)
+  if (domain === instanceDomain) return config.validNamespaces.size > 0;
 
-  const prefix = domain.slice(0, -suffix.length);
-  const parts = prefix.split(".");
+  // Check against instance domain first (e.g. *.seed.loom.farm)
+  const instSuffix = `.${instanceDomain}`;
+  if (domain.endsWith(instSuffix)) {
+    const prefix = domain.slice(0, -instSuffix.length);
+    const parts = prefix.split(".");
 
-  // <instance>.<namespace>.zone — validate namespace
-  if (parts.length === 2) {
-    const [, namespace] = parts;
-    return config.validNamespaces.has(namespace);
+    // <instance>.<namespace>.seed.loom.farm — validate namespace
+    if (parts.length === 2) {
+      const [, namespace] = parts;
+      return config.validNamespaces.has(namespace);
+    }
+
+    // <sub>.seed.loom.farm — allowed for any known namespace
+    if (parts.length === 1) return config.validNamespaces.size > 0;
+
+    return false;
   }
 
-  // <sub>.zone (e.g. silo.loom.farm) — allowed for any known namespace
-  if (parts.length === 1) return config.validNamespaces.size > 0;
+  // Fall back to zone-level subdomains (e.g. silo.loom.farm, www.loom.farm)
+  const zoneSuffix = `.${zone}`;
+  if (domain.endsWith(zoneSuffix)) {
+    const prefix = domain.slice(0, -zoneSuffix.length);
+    // Single-level subdomain only (e.g. silo.loom.farm, not a.b.loom.farm)
+    if (!prefix.includes(".")) return config.validNamespaces.size > 0;
+  }
 
   return false;
 }

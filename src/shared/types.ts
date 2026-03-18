@@ -133,6 +133,7 @@ export interface ControllerConfig {
   pdnsApiUrl: string;
   pdnsApiKeyFile: string;
   pdnsZone: string;
+  instanceDomain: string;
   acmeEnabled: boolean;
   acmeAccountKeyFile: string;
 }
