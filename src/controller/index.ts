@@ -1261,8 +1261,13 @@ async function main(): Promise<void> {
   }
 
   // Startup: always reconcile all flakes to ensure desired state is correct.
+  // Errors in one flake must not prevent other flakes from reconciling.
   for (const [flakePath, fs] of flakeStates) {
-    await reconcile(flakePath, fs.namespace, false);
+    try {
+      await reconcile(flakePath, fs.namespace, false);
+    } catch (err) {
+      log("controller", `reconciliation failed (will retry on next webhook): ${err}`, flakePath);
+    }
   }
 
   // Build initial key index from all flakes
@@ -1291,7 +1296,11 @@ async function main(): Promise<void> {
         continue;
       }
       log("controller", `webhook triggered reconciliation`, flakePath);
-      await reconcile(flakePath, fs.namespace, true);
+      try {
+        await reconcile(flakePath, fs.namespace, true);
+      } catch (err) {
+        log("controller", `reconciliation failed: ${err}`, flakePath);
+      }
     }
 
     // Rebuild key index after reconciliation (keys may have changed)
