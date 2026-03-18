@@ -155,6 +155,9 @@ export async function applyResource(
               if (np !== undefined) p.nodePort = np;
             }
           }
+          // Skip replace if spec hasn't actually changed — prevents
+          // generation bump → informer event → re-apply feedback loop.
+          if (JSON.stringify(svc.spec) === JSON.stringify(existing.spec)) return;
           await core.replaceNamespacedService({ name, namespace, body: svc });
         } else {
           await core.createNamespacedService({ namespace, body: manifest as k8s.V1Service });
@@ -209,6 +212,8 @@ export async function applyDeployment(
   }
 
   if (existing) {
+    // Skip replace if spec hasn't changed — prevents feedback loop
+    if (JSON.stringify(deployment.spec) === JSON.stringify(existing.spec)) return;
     const body = structuredClone(deployment);
     body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
     await apps.replaceNamespacedDeployment({ name, namespace, body });

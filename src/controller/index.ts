@@ -843,7 +843,6 @@ function startWatches(
 
     try {
       await applyResource(clients.core, "Service", ns, desiredSvc);
-      log("controller", `watch: corrected spec drift on service ${name}`);
     } catch (err) {
       log("controller", `watch: failed to correct service ${name}: ${err}`);
     }
