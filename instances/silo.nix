@@ -577,7 +577,7 @@ in {
         storage file_system /seed/storage/caddy
       }
 
-      {$SEED_FQDN}, silo.loom.farm {
+      {$SEED_FQDN}, silo.loom.farm, bustlimit.loom.farm {
         reverse_proxy localhost:8080
         log {
           output stderr
