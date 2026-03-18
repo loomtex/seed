@@ -8,6 +8,7 @@
 
 let
   reposDir = "/seed/storage/repos";
+  caddyDir = "/seed/storage/caddy";
   hostKeyDir = "${reposDir}/ssh-host-keys";
 
   # AuthorizedKeysCommand — called by sshd for every connection
@@ -535,10 +536,11 @@ in {
   };
   users.groups.git = {};
 
-  # Ensure git owns the repos directory
+  # Ensure correct user owns the persistent dirs
   systemd.tmpfiles.rules = [
     "d ${reposDir} 0755 git git -"
     "d ${hostKeyDir} 0700 root root -"
+    "d ${caddyDir} 0755 caddy caddy -"
   ];
 
   # openssh server

@@ -10,6 +10,7 @@
 
 let
   siteDir = ../site;
+  caddyDir = "/seed/storage/caddy";
 in
 {
   seed.size = "xs";
@@ -18,6 +19,11 @@ in
   seed.storage.caddy = "100Mi";
 
   # seed.acme is automatically true because expose.https has protocol "http"
+
+  # Ensure correct user owns the persistent dirs
+  systemd.tmpfiles.rules = [
+    "d ${caddyDir} 0755 caddy caddy -"
+  ];
 
   # Use configFile instead of virtualHosts so we can use Caddy env vars
   # for the site address ({$SEED_FQDN}) and ACME CA ({$SEED_ACME_URL}).
