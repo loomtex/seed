@@ -8,7 +8,8 @@
 
 let
   reposDir = "/seed/storage/repos";
-  hostKeyDir = "${reposDir}/ssh-host-keys";
+  # Dotfile so cgit scan-path skips it (hidden dirs are ignored)
+  hostKeyDir = "${reposDir}/.ssh-host-keys";
   acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 
   # AuthorizedKeysCommand — called by sshd for every connection
@@ -540,7 +541,31 @@ in {
   systemd.tmpfiles.rules = [
     "d ${reposDir} 0755 git git -"
     "d ${hostKeyDir} 0700 root root -"
+    # Remove lost+found — ext4 creates it but cgit scan-path errors on it
+    "R ${reposDir}/lost+found -"
   ];
+
+  # Migrate ssh-host-keys to dotfile path (one-time, idempotent)
+  systemd.services.silo-migrate-hostkeys = {
+    description = "Migrate SSH host keys to hidden directory";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "sshd.service" "sshd-keygen.service" ];
+    unitConfig.ConditionPathIsDirectory = "${reposDir}/ssh-host-keys";
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = pkgs.writeShellScript "migrate-hostkeys" ''
+        # Move old visible dir to new hidden dir
+        if [ -d "${reposDir}/ssh-host-keys" ] && [ ! -d "${hostKeyDir}" ]; then
+          mv "${reposDir}/ssh-host-keys" "${hostKeyDir}"
+        elif [ -d "${reposDir}/ssh-host-keys" ] && [ -d "${hostKeyDir}" ]; then
+          # Both exist — copy any missing keys, remove old dir
+          cp -n "${reposDir}/ssh-host-keys/"* "${hostKeyDir}/" 2>/dev/null || true
+          rm -rf "${reposDir}/ssh-host-keys"
+        fi
+      '';
+    };
+  };
 
   # openssh server
   services.openssh = {
