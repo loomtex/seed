@@ -291,6 +291,10 @@
       # Acceptance test runner (not an OCI image — runs from CLI)
       acceptance = pkgs.writeShellScriptBin "seed-acceptance" ''
         export PATH="${pkgs.lib.makeBinPath [ pkgs.openssh pkgs.curl ]}:$PATH"
+        # Auto-detect k3s kubeconfig if no KUBECONFIG is set
+        if [ -z "$KUBECONFIG" ] && [ -f /etc/rancher/k3s/k3s.yaml ]; then
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+        fi
         exec ${pkgs.nodejs_22}/bin/node ${seedController}/app/acceptance.mjs "$@"
       '';
 

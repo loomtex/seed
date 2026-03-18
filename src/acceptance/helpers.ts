@@ -1,7 +1,9 @@
 // Acceptance test helpers — SSH, k8s client setup, S3 utilities.
 
 import { execFile } from "node:child_process";
-import { loadKubeConfig, makeClients, type KubeClients } from "../shared/kube.js";
+import * as k8s from "@kubernetes/client-node";
+import { makeClients, type KubeClients } from "../shared/kube.js";
+import { hostname } from "node:os";
 
 // --- Types ---
 
@@ -34,6 +36,11 @@ export interface ExecResult {
 const SSH_TIMEOUT_MS = 30_000;
 
 export function ssh(host: string, cmd: string): Promise<ExecResult> {
+  const localHostname = hostname();
+  // If we're on the target node, run locally instead of SSH
+  if (host === localHostname) {
+    return execAsync("bash", ["-c", cmd]);
+  }
   return new Promise((resolve) => {
     execFile(
       "ssh",
@@ -50,7 +57,14 @@ export function ssh(host: string, cmd: string): Promise<ExecResult> {
 // --- k8s ---
 
 export function k8sClients(): KubeClients {
-  const kc = loadKubeConfig();
+  const kc = new k8s.KubeConfig();
+  // Prefer default kubeconfig (file-based) over in-cluster — acceptance
+  // tests run on nodes or workstations, not inside pods.
+  try {
+    kc.loadFromDefault();
+  } catch {
+    kc.loadFromCluster();
+  }
   return makeClients(kc);
 }
 
@@ -86,11 +100,11 @@ export async function s3GetNarinfo(
   return result.code === 0 ? result.stdout : null;
 }
 
-function execAsync(cmd: string, args: string[]): Promise<ExecResult> {
+export function execAsync(cmd: string, args: string[]): Promise<ExecResult> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 15_000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       const code = err && "code" in err ? (err.code as number) : err ? 1 : 0;
-      resolve({ stdout, stderr, code });
+      resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), code });
     });
   });
 }
