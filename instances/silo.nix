@@ -570,13 +570,11 @@ in {
   };
 
   # TLS certificates via platform ACME endpoint (controller proxies DNS-01 to LE)
+  # security.acme — nginx's enableACME auto-adds serverAliases as SANs
   security.acme = {
     acceptTerms = true;
     defaults.server = acmeServer;
     defaults.email = "acme@loom.farm";
-    certs."silo.loom.farm".extraDomainNames = [
-      "silo.s-gaydazldmnsg.seed.loom.farm"
-    ];
   };
 
   networking.firewall.allowedTCPPorts = [ 22 80 443 ];

@@ -16,14 +16,11 @@ in
   seed.expose.https = { port = 443; protocol = "http"; };
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
 
+  # security.acme — nginx's enableACME auto-adds serverAliases as SANs
   security.acme = {
     acceptTerms = true;
     defaults.server = acmeServer;
     defaults.email = "acme@loom.farm";
-    # Single cert with both hostnames as SANs
-    certs."loom.farm".extraDomainNames = [
-      "web.s-gaydazldmnsg.seed.loom.farm"
-    ];
   };
 
   services.nginx = {

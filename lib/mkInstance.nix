@@ -19,6 +19,7 @@ let
       self.nixosModules.instance
       self.nixosModules.sops
       { networking.hostName = name; }
+      { nixpkgs.overlays = [ self.overlays.default ]; }
       module
     ] ++ extraModules;
   };
