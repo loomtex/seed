@@ -115,7 +115,7 @@ let
     set -euo pipefail
 
     API_KEY=$(cat ${config.sops.secrets.pdns-api-key.path})
-    API="http://seed-dns.s-gaydazldmnsg.svc.cluster.local:8081/api/v1/servers/localhost"
+    API="http://dns.s-gaydazldmnsg.svc.cluster.local:8081/api/v1/servers/localhost"
 
     # Read ed25519 host key
     HOST_KEY="${hostKeyDir}/ssh_host_ed25519_key.pub"

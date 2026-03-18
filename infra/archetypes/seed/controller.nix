@@ -28,7 +28,7 @@
       secretFile = "/etc/seed/secrets/gh-webhook-secret";
     };
     dns = {
-      apiUrl = "http://seed-dns.s-gaydazldmnsg.svc.cluster.local:8081";
+      apiUrl = "http://dns.s-gaydazldmnsg.svc.cluster.local:8081";
       apiKeyFile = "/etc/seed/secrets/pdns-api-key";
     };
     acme.accountKey = config.sops.placeholder."seed/controller/acme-account-key";

@@ -8,8 +8,8 @@
 
 let
   ns = "s-gaydazldmnsg";
-  dnsBackend = "seed-dns.${ns}.svc.cluster.local";
-  webBackend = "seed-web.${ns}.svc.cluster.local";
+  dnsBackend = "dns.${ns}.svc.cluster.local";
+  webBackend = "web.${ns}.svc.cluster.local";
 in
 {
   seed.size = "xs";
