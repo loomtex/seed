@@ -28,6 +28,11 @@ await Promise.all([
     entryPoints: ["src/pool-manager/index.ts"],
     outfile: "dist/pool-manager.mjs",
   }),
+  esbuild.build({
+    ...shared,
+    entryPoints: ["src/acceptance/index.ts"],
+    outfile: "dist/acceptance.mjs",
+  }),
 ]);
 
 console.log("Build complete");

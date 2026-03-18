@@ -261,7 +261,7 @@
           filter = path: type:
             let base = builtins.baseNameOf path; in
             (type == "directory" && builtins.elem base [ "src" ]) ||
-            (type == "directory" && builtins.elem base [ "shared" "controller" "host-agent" "pool-manager" ]) ||
+            (type == "directory" && builtins.elem base [ "shared" "controller" "host-agent" "pool-manager" "acceptance" ]) ||
             builtins.match ".*\\.ts$" path != null ||
             builtins.match ".*\\.mjs$" path != null ||
             builtins.elem base [ "package.json" "package-lock.json" "tsconfig.json" "build.mjs" ];
@@ -278,6 +278,7 @@
           cp dist/controller.mjs $out/app/
           cp dist/host-agent.mjs $out/app/
           cp dist/pool-manager.mjs $out/app/
+          cp dist/acceptance.mjs $out/app/
           # Copy k8s client (external in esbuild)
           cp -r node_modules $out/app/
           runHook postInstall
@@ -286,6 +287,12 @@
     in {
       # Bundled TypeScript
       controller = seedController;
+
+      # Acceptance test runner (not an OCI image — runs from CLI)
+      acceptance = pkgs.writeShellScriptBin "seed-acceptance" ''
+        export PATH="${pkgs.lib.makeBinPath [ pkgs.openssh pkgs.curl ]}:$PATH"
+        exec ${pkgs.nodejs_22}/bin/node ${seedController}/app/acceptance.mjs "$@"
+      '';
 
       # OCI images for k8s deployment
       controllerImage = pkgs.nix-snapshotter.buildImage {

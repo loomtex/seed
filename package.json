@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx/esm --test src/test/*.test.ts"
+    "test": "node --import tsx/esm --test src/test/*.test.ts",
+    "acceptance": "node --import tsx/esm src/acceptance/index.ts"
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.0.0",
