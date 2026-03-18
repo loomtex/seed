@@ -52,6 +52,4 @@ in
   # Caddy substitutes {$SEED_ACME_URL} and {$SEED_FQDN} in the Caddyfile.
   systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
 
-  # Ensure caddy user owns the cert cache PVC
-  systemd.tmpfiles.rules = [ "d /seed/storage/caddy 0755 caddy caddy -" ];
 }
