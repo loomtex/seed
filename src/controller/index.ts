@@ -459,55 +459,77 @@ async function applyDesiredState(
 }
 
 /**
- * Reap resources whose generation doesn't match.
+ * Reap managed resources that are NOT in the desired state.
+ * Uses desired resource names (not generation labels) to avoid reaping
+ * resources we just applied — k8s list cache can lag behind writes.
  * PVCs are never reaped — delete manually if needed.
  */
 async function reapOldResources(
   clients: ReturnType<typeof makeClients>,
   namespace: string,
-  generation: string,
+  desired: DesiredState,
 ): Promise<void> {
-  // Reap old Deployments
+  // Build sets of desired resource names
+  const desiredDeployments = new Set<string>();
+  const desiredServices = new Set<string>();
+  const desiredHostTasks = new Set<string>();
+
+  for (const [, instance] of desired.instances) {
+    const depName = instance.deployment.metadata?.name;
+    if (depName) desiredDeployments.add(depName);
+    for (const svc of instance.services) {
+      const name = svc.metadata?.name;
+      if (name) desiredServices.add(name);
+    }
+    if (instance.ingressService) {
+      const name = instance.ingressService.metadata?.name;
+      if (name) desiredServices.add(name);
+    }
+    if (instance.hostTask) {
+      const name = instance.hostTask.metadata?.name;
+      if (name) desiredHostTasks.add(name);
+    }
+  }
+  for (const svc of [...desired.routes.ipv4, ...desired.routes.ipv6]) {
+    const name = svc.metadata?.name;
+    if (name) desiredServices.add(name);
+  }
+
+  // Reap Deployments not in desired state
   try {
     const deployments = await clients.apps.listNamespacedDeployment({
       namespace,
       labelSelector: MANAGED_SELECTOR,
     });
     for (const dep of deployments.items) {
-      const depGen = dep.metadata?.labels?.[LABELS.GENERATION];
-      if (depGen && depGen !== generation) {
-        log("controller", `reaping deployment: ${dep.metadata!.name}`);
-        await clients.apps.deleteNamespacedDeployment({
-          name: dep.metadata!.name!,
-          namespace,
-        });
+      const name = dep.metadata?.name;
+      if (name && !desiredDeployments.has(name)) {
+        log("controller", `reaping deployment: ${name}`);
+        await clients.apps.deleteNamespacedDeployment({ name, namespace });
       }
     }
   } catch (err) {
     log("controller", `error reaping deployments: ${err}`);
   }
 
-  // Reap old services
+  // Reap Services not in desired state
   try {
     const svcs = await clients.core.listNamespacedService({
       namespace,
       labelSelector: MANAGED_SELECTOR,
     });
     for (const svc of svcs.items) {
-      const svcGen = svc.metadata?.labels?.[LABELS.GENERATION];
-      if (svcGen && svcGen !== generation) {
-        log("controller", `reaping service: ${svc.metadata!.name}`);
-        await clients.core.deleteNamespacedService({
-          name: svc.metadata!.name!,
-          namespace,
-        });
+      const name = svc.metadata?.name;
+      if (name && !desiredServices.has(name)) {
+        log("controller", `reaping service: ${name}`);
+        await clients.core.deleteNamespacedService({ name, namespace });
       }
     }
   } catch (err) {
     log("controller", `error reaping services: ${err}`);
   }
 
-  // Reap old SeedHostTasks
+  // Reap SeedHostTasks not in desired state
   try {
     const tasks = await clients.custom.listNamespacedCustomObject({
       group: "seed.loom.farm",
@@ -516,15 +538,15 @@ async function reapOldResources(
       plural: "seedhosttasks",
     }) as { items: SeedHostTask[] };
     for (const task of tasks.items) {
-      const taskGen = task.metadata?.labels?.[LABELS.GENERATION];
-      if (taskGen && taskGen !== generation) {
-        log("controller", `reaping SeedHostTask: ${task.metadata!.name}`);
+      const name = task.metadata?.name;
+      if (name && !desiredHostTasks.has(name)) {
+        log("controller", `reaping SeedHostTask: ${name}`);
         await clients.custom.deleteNamespacedCustomObject({
           group: "seed.loom.farm",
           version: "v1alpha1",
           namespace,
           plural: "seedhosttasks",
-          name: task.metadata!.name!,
+          name,
         });
       }
     }
@@ -1217,8 +1239,8 @@ async function main(): Promise<void> {
       // Apply desired state (SeedHostTasks already applied, skipped inside)
       await applyDesiredState(clients, desired);
 
-      // Reap old resources
-      await reapOldResources(clients, namespace, generation);
+      // Reap resources not in desired state
+      await reapOldResources(clients, namespace, desired);
 
       // DNS auto-registration: read assigned IPv6 from ingress services, register AAAA records
       if (pdnsApiKey) {
