@@ -8,8 +8,8 @@
 
 let
   reposDir = "/seed/storage/repos";
-  caddyDir = "/seed/storage/caddy";
   hostKeyDir = "${reposDir}/ssh-host-keys";
+  acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 
   # AuthorizedKeysCommand — called by sshd for every connection
   #
@@ -514,7 +514,7 @@ in {
   seed.expose.https = { port = 443; protocol = "http"; };
   seed.expose.http = { port = 80; protocol = "tcp"; };
   seed.storage.repos = "10Gi";
-  seed.storage.caddy = "100Mi";
+  seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
   seed.shoot.enable = true;
 
   # sops-nix secrets
@@ -540,7 +540,6 @@ in {
   systemd.tmpfiles.rules = [
     "d ${reposDir} 0755 git git -"
     "d ${hostKeyDir} 0700 root root -"
-    "d ${caddyDir} 0755 caddy caddy -"
   ];
 
   # openssh server
@@ -570,26 +569,15 @@ in {
     mode = "0755";
   };
 
-  # Caddy — TLS frontend via platform ACME, proxies to nginx for cgit/archive
-  services.caddy = {
-    enable = true;
-    configFile = pkgs.writeText "Caddyfile" ''
-      {
-        acme_ca {$SEED_ACME_URL}
-        storage file_system /seed/storage/caddy
-      }
-
-      {$SEED_FQDN}, silo.loom.farm, bustlimit2.loom.farm {
-        reverse_proxy localhost:8080
-        log {
-          output stderr
-        }
-      }
-    '';
+  # TLS certificates via platform ACME endpoint (controller proxies DNS-01 to LE)
+  security.acme = {
+    acceptTerms = true;
+    defaults.server = acmeServer;
+    defaults.email = "acme@loom.farm";
+    certs."silo.loom.farm".extraDomainNames = [
+      "silo.s-gaydazldmnsg.seed.loom.farm"
+    ];
   };
-
-  # Load SEED_* env vars captured from PID 1 into Caddy's environment.
-  systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
 
   networking.firewall.allowedTCPPorts = [ 22 80 443 ];
 
@@ -625,11 +613,13 @@ in {
     };
   };
 
-  # nginx — serves cgit web interface + git archive tarballs via fcgiwrap
+  # nginx — TLS frontend + cgit web interface + git archive tarballs via fcgiwrap
   services.nginx = {
     enable = true;
-    virtualHosts."_" = {
-      listen = [{ addr = "127.0.0.1"; port = 8080; }];
+    virtualHosts."silo.loom.farm" = {
+      serverAliases = [ "silo.s-gaydazldmnsg.seed.loom.farm" ];
+      enableACME = true;
+      forceSSL = true;
       locations."~ ^/([^/]+)/archive/([^/]+)\\.tar\\.gz$" = {
         extraConfig = ''
           include ${pkgs.nginx}/conf/fastcgi_params;

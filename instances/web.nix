@@ -2,54 +2,41 @@
 #
 # Serves loom.farm static content over HTTPS. TLS certificates are
 # obtained automatically from the platform ACME endpoint (controller
-# proxies DNS-01 to Let's Encrypt). Caddy handles cert lifecycle.
-#
-# The controller injects SEED_ACME_URL (ACME directory) and SEED_FQDN
-# (instance hostname) as env vars. Caddy expands {$VAR} at startup.
+# proxies DNS-01 to Let's Encrypt). nginx serves static files;
+# security.acme (lego) handles cert lifecycle with multi-SAN support.
 { pkgs, ... }:
 
 let
   siteDir = ../site;
-  caddyDir = "/seed/storage/caddy";
+  acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 in
 {
   seed.size = "xs";
   seed.expose.http = { port = 80; protocol = "tcp"; };
   seed.expose.https = { port = 443; protocol = "http"; };
-  seed.storage.caddy = "100Mi";
+  seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
 
-  # seed.acme is automatically true because expose.https has protocol "http"
-
-  # Ensure correct user owns the persistent dirs
-  systemd.tmpfiles.rules = [
-    "d ${caddyDir} 0755 caddy caddy -"
-  ];
-
-  # Use configFile instead of virtualHosts so we can use Caddy env vars
-  # for the site address ({$SEED_FQDN}) and ACME CA ({$SEED_ACME_URL}).
-  services.caddy = {
-    enable = true;
-    configFile = pkgs.writeText "Caddyfile" ''
-      {
-        acme_ca {$SEED_ACME_URL}
-        storage file_system /seed/storage/caddy
-      }
-
-      {$SEED_FQDN}, loom.farm, bustweblimit2.loom.farm {
-        handle_path /_hook/* {
-          reverse_proxy seed-controller.seed-system.svc.cluster.local:9876
-        }
-        root * ${siteDir}
-        file_server
-        log {
-          output stderr
-        }
-      }
-    '';
+  security.acme = {
+    acceptTerms = true;
+    defaults.server = acmeServer;
+    defaults.email = "acme@loom.farm";
+    # Single cert with both hostnames as SANs
+    certs."loom.farm".extraDomainNames = [
+      "web.s-gaydazldmnsg.seed.loom.farm"
+    ];
   };
 
-  # Load SEED_* env vars captured from PID 1 into Caddy's environment.
-  # Caddy substitutes {$SEED_ACME_URL} and {$SEED_FQDN} in the Caddyfile.
-  systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
-
+  services.nginx = {
+    enable = true;
+    virtualHosts."loom.farm" = {
+      serverAliases = [ "web.s-gaydazldmnsg.seed.loom.farm" ];
+      enableACME = true;
+      forceSSL = true;
+      root = siteDir;
+      # Webhook reverse proxy — trailing / strips /_hook/ prefix
+      locations."/_hook/" = {
+        proxyPass = "http://seed-controller.seed-system.svc.cluster.local:9876/";
+      };
+    };
+  };
 }
