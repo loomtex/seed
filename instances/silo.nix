@@ -513,6 +513,7 @@ in {
   seed.expose.https = { port = 443; protocol = "http"; };
   seed.expose.http = { port = 80; protocol = "tcp"; };
   seed.storage.repos = "10Gi";
+  seed.storage.caddy = "100Mi";
   seed.shoot.enable = true;
 
   # sops-nix secrets
@@ -573,6 +574,7 @@ in {
     configFile = pkgs.writeText "Caddyfile" ''
       {
         acme_ca {$SEED_ACME_URL}
+        storage file_system /seed/storage/caddy
       }
 
       {$SEED_FQDN}, silo.loom.farm {
