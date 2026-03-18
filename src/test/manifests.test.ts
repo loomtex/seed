@@ -35,7 +35,7 @@ describe("generateDeployment", () => {
 
     assert.equal(dep.apiVersion, "apps/v1");
     assert.equal(dep.kind, "Deployment");
-    assert.equal(dep.metadata?.name, "seed-web");
+    assert.equal(dep.metadata?.name, "web");
     assert.equal(dep.metadata?.namespace, ns);
     assert.equal(dep.spec?.replicas, 1);
     assert.equal(dep.spec?.strategy?.type, "Recreate");
@@ -272,7 +272,7 @@ describe("generateService", () => {
     const svc = generateService("web", "gen1", "s-test", meta);
 
     assert.ok(svc, "service should be generated");
-    assert.equal(svc.metadata?.name, "seed-web");
+    assert.equal(svc.metadata?.name, "web");
     assert.equal(svc.spec?.selector?.["seed.loom.farm/instance"], "web");
 
     const ports = svc.spec?.ports;

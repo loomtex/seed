@@ -420,7 +420,7 @@ async function applyDesiredState(
   for (const [name, instance] of desired.instances) {
     try {
       await applyDeployment(clients.apps, namespace, instance.deployment);
-      log("controller", `applied deployment seed-${name}`, name);
+      log("controller", `applied deployment ${name}`, name);
     } catch (err) {
       log("controller", `deployment error: ${err}`, name);
     }
@@ -962,7 +962,7 @@ async function registerInstanceDNS(
   while (Date.now() - start < maxWait) {
     const remaining: string[] = [];
     for (const name of pendingInstances) {
-      const svcName = `seed-${name}-ingress`;
+      const svcName = `${name}-ingress`;
       try {
         const svc = await clients.core.readNamespacedService({ name: svcName, namespace });
         const ingress = svc.status?.loadBalancer?.ingress;
@@ -986,7 +986,7 @@ async function registerInstanceDNS(
   }
 
   if (pendingInstances.length > 0) {
-    log("dns", `warning: no IP assigned for ingress services: ${pendingInstances.map((n) => `seed-${n}-ingress`).join(", ")}`);
+    log("dns", `warning: no IP assigned for ingress services: ${pendingInstances.map((n) => `${n}-ingress`).join(", ")}`);
   }
 
   // Register AAAA records

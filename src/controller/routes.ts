@@ -33,7 +33,7 @@ export function generateIPv4Services(
 
     services.push(
       generateLBService(
-        `seed-${instance}-ipv4`,
+        `${instance}-ipv4`,
         instance,
         generation,
         namespace,
@@ -68,7 +68,7 @@ export function generateIPv6Services(
 
     services.push(
       generateLBService(
-        `seed-${key}-ipv6`,
+        `${key}-ipv6`,
         route.instance,
         generation,
         namespace,

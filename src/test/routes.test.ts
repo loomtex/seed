@@ -42,7 +42,7 @@ describe("generateIPv4Services", () => {
     const services = generateIPv4Services(config, ip, gen, ns);
 
     assert.equal(services.length, 1);
-    assert.equal(services[0].metadata?.name, "seed-web-ipv4");
+    assert.equal(services[0].metadata?.name, "web-ipv4");
     assert.equal(services[0].spec?.type, "LoadBalancer");
     assert.equal(services[0].spec?.loadBalancerIP, ip);
     assert.equal(services[0].spec?.ports?.length, 2);
@@ -60,7 +60,7 @@ describe("generateIPv4Services", () => {
 
     assert.equal(services.length, 2);
     const names = services.map((s) => s.metadata?.name).sort();
-    assert.deepEqual(names, ["seed-dns-ipv4", "seed-web-ipv4"]);
+    assert.deepEqual(names, ["dns-ipv4", "web-ipv4"]);
   });
 
   it("handles DNS protocol with both TCP and UDP ports", () => {
@@ -191,16 +191,16 @@ describe("generateIPv6Services", () => {
   it("names services with route key", () => {
     const services = generateIPv6Services(config, gen, ns);
     const names = services.map((s) => s.metadata?.name).sort();
-    assert.deepEqual(names, ["seed-dns-ipv6", "seed-http-ipv6"]);
+    assert.deepEqual(names, ["dns-ipv6", "http-ipv6"]);
   });
 
   it("constructs loadBalancerIP from block + host", () => {
     const services = generateIPv6Services(config, gen, ns);
 
-    const dnsSvc = services.find((s) => s.metadata?.name === "seed-dns-ipv6");
+    const dnsSvc = services.find((s) => s.metadata?.name === "dns-ipv6");
     assert.equal(dnsSvc?.spec?.loadBalancerIP, "2001:19f0:6402:7eb::1");
 
-    const httpSvc = services.find((s) => s.metadata?.name === "seed-http-ipv6");
+    const httpSvc = services.find((s) => s.metadata?.name === "http-ipv6");
     assert.equal(httpSvc?.spec?.loadBalancerIP, "2001:19f0:6402:7eb::3");
   });
 
@@ -215,7 +215,7 @@ describe("generateIPv6Services", () => {
 
   it("handles DNS protocol with TCP+UDP ports", () => {
     const services = generateIPv6Services(config, gen, ns);
-    const dnsSvc = services.find((s) => s.metadata?.name === "seed-dns-ipv6");
+    const dnsSvc = services.find((s) => s.metadata?.name === "dns-ipv6");
 
     assert.equal(dnsSvc?.spec?.ports?.length, 2);
     assert.ok(dnsSvc?.spec?.ports?.find((p) => p.protocol === "TCP"));

@@ -124,7 +124,7 @@ describe("renderDesiredState", () => {
     const state = renderDesiredState(DEFAULT_NAMESPACE, false, DEFAULT_IPV4, "", results, null, null, new Map());
     const webInstance = state.instances.get("web")!;
     assert.equal(webInstance.services.length, 1);
-    assert.equal(webInstance.services[0].metadata?.name, "seed-web");
+    assert.equal(webInstance.services[0].metadata?.name, "web");
   });
 
   it("generates no service when no ports exposed", () => {

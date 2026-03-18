@@ -65,7 +65,7 @@ export function generateDeployment(
     apiVersion: "apps/v1",
     kind: "Deployment",
     metadata: {
-      name: `seed-${name}`,
+      name,
       namespace,
       labels: seedLabels(name, generation),
     },
@@ -175,7 +175,7 @@ export function generateService(
     apiVersion: "v1",
     kind: "Service",
     metadata: {
-      name: `seed-${instance}`,
+      name: instance,
       namespace,
       labels: seedLabels(instance, generation),
     },
@@ -202,7 +202,7 @@ export function generateIngressService(
     apiVersion: "v1",
     kind: "Service",
     metadata: {
-      name: `seed-${instance}-ingress`,
+      name: `${instance}-ingress`,
       namespace,
       labels: {
         ...seedLabels(instance, generation),
