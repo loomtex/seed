@@ -132,7 +132,10 @@ export async function applyResource(
         }
 
         if (existing) {
-          const svc = manifest as k8s.V1Service;
+          // Deep-clone to avoid mutating the original manifest (which may be
+          // reused by drift-correction watches — mutating it accumulates stale
+          // server-managed fields and causes an infinite correction loop).
+          const svc = structuredClone(manifest as k8s.V1Service);
           const desiredPorts = svc.spec?.ports;
           // Overlay desired onto existing to preserve ALL server-managed fields
           // (clusterIP, clusterIPs, nodePort, sessionAffinity, internalTrafficPolicy,
