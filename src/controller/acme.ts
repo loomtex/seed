@@ -9,14 +9,16 @@
 // FQDN matches the caller's namespace. Network policy enforces
 // namespace identity at the network level.
 //
-// State is in-memory — lost on restart. ACME clients handle this
-// gracefully (retry / re-register).
+// Instance-facing accounts and the LE account URL are persisted to a
+// k8s ConfigMap so they survive controller restarts. Nonces, orders,
+// and certs are ephemeral — clients retry naturally.
 
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import * as k8s from "@kubernetes/client-node";
 import * as jose from "jose";
 import type { CryptoKey } from "jose";
-import { log } from "../shared/kube.js";
+import { loadKubeConfig, log } from "../shared/kube.js";
 
 // --- Types ---
 
@@ -61,6 +63,11 @@ let leAccountKey: CryptoKey | null = null;
 let leAccountUrl = "";
 let leDirectory: Record<string, string> | null = null;
 
+// k8s persistence
+let coreApi: k8s.CoreV1Api | null = null;
+const ACME_STATE_CM = "acme-state";
+const ACME_STATE_NS = "seed-system";
+
 let idCounter = 0;
 function nextId(): string {
   return `${Date.now()}-${++idCounter}`;
@@ -76,12 +83,67 @@ function consumeNonce(nonce: string): boolean {
   return nonces.delete(nonce);
 }
 
+// --- Persistence (k8s ConfigMap) ---
+
+async function loadState(): Promise<void> {
+  if (!coreApi) return;
+  try {
+    const cm = await coreApi.readNamespacedConfigMap({
+      name: ACME_STATE_CM,
+      namespace: ACME_STATE_NS,
+    });
+    if (cm.data?.["accounts"]) {
+      const stored: AcmeAccount[] = JSON.parse(cm.data["accounts"]);
+      for (const acct of stored) {
+        accounts.set(acct.thumbprint, acct);
+        accountsById.set(acct.id, acct);
+      }
+      log("acme", `restored ${stored.length} accounts`);
+    }
+    if (cm.data?.["leAccountUrl"]) {
+      leAccountUrl = cm.data["leAccountUrl"];
+      log("acme", `restored LE account: ${leAccountUrl}`);
+    }
+  } catch {
+    // ConfigMap doesn't exist yet — first run
+  }
+}
+
+async function saveState(): Promise<void> {
+  if (!coreApi) return;
+  const body: k8s.V1ConfigMap = {
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: { name: ACME_STATE_CM, namespace: ACME_STATE_NS },
+    data: {
+      accounts: JSON.stringify([...accounts.values()]),
+      ...(leAccountUrl ? { leAccountUrl } : {}),
+    },
+  };
+  try {
+    await coreApi.replaceNamespacedConfigMap({
+      name: ACME_STATE_CM, namespace: ACME_STATE_NS, body,
+    });
+  } catch {
+    try {
+      await coreApi.createNamespacedConfigMap({ namespace: ACME_STATE_NS, body });
+    } catch (err) {
+      log("acme", `failed to save state: ${err}`);
+    }
+  }
+}
+
 // --- Initialization ---
 
 export async function initAcme(cfg: AcmeConfig): Promise<void> {
   config = cfg;
   const keyPem = await readFile(cfg.accountKeyFile, "utf-8");
   leAccountKey = await jose.importPKCS8(keyPem.trim(), "ES256", { extractable: true });
+
+  const kc = loadKubeConfig();
+  coreApi = kc.makeApiClient(k8s.CoreV1Api);
+  await loadState();
+
   log("acme", "ACME endpoint initialized");
 }
 
@@ -358,6 +420,7 @@ async function handleNewAccount(
   const account: AcmeAccount = { id, jwk, thumbprint };
   accounts.set(thumbprint, account);
   accountsById.set(id, account);
+  await saveState();
 
   log("acme", `new account ${id}`);
 
@@ -688,6 +751,7 @@ async function ensureLeAccount(): Promise<void> {
 
   leAccountUrl = result.headers.get("location") || "";
   if (!leAccountUrl) throw new Error("LE newAccount: no Location header");
+  await saveState();
   log("acme", `LE account: ${leAccountUrl}`);
 }
 
