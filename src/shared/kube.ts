@@ -182,12 +182,13 @@ export async function applyResource(
               if (np !== undefined) p.nodePort = np;
             }
           }
-          // Skip replace if spec hasn't actually changed — prevents
+          // Skip replace if neither spec nor labels changed — prevents
           // generation bump → informer event → re-apply feedback loop.
-          // Uses stableStringify because k8s returns keys in alphabetical
-          // order while our objects have insertion order — JSON.stringify
-          // produces different strings for semantically identical objects.
-          if (stableStringify(svc.spec) === stableStringify(existing.spec)) return;
+          // Labels must be compared too: generation label changes even when
+          // this service's spec is identical (another instance changed).
+          const specSame = stableStringify(svc.spec) === stableStringify(existing.spec);
+          const labelsSame = stableStringify(svc.metadata?.labels) === stableStringify(existing.metadata?.labels);
+          if (specSame && labelsSame) return;
           await core.replaceNamespacedService({ name, namespace, body: svc });
         } else {
           await core.createNamespacedService({ namespace, body: manifest as k8s.V1Service });
@@ -242,8 +243,13 @@ export async function applyDeployment(
   }
 
   if (existing) {
-    // Skip replace if spec hasn't changed — prevents feedback loop
-    if (stableStringify(deployment.spec) === stableStringify(existing.spec)) return;
+    // Skip replace if neither spec nor labels changed — prevents feedback loop.
+    // Labels must be compared too: when another instance in the same namespace
+    // changes, the generation hash updates for all resources even if this
+    // deployment's spec is identical.
+    const specMatch = stableStringify(deployment.spec) === stableStringify(existing.spec);
+    const labelsMatch = stableStringify(deployment.metadata?.labels) === stableStringify(existing.metadata?.labels);
+    if (specMatch && labelsMatch) return;
     const body = structuredClone(deployment);
     body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
     await apps.replaceNamespacedDeployment({ name, namespace, body });
