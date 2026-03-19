@@ -38,6 +38,21 @@ export function updateKeyIndex(index: KeyIndex): void {
   log("api", `key index updated: ${Object.keys(index.keys).length} keys`);
 }
 
+// --- Plant handler ---
+
+export type PlantHandler = (
+  flakeUri: string,
+  inviteCode: string,
+  keyBlob: string,
+) => Promise<{ name: string; namespace: string; flakeUri: string }>;
+
+let plantHandler: PlantHandler | null = null;
+
+/** Register the plant handler. Called by the controller after startup. */
+export function setPlantHandler(handler: PlantHandler): void {
+  plantHandler = handler;
+}
+
 // --- Route handler ---
 
 interface RouteContext {
@@ -89,6 +104,12 @@ export async function handleApiRequest(
       return true;
     }
 
+    // POST /api/plant
+    if (req.method === "POST" && pathname === "/api/plant") {
+      await handlePlantRequest(req, res);
+      return true;
+    }
+
     // Parse /api/ns/:namespace/...
     const nsMatch = pathname.match(/^\/api\/ns\/([a-z0-9-]+)\/(.+)$/);
     if (!nsMatch) {
@@ -136,6 +157,46 @@ export async function handleApiRequest(
 }
 
 // --- Handlers ---
+
+async function handlePlantRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  if (!plantHandler) {
+    jsonResponse(res, 503, { error: "plant handler not initialized" });
+    return;
+  }
+
+  // Read body
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+  }
+
+  let body: { flakeUri?: string; inviteCode?: string; keyBlob?: string };
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString());
+  } catch {
+    jsonResponse(res, 400, { error: "invalid JSON" });
+    return;
+  }
+
+  const { flakeUri, inviteCode, keyBlob } = body;
+  if (!flakeUri || !inviteCode || !keyBlob) {
+    jsonResponse(res, 400, { error: "missing required fields: flakeUri, inviteCode, keyBlob" });
+    return;
+  }
+
+  try {
+    const result = await plantHandler(flakeUri, inviteCode, keyBlob);
+    log("api", `planted ${result.flakeUri} → ${result.namespace}`);
+    jsonResponse(res, 200, result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log("api", `plant failed: ${msg}`);
+    jsonResponse(res, 400, { error: msg });
+  }
+}
 
 async function handleStatus(
   res: ServerResponse,

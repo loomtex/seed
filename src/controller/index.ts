@@ -12,14 +12,14 @@
 import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, makeClients, deriveNamespace, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
-import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, BuildResult } from "../shared/types.js";
+import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult } from "../shared/types.js";
 import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
-import { initApi, updateKeyIndex, updateValidNamespaces, type KeyIndex, type NamespaceEntry } from "./api.js";
+import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, type KeyIndex, type NamespaceEntry } from "./api.js";
 import { registerDNSRecords, deleteDNSRecords, loadPdnsApiKey } from "./dns.js";
 import { initAcme, updateAcmeNamespaces } from "./acme.js";
 import { execFile } from "node:child_process";
@@ -40,11 +40,8 @@ interface FlakeState {
 // --- Configuration ---
 
 function loadConfig(): ControllerConfig {
-  const flakePathsRaw = process.env["SEED_FLAKE_PATHS"];
-  if (!flakePathsRaw) throw new Error("SEED_FLAKE_PATHS must be set");
-
+  const flakePathsRaw = process.env["SEED_FLAKE_PATHS"] || "";
   const flakePaths = flakePathsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-  if (flakePaths.length === 0) throw new Error("SEED_FLAKE_PATHS must contain at least one path");
 
   return {
     flakePaths,
@@ -60,6 +57,7 @@ function loadConfig(): ControllerConfig {
     instanceDomain: process.env["SEED_INSTANCE_DOMAIN"] || "seed.loom.farm",
     acmeEnabled: !!process.env["SEED_ACME_ENABLED"],
     acmeAccountKeyFile: process.env["SEED_ACME_ACCOUNT_KEY_FILE"] || "",
+    siloHost: process.env["SEED_SILO_HOST"] || "silo.loom.farm",
   };
 }
 
@@ -1023,6 +1021,214 @@ async function registerInstanceDNS(
   }
 }
 
+// --- SeedFlake CRD helpers ---
+
+/** List all SeedFlake CRDs from the cluster. */
+async function listSeedFlakes(
+  clients: ReturnType<typeof makeClients>,
+): Promise<SeedFlake[]> {
+  try {
+    const result = await clients.custom.listClusterCustomObject({
+      group: "seed.loom.farm",
+      version: "v1alpha1",
+      plural: "seedflakes",
+    }) as { items: SeedFlake[] };
+    return result.items;
+  } catch {
+    return [];
+  }
+}
+
+/** Update SeedFlake status subresource (read-then-replace pattern). */
+async function updateSeedFlakeStatus(
+  clients: ReturnType<typeof makeClients>,
+  name: string,
+  status: SeedFlake["status"],
+): Promise<void> {
+  const existing = await clients.custom.getClusterCustomObject({
+    group: "seed.loom.farm",
+    version: "v1alpha1",
+    plural: "seedflakes",
+    name,
+  }) as SeedFlake;
+  existing.status = status;
+  await clients.custom.replaceClusterCustomObjectStatus({
+    group: "seed.loom.farm",
+    version: "v1alpha1",
+    plural: "seedflakes",
+    name,
+    body: existing,
+  });
+}
+
+/**
+ * Register active SeedFlake CRDs into the flake state maps.
+ * Returns new flake paths added (for initial reconciliation).
+ */
+async function loadSeedFlakes(
+  clients: ReturnType<typeof makeClients>,
+  flakeStates: Map<string, FlakeState>,
+  namespaceToFlake: Map<string, string>,
+): Promise<string[]> {
+  const seedFlakes = await listSeedFlakes(clients);
+  const newPaths: string[] = [];
+
+  for (const sf of seedFlakes) {
+    const uri = sf.spec?.flakeUri;
+    if (!uri) continue; // Unclaimed invite
+
+    if (flakeStates.has(uri)) continue; // Already registered (bootstrap or prior load)
+
+    const namespace = deriveNamespace(uri);
+    flakeStates.set(uri, {
+      flakePath: uri,
+      namespace,
+      desired: null,
+      reconciling: false,
+    });
+    namespaceToFlake.set(namespace, uri);
+    newPaths.push(uri);
+    log("controller", `registered SeedFlake ${sf.metadata?.name}: ${uri} → ${namespace}`);
+  }
+
+  return newPaths;
+}
+
+/**
+ * Expand silo: shorthand to full tarball URI.
+ * silo:my-app → tarball+https://<siloHost>/my-app/archive/master.tar.gz
+ */
+function expandFlakeUri(uri: string, siloHost: string): string {
+  if (uri.startsWith("silo:")) {
+    const repoName = uri.slice(5);
+    return `tarball+https://${siloHost}/${repoName}/archive/master.tar.gz`;
+  }
+  return uri;
+}
+
+/**
+ * Validate a flake URI format.
+ * Must match known schemes: github:, tarball+, git+, path:, or silo: (pre-expanded).
+ */
+function isValidFlakeUri(uri: string): boolean {
+  return /^(github:|tarball\+https?:|git\+(https?|ssh):|path:)/.test(uri);
+}
+
+/**
+ * Handle a plant request: claim an invite, register the flake, trigger reconciliation.
+ */
+async function handlePlant(
+  clients: ReturnType<typeof makeClients>,
+  config: ControllerConfig,
+  flakeStates: Map<string, FlakeState>,
+  namespaceToFlake: Map<string, string>,
+  triggerReconcile: (flakePath: string) => void,
+  flakeUri: string,
+  inviteCode: string,
+  keyBlob: string,
+): Promise<{ name: string; namespace: string; flakeUri: string }> {
+  // Expand silo: shorthand
+  const expandedUri = expandFlakeUri(flakeUri, config.siloHost);
+
+  // Validate URI format
+  if (!isValidFlakeUri(expandedUri)) {
+    throw new Error(`invalid flake URI format: ${flakeUri}`);
+  }
+
+  // Check no existing SeedFlake already has this URI
+  const existing = await listSeedFlakes(clients);
+  for (const sf of existing) {
+    if (sf.spec?.flakeUri === expandedUri) {
+      throw new Error(`flake already registered: ${expandedUri}`);
+    }
+  }
+
+  // Find SeedFlake with matching invite code
+  let target: SeedFlake | null = null;
+  for (const sf of existing) {
+    if (sf.spec?.inviteCode === inviteCode && !sf.spec?.flakeUri) {
+      target = sf;
+      break;
+    }
+  }
+  if (!target) {
+    throw new Error("invalid or already-used invite code");
+  }
+
+  // Fetch flake source and verify caller's key is in .authorized_keys
+  const authorizedKeys = await extractAuthorizedKeys(expandedUri, true);
+  // Match keyBlob against authorized keys (type+blob, ignoring comments)
+  const callerFound = authorizedKeys.some((line) => {
+    const parts = line.split(/\s+/);
+    return parts.length >= 2 && parts[1] === keyBlob;
+  });
+  if (!callerFound) {
+    throw new Error("your key is not in the repo's .authorized_keys");
+  }
+
+  // Claim the invite: set flakeUri, clear inviteCode (read-then-replace)
+  const sfName = target.metadata!.name!;
+  target.spec.flakeUri = expandedUri;
+  target.spec.inviteCode = "";
+  await clients.custom.replaceClusterCustomObject({
+    group: "seed.loom.farm",
+    version: "v1alpha1",
+    plural: "seedflakes",
+    name: sfName,
+    body: target,
+  });
+
+  // Set status
+  const namespace = deriveNamespace(expandedUri);
+  await updateSeedFlakeStatus(clients, sfName, {
+    namespace,
+    state: "active",
+    generation: "",
+    lastReconciled: "",
+  });
+
+  // Register in flake states
+  if (!flakeStates.has(expandedUri)) {
+    flakeStates.set(expandedUri, {
+      flakePath: expandedUri,
+      namespace,
+      desired: null,
+      reconciling: false,
+    });
+    namespaceToFlake.set(namespace, expandedUri);
+    log("controller", `planted ${expandedUri} → ${namespace}`);
+
+    // Update valid namespaces for API routing
+    updateValidNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
+    // Update ACME namespaces if enabled
+    if (config.acmeEnabled) {
+      updateAcmeNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
+    }
+
+    // Ensure namespace exists
+    try {
+      await clients.core.readNamespace({ name: namespace });
+    } catch {
+      await clients.core.createNamespace({
+        body: {
+          apiVersion: "v1",
+          kind: "Namespace",
+          metadata: {
+            name: namespace,
+            labels: { [LABELS.MANAGED_BY]: MANAGED_BY_VALUE },
+            annotations: { [ANNOTATIONS.FLAKE_URI]: expandedUri },
+          },
+        },
+      });
+    }
+
+    // Trigger reconciliation for the new flake
+    triggerReconcile(expandedUri);
+  }
+
+  return { name: sfName, namespace, flakeUri: expandedUri };
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -1046,6 +1252,20 @@ async function main(): Promise<void> {
     });
     namespaceToFlake.set(namespace, flakePath);
     log("controller", `registered flake ${flakePath} → namespace ${namespace}`);
+  }
+
+  // Load active SeedFlakes from CRDs
+  try {
+    const newPaths = await loadSeedFlakes(clients, flakeStates, namespaceToFlake);
+    if (newPaths.length > 0) {
+      log("controller", `loaded ${newPaths.length} SeedFlake(s) from CRDs`);
+    }
+  } catch (err) {
+    log("controller", `SeedFlake CRD load failed (CRD may not exist yet): ${err}`);
+  }
+
+  if (flakeStates.size === 0) {
+    log("controller", "warning: no flakes registered (SEED_FLAKE_PATHS empty and no SeedFlakes)");
   }
 
   // Load pdns API key for DNS auto-registration
@@ -1133,16 +1353,24 @@ async function main(): Promise<void> {
   const pendingRefresh = new Set<string>(); // flakePaths waiting to reconcile
   let webhookResolve: (() => void) | null = null;
 
+  function triggerReconcile(flakePath: string): void {
+    pendingRefresh.add(flakePath);
+    if (webhookResolve) {
+      webhookResolve();
+      webhookResolve = null;
+    }
+  }
+
   if (config.webhookSecretFile || process.env["SEED_WEBHOOK_PORT"]) {
     const port = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
-    startWebhookServer(port, config.webhookSecretFile, config.flakePaths, (flakePath: string) => {
-      pendingRefresh.add(flakePath);
-      if (webhookResolve) {
-        webhookResolve();
-        webhookResolve = null;
-      }
-    });
+    // Webhook matches against all registered flake paths (bootstrap + SeedFlakes)
+    startWebhookServer(port, config.webhookSecretFile, flakeStates, triggerReconcile);
   }
+
+  // Wire up plant handler for the API
+  setPlantHandler(async (flakeUri, inviteCode, keyBlob) => {
+    return handlePlant(clients, config, flakeStates, namespaceToFlake, triggerReconcile, flakeUri, inviteCode, keyBlob);
+  });
 
   /** Wait for a webhook event. Returns immediately if one is already queued. */
   function waitForWebhook(): Promise<void> {
@@ -1273,6 +1501,24 @@ async function main(): Promise<void> {
       }
 
       fs.desired = desired;
+
+      // Update SeedFlake status if this flake came from a CRD
+      try {
+        const seedFlakes = await listSeedFlakes(clients);
+        for (const sf of seedFlakes) {
+          if (sf.spec?.flakeUri === flakePath && sf.metadata?.name) {
+            await updateSeedFlakeStatus(clients, sf.metadata.name, {
+              namespace,
+              state: "active",
+              generation,
+              lastReconciled: new Date().toISOString(),
+            });
+            break;
+          }
+        }
+      } catch (err) {
+        log("controller", `SeedFlake status update failed: ${err}`, flakePath);
+      }
 
       log("controller", `reconciliation complete (generation=${generation})`, flakePath);
     } finally {

@@ -12,6 +12,11 @@ import { handleAcmeRequest } from "./acme.js";
 
 export type RefreshCallback = (flakePath: string) => void;
 
+interface FlakeStateEntry {
+  flakePath: string;
+  namespace: string;
+}
+
 /**
  * Match a repository name against known flake paths.
  * Supports GitHub flakes ("github:<owner>/<repo>") matched by full_name,
@@ -19,8 +24,8 @@ export type RefreshCallback = (flakePath: string) => void;
  * by repo name (the first path segment after the host).
  * Returns the matched flake path, or null if no match.
  */
-function matchFlake(repoFullName: string, flakePaths: string[]): string | null {
-  for (const fp of flakePaths) {
+function matchFlake(repoFullName: string, flakeStates: Map<string, FlakeStateEntry>): string | null {
+  for (const fp of flakeStates.keys()) {
     // GitHub: github:<owner>/<repo>
     const ghMatch = fp.match(/^github:([^#]+)/);
     if (ghMatch && ghMatch[1] === repoFullName) return fp;
@@ -36,7 +41,7 @@ function matchFlake(repoFullName: string, flakePaths: string[]): string | null {
 export function startWebhookServer(
   port: number,
   secretFile: string,
-  flakePaths: string[],
+  flakeStates: Map<string, FlakeStateEntry>,
   onRefresh: RefreshCallback,
 ): void {
   let hmacSecret = "";
@@ -101,7 +106,7 @@ export function startWebhookServer(
       const payload = JSON.parse(body.toString());
       const repoFullName = payload?.repository?.full_name;
       if (repoFullName) {
-        matchedFlake = matchFlake(repoFullName, flakePaths);
+        matchedFlake = matchFlake(repoFullName, flakeStates);
         if (matchedFlake) {
           log("webhook", `matched repo ${repoFullName} → ${matchedFlake}`);
         } else {
@@ -116,7 +121,7 @@ export function startWebhookServer(
       onRefresh(matchedFlake);
     } else {
       // No match or parse failure — trigger all flakes
-      for (const fp of flakePaths) {
+      for (const fp of flakeStates.keys()) {
         onRefresh(fp);
       }
     }

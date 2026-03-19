@@ -266,6 +266,7 @@ let
               { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               # PATH: nix + git + coreutils (for nix eval/build)
               { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz ]; }
+              { name = "SEED_SILO_HOST"; value = cfg.siloHost; }
             ] ++ lib.optional (cfg.ipv4Address != "") {
               name = "SEED_IPV4_ADDRESS"; value = cfg.ipv4Address;
             } ++ lib.optional (cfg.ipv6Block != "") {
@@ -520,7 +521,8 @@ in {
 
     flakePaths = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      description = "Flake paths containing seeds.* outputs.";
+      default = [];
+      description = "Bootstrap flake paths containing seeds.* outputs. Additional flakes can be registered dynamically via SeedFlake CRDs.";
     };
 
     ipv4Address = lib.mkOption {
@@ -669,6 +671,12 @@ in {
           Empty = no authentication (accept all requests).
         '';
       };
+    };
+
+    siloHost = lib.mkOption {
+      type = lib.types.str;
+      default = "silo.loom.farm";
+      description = "Hostname of the silo git server, used to expand silo: shorthand in plant command.";
     };
 
     poolManager = {

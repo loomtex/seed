@@ -120,6 +120,28 @@ export interface BuildResult {
   meta: SeedMeta;
 }
 
+// --- SeedFlake CRD ---
+
+export interface SeedFlakeSpec {
+  inviteCode: string;
+  flakeUri: string;
+}
+
+export interface SeedFlakeStatus {
+  namespace: string;
+  state: "pending" | "active";
+  generation: string;
+  lastReconciled: string;
+}
+
+export interface SeedFlake {
+  apiVersion: "seed.loom.farm/v1alpha1";
+  kind: "SeedFlake";
+  metadata: k8s.V1ObjectMeta;
+  spec: SeedFlakeSpec;
+  status?: SeedFlakeStatus;
+}
+
 // --- Controller configuration ---
 
 export interface ControllerConfig {
@@ -136,4 +158,5 @@ export interface ControllerConfig {
   instanceDomain: string;
   acmeEnabled: boolean;
   acmeAccountKeyFile: string;
+  siloHost: string;
 }
