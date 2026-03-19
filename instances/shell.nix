@@ -167,7 +167,7 @@ let
             echo "$RESULT" | $JQ .
           else
             echo "$RESULT" | $JQ -r --arg repo "$ARG" '
-              "\u001b[1m\($repo)\u001b[0m",
+              "\u001b[1;4m\($repo)\u001b[0m",
               (.instances | to_entries[] |
                 "  \u001b[1m\(.key)\u001b[0m " +
                 (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
@@ -192,7 +192,7 @@ let
             echo "$ALL_JSON" | $JQ .
           else
             echo "$ALL_JSON" | $JQ -r '.[] |
-              "\u001b[1m\(.repo)\u001b[0m",
+              "\u001b[1;4m\(.repo)\u001b[0m",
               (.data.instances | to_entries[] |
                 "  \u001b[1m\(.key)\u001b[0m " +
                 (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
