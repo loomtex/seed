@@ -1,14 +1,18 @@
 # Seed shell instance — SSH management interface for seed tenants
 #
 # SSH is the interface. Users connect with their SSH key, which the controller
-# maps to a namespace via .authorized_keys in each flake's root. The shell
-# provides non-interactive commands: status, logs, restart.
+# maps to repo→namespace pairs via .authorized_keys in each flake's root.
+# The shell provides non-interactive commands: status, logs, restart.
 #
 # Auth flow:
 #   1. sshd calls AuthorizedKeysCommand → curls controller /api/keys
-#   2. If key is found, sshd accepts with forced command + namespace env var
+#   2. If key is found, sshd accepts with forced command + SEED_REPOS env var
 #   3. seed-shell dispatches to the appropriate command
 #   4. Commands proxy through the controller's internal API
+#
+# Instance targeting:
+#   - Bare name: "web" — auto-resolves repo if unambiguous
+#   - Qualified: "seed/web" — explicit repo/instance
 { config, pkgs, lib, ... }:
 
 let
@@ -27,34 +31,101 @@ let
     # Fetch key index from controller
     INDEX=$(${pkgs.curl}/bin/curl -sf "${controllerApi}/api/keys" 2>/dev/null) || exit 0
 
-    # Look up this key — find matching namespaces
-    NAMESPACES=$(echo "$INDEX" | ${pkgs.jq}/bin/jq -r \
+    # Look up this key — build name=namespace pairs
+    # API returns: { keys: { "ssh-ed25519 ...": [{ name: "seed", namespace: "s-xxx" }, ...] } }
+    REPOS=$(echo "$INDEX" | ${pkgs.jq}/bin/jq -r \
       --arg key "$FULL_KEY" \
-      '.keys[$key] // empty | join(",")')
+      '.keys[$key] // empty | map("\(.name)=\(.namespace)") | join(",")')
 
-    if [ -z "$NAMESPACES" ]; then
+    if [ -z "$REPOS" ]; then
       exit 0  # Key not found — deny
     fi
 
-    # Emit authorized_keys line with forced command and namespace context.
+    # Emit authorized_keys line with forced command and repo context.
     # restrict disables forwarding/pty/rc. environment= requires PermitUserEnvironment in sshd_config.
-    echo "restrict,command=\"seed-shell\",environment=\"SEED_NAMESPACES=$NAMESPACES\" $FULL_KEY seed-user"
+    echo "restrict,command=\"seed-shell\",environment=\"SEED_REPOS=$REPOS\" $FULL_KEY seed-user"
   '';
 
   # seed-shell — forced command for management operations
+  #
+  # SEED_REPOS env var format: "seed=s-gaydazldmnsg,shoot-demo=s-mfstazlgmy2g"
+  # Instance targeting: bare "web" (auto-resolve) or "seed/web" (explicit repo)
   shellCmd = pkgs.writeShellScriptBin "seed-shell" ''
     set -euo pipefail
 
+    CURL="${pkgs.curl}/bin/curl"
+    JQ="${pkgs.jq}/bin/jq"
     API="${controllerApi}/api"
-    NAMESPACES="''${SEED_NAMESPACES:-}"
+    REPOS_RAW="''${SEED_REPOS:-}"
 
-    if [ -z "$NAMESPACES" ]; then
+    if [ -z "$REPOS_RAW" ]; then
       echo "error: no namespace context" >&2
       exit 1
     fi
 
-    # For now, use the first namespace (multi-namespace support later)
-    NS=$(echo "$NAMESPACES" | ${pkgs.coreutils}/bin/cut -d, -f1)
+    # Parse SEED_REPOS into parallel arrays: REPO_NAMES and REPO_NS
+    declare -a REPO_NAMES=()
+    declare -a REPO_NS=()
+    IFS=',' read -ra PAIRS <<< "$REPOS_RAW"
+    for pair in "''${PAIRS[@]}"; do
+      REPO_NAMES+=("''${pair%%=*}")
+      REPO_NS+=("''${pair#*=}")
+    done
+
+    # Resolve a repo name to its namespace
+    resolve_repo() {
+      local name="$1"
+      for i in "''${!REPO_NAMES[@]}"; do
+        if [ "''${REPO_NAMES[$i]}" = "$name" ]; then
+          echo "''${REPO_NS[$i]}"
+          return 0
+        fi
+      done
+      echo "error: unknown repo '$name'" >&2
+      echo "available: ''${REPO_NAMES[*]}" >&2
+      return 1
+    }
+
+    # Resolve "repo/instance" or bare "instance" to (NS, INSTANCE)
+    # For bare instance names, searches all repos for a match.
+    resolve_instance() {
+      local arg="$1"
+      if [[ "$arg" == */* ]]; then
+        # Explicit: repo/instance
+        RESOLVED_REPO="''${arg%%/*}"
+        RESOLVED_INSTANCE="''${arg#*/}"
+        RESOLVED_NS=$(resolve_repo "$RESOLVED_REPO") || exit 1
+        return 0
+      fi
+
+      # Bare instance name — search all repos
+      local matches=()
+      local match_ns=()
+      local match_repo=()
+      for i in "''${!REPO_NAMES[@]}"; do
+        local ns="''${REPO_NS[$i]}"
+        local result
+        result=$($CURL -sf "$API/ns/$ns/status" 2>/dev/null) || continue
+        if echo "$result" | $JQ -e --arg inst "$arg" '.instances[$inst]' >/dev/null 2>&1; then
+          matches+=("$i")
+          match_ns+=("$ns")
+          match_repo+=("''${REPO_NAMES[$i]}")
+        fi
+      done
+
+      if [ ''${#matches[@]} -eq 0 ]; then
+        echo "error: instance '$arg' not found in any repo" >&2
+        exit 1
+      elif [ ''${#matches[@]} -gt 1 ]; then
+        echo "error: '$arg' exists in multiple repos: ''${match_repo[*]}" >&2
+        echo "use repo/instance to disambiguate (e.g. ''${match_repo[0]}/$arg)" >&2
+        exit 1
+      fi
+
+      RESOLVED_REPO="''${match_repo[0]}"
+      RESOLVED_INSTANCE="$arg"
+      RESOLVED_NS="''${match_ns[0]}"
+    }
 
     # Parse command from SSH_ORIGINAL_COMMAND into words
     # shellcheck disable=SC2086
@@ -79,31 +150,62 @@ let
 
     case "$ACTION" in
       status)
-        RESULT=$(${pkgs.curl}/bin/curl -sf "$API/ns/$NS/status") || {
-          echo "error: failed to fetch status" >&2
-          exit 1
-        }
-        if [ "$JSON_OUT" = true ]; then
-          echo "$RESULT" | ${pkgs.jq}/bin/jq .
+        if [ -n "$ARG" ]; then
+          # Status for a specific repo
+          NS=$(resolve_repo "$ARG") || exit 1
+          RESULT=$($CURL -sf "$API/ns/$NS/status") || {
+            echo "error: failed to fetch status for $ARG" >&2
+            exit 1
+          }
+          if [ "$JSON_OUT" = true ]; then
+            echo "$RESULT" | $JQ .
+          else
+            echo "$RESULT" | $JQ -r --arg repo "$ARG" '
+              "\u001b[1m\($repo)\u001b[0m\n",
+              (.instances | to_entries[] |
+                "  \u001b[1m\(.key)\u001b[0m " +
+                (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
+                (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
+                "  phase=\(.value.phase)" +
+                "  restarts=\(.value.restarts)" +
+                "  age=\(.value.age)"
+              )'
+          fi
         else
-          echo "$RESULT" | ${pkgs.jq}/bin/jq -r '
-            "\u001b[1mnamespace: \(.namespace)\u001b[0m\n",
-            (.instances | to_entries[] |
-              "\u001b[1m\(.key)\u001b[0m " +
-              (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
-              (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
-              "  phase=\(.value.phase)" +
-              "  restarts=\(.value.restarts)" +
-              "  age=\(.value.age)"
-            )'
+          # Status for all repos
+          ALL_JSON="[]"
+          for i in "''${!REPO_NAMES[@]}"; do
+            REPO="''${REPO_NAMES[$i]}"
+            NS="''${REPO_NS[$i]}"
+            RESULT=$($CURL -sf "$API/ns/$NS/status" 2>/dev/null) || continue
+            ALL_JSON=$(echo "$ALL_JSON" | $JQ --arg repo "$REPO" --argjson result "$RESULT" \
+              '. + [{ repo: $repo, data: $result }]')
+          done
+
+          if [ "$JSON_OUT" = true ]; then
+            echo "$ALL_JSON" | $JQ .
+          else
+            echo "$ALL_JSON" | $JQ -r '.[] |
+              "\u001b[1m\(.repo)\u001b[0m\n",
+              (.data.instances | to_entries[] |
+                "  \u001b[1m\(.key)\u001b[0m " +
+                (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
+                (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
+                "  phase=\(.value.phase)" +
+                "  restarts=\(.value.restarts)" +
+                "  age=\(.value.age)"
+              )'
+          fi
         fi
         ;;
 
       logs)
         if [ -z "$ARG" ]; then
-          echo "usage: logs <instance> [-f|--follow] [--lines N] [--json]" >&2
+          echo "usage: logs <[repo/]instance> [-f|--follow] [--lines N] [--json]" >&2
           exit 1
         fi
+
+        resolve_instance "$ARG"
 
         # Build query string
         QUERY=""
@@ -111,19 +213,19 @@ let
         if [ "$FOLLOW" = true ]; then
           [ -n "$QUERY" ] && QUERY="$QUERY&follow=true" || QUERY="follow=true"
         fi
-        LOG_URL="$API/ns/$NS/logs/$ARG"
+        LOG_URL="$API/ns/$RESOLVED_NS/logs/$RESOLVED_INSTANCE"
         [ -n "$QUERY" ] && LOG_URL="$LOG_URL?$QUERY"
 
         if [ "$FOLLOW" = true ]; then
           # Streaming mode — read SSE events line by line
-          ${pkgs.curl}/bin/curl -sfN "$LOG_URL" | while IFS= read -r line; do
+          $CURL -sfN "$LOG_URL" | while IFS= read -r line; do
             case "$line" in
               data:\ *)
                 DATA="''${line#data: }"
                 if [ "$JSON_OUT" = true ]; then
                   echo "$DATA"
                 else
-                  echo "$DATA" | ${pkgs.jq}/bin/jq -r '.line |
+                  echo "$DATA" | $JQ -r '.line |
                     if test(":") then
                       "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
                     else . end'
@@ -132,19 +234,19 @@ let
             esac
           done
         else
-          RESULT=$(${pkgs.curl}/bin/curl -sf "$LOG_URL") || {
-            echo "error: failed to fetch logs for $ARG" >&2
+          RESULT=$($CURL -sf "$LOG_URL") || {
+            echo "error: failed to fetch logs for $RESOLVED_INSTANCE" >&2
             exit 1
           }
           if [ "$JSON_OUT" = true ]; then
-            echo "$RESULT" | ${pkgs.jq}/bin/jq .
+            echo "$RESULT" | $JQ .
           else
-            echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.lines[] |
+            echo "$RESULT" | $JQ -r '.lines[] |
               # Colorize unit prefix in cyan
               if test(":") then
                 "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
               else . end'
-            NOTE=$(echo "$RESULT" | ${pkgs.jq}/bin/jq -r '.note // empty')
+            NOTE=$(echo "$RESULT" | $JQ -r '.note // empty')
             if [ -n "$NOTE" ]; then
               printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
             fi
@@ -154,24 +256,32 @@ let
 
       restart)
         if [ -z "$ARG" ]; then
-          echo "usage: restart <instance>" >&2
+          echo "usage: restart <[repo/]instance>" >&2
           exit 1
         fi
-        RESULT=$(${pkgs.curl}/bin/curl -sf -X POST "$API/ns/$NS/restart/$ARG") || {
-          echo "error: failed to restart $ARG" >&2
+        resolve_instance "$ARG"
+        RESULT=$($CURL -sf -X POST "$API/ns/$RESOLVED_NS/restart/$RESOLVED_INSTANCE") || {
+          echo "error: failed to restart $RESOLVED_INSTANCE" >&2
           exit 1
         }
-        echo "$RESULT" | ${pkgs.jq}/bin/jq -r '"restarted \(.instance) (pod \(.pod))"'
+        echo "$RESULT" | $JQ -r '"restarted \(.instance) (pod \(.pod))"'
         ;;
 
       help|--help|-h)
         echo "seed shell — manage your seed instances"
         echo ""
         echo "commands:"
-        echo "  status                show instance status (default)"
-        echo "  logs <instance>       show recent logs (default: 100 lines)"
-        echo "  restart <instance>    restart an instance"
-        echo "  help                  show this help"
+        echo "  status [repo]              show instance status (default: all repos)"
+        echo "  logs <[repo/]instance>     show recent logs (default: 100 lines)"
+        echo "  restart <[repo/]instance>  restart an instance"
+        echo "  help                       show this help"
+        echo ""
+        echo "examples:"
+        echo "  status                     status of all repos"
+        echo "  status seed                status of the 'seed' repo"
+        echo "  logs web                   logs for 'web' (auto-resolves repo)"
+        echo "  logs seed/web -f           follow logs for 'web' in 'seed' repo"
+        echo "  restart shoot-demo/shoot-demo"
         echo ""
         echo "flags:"
         echo "  --json                output raw JSON (for scripting)"

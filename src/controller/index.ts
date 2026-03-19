@@ -19,7 +19,7 @@ import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
-import { initApi, updateKeyIndex, updateValidNamespaces, type KeyIndex } from "./api.js";
+import { initApi, updateKeyIndex, updateValidNamespaces, type KeyIndex, type NamespaceEntry } from "./api.js";
 import { registerDNSRecords, deleteDNSRecords, loadPdnsApiKey } from "./dns.js";
 import { initAcme, updateAcmeNamespaces } from "./acme.js";
 import { execFile } from "node:child_process";
@@ -158,6 +158,25 @@ async function extractAuthorizedKeys(
 }
 
 /**
+ * Extract a short repo name from a flake path.
+ * github:loomtex/seed → "seed"
+ * tarball+https://silo.loom.farm/shoot-demo/archive/master.tar.gz → "shoot-demo"
+ */
+function repoName(flakePath: string): string {
+  // github:owner/repo or github:owner/repo#...
+  const ghMatch = flakePath.match(/^github:[^/]+\/([^#?]+)/);
+  if (ghMatch) return ghMatch[1];
+  // tarball+https://host/repo/archive/...
+  const tbMatch = flakePath.match(/^tarball\+https?:\/\/[^/]+\/([^/]+)\//);
+  if (tbMatch) return tbMatch[1];
+  // git+https://host/repo.git or git+ssh://...
+  const gitMatch = flakePath.match(/\/([^/]+?)(?:\.git)?(?:#.*)?$/);
+  if (gitMatch) return gitMatch[1];
+  // Fallback: use the whole thing
+  return flakePath;
+}
+
+/**
  * Build a key→namespace index from all flake states.
  * Called after reconciliation to update the API's key index.
  */
@@ -165,14 +184,15 @@ async function buildKeyIndex(
   flakeStates: Map<string, FlakeState>,
   refresh: boolean,
 ): Promise<KeyIndex> {
-  const keys: Record<string, string[]> = {};
+  const keys: Record<string, NamespaceEntry[]> = {};
 
   for (const [flakePath, fs] of flakeStates) {
     const authorizedKeys = await extractAuthorizedKeys(flakePath, refresh);
+    const entry: NamespaceEntry = { name: repoName(flakePath), namespace: fs.namespace };
     for (const key of authorizedKeys) {
       if (!keys[key]) keys[key] = [];
-      if (!keys[key].includes(fs.namespace)) {
-        keys[key].push(fs.namespace);
+      if (!keys[key].some((e) => e.namespace === fs.namespace)) {
+        keys[key].push(entry);
       }
     }
   }

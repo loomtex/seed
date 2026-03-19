@@ -19,9 +19,14 @@ import { log } from "../shared/kube.js";
 
 // --- Key index ---
 
+export interface NamespaceEntry {
+  name: string;      // repo name (e.g. "seed", "shoot-demo")
+  namespace: string; // k8s namespace (e.g. "s-gaydazldmnsg")
+}
+
 export interface KeyIndex {
   // SSH public key (full line from .authorized_keys) → list of namespaces
-  keys: Record<string, string[]>;
+  keys: Record<string, NamespaceEntry[]>;
 }
 
 // Mutable key index, updated by the controller during reconciliation.
