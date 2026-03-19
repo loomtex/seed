@@ -18,64 +18,12 @@
 let
   controllerApi = "http://seed-controller.seed-system.svc.cluster.local:9876";
 
-  # NSS module that resolves any unknown username to the seed user.
-  # sshd calls getpwnam() before auth — without this, unknown usernames
-  # are rejected before AuthorizedKeysCommand even runs. This lets users
-  # run `ssh seed.loom.farm` without specifying a username.
-  nssSeedshell = pkgs.stdenv.mkDerivation {
-    name = "nss-seedshell";
-    dontUnpack = true;
-    buildPhase = ''
-      cat > nss_seedshell.c << 'CEOF'
-      #include <nss.h>
-      #include <pwd.h>
-      #include <string.h>
-      #include <errno.h>
-
-      enum nss_status _nss_seedshell_getpwnam_r(
-          const char *name, struct passwd *pwd,
-          char *buf, size_t buflen, int *errnop)
-      {
-          const char *home = "/home/seed";
-          const char *shell = "/run/current-system/sw/bin/seed-shell";
-          size_t namelen = strlen(name) + 1;
-          size_t homelen = strlen(home) + 1;
-          size_t shelllen = strlen(shell) + 1;
-          size_t needed = namelen + 2 + homelen + shelllen;
-
-          if (buflen < needed) {
-              *errnop = ERANGE;
-              return NSS_STATUS_TRYAGAIN;
-          }
-
-          char *p = buf;
-          memcpy(p, name, namelen); pwd->pw_name = p; p += namelen;
-          *p = 'x'; *(p+1) = '\0'; pwd->pw_passwd = p; p += 2;
-          pwd->pw_uid = 1000;
-          pwd->pw_gid = 100;
-          pwd->pw_gecos = pwd->pw_name;
-          memcpy(p, home, homelen); pwd->pw_dir = p; p += homelen;
-          memcpy(p, shell, shelllen); pwd->pw_shell = p;
-
-          return NSS_STATUS_SUCCESS;
-      }
-      CEOF
-      $CC -shared -o libnss_seedshell.so.2 nss_seedshell.c -Wl,-soname,libnss_seedshell.so.2
-    '';
-    installPhase = ''
-      mkdir -p $out/lib
-      cp libnss_seedshell.so.2 $out/lib/
-    '';
-  };
-
-  # AuthorizedKeysCommand — called by sshd for every connection.
-  # Always accepts any valid SSH key (like silo). Key identity and repo
-  # context are passed to the forced command via environment variables.
-  # Commands that need repos check SEED_REPOS; plant works regardless.
-  shellAuthKeys = pkgs.writeShellScript "shell-auth-keys" ''
-    # Args: %u %t %k (username, key-type, key-blob-base64)
-    KEY_TYPE="$2"
-    KEY_BLOB="$3"
+  # Auth-keys hook: look up the connecting key in the controller's key index
+  # and output an extra environment= directive with the repo list.
+  # Called by seed.sshAuth with $1=KEY_TYPE $2=KEY_BLOB.
+  shellAuthHook = pkgs.writeShellScript "shell-auth-hook" ''
+    KEY_TYPE="$1"
+    KEY_BLOB="$2"
     FULL_KEY="$KEY_TYPE $KEY_BLOB"
 
     # Fetch key index from controller
@@ -96,10 +44,8 @@ let
          | map("\(.name)=\(.namespace)") | join(",")')
     fi
 
-    # Always emit a line — any key is accepted.
-    # Key identity passed via SEED_KEY_TYPE/SEED_KEY_BLOB for plant command.
-    # SEED_REPOS may be empty for unknown keys (plant still works).
-    echo "restrict,command=\"seed-shell\",environment=\"SEED_REPOS=$REPOS\",environment=\"SEED_KEY_TYPE=$KEY_TYPE\",environment=\"SEED_KEY_BLOB=$KEY_BLOB\" $FULL_KEY seed-user"
+    # Output extra environment= directive for authorized_keys line
+    echo "environment=\"SEED_REPOS=$REPOS\""
   '';
 
   # seed-shell — forced command for management operations
@@ -405,48 +351,16 @@ in
 
   environment.systemPackages = [ shellCmd ];
 
-  # NSS catchall: any unknown username resolves to the seed user (uid 1000).
-  # This lets `ssh seed.loom.farm` work — the client sends the local login
-  # name, and sshd accepts it because getpwnam() succeeds via this module.
-  # files is checked first (root, nobody, etc.), seedshell catches the rest.
-  # Enable nscd so NixOS allows system.nssModules (it adds the library path to
-  # glibc's NSS search path via /etc/ld-nix.so.conf). instance-base.nix disables
-  # nscd with mkDefault because nsncd (the default) fails in Kata VMs — but the
-  # shell needs it for the NSS catchall, and plain nscd (not nsncd) works fine.
-  services.nscd.enable = true;
-  system.nssModules = lib.mkForce [ nssSeedshell ];
-  system.nssDatabases.passwd = lib.mkAfter [ "seedshell" ];
-
-  services.openssh = {
+  seed.sshAuth = {
     enable = true;
-    settings = {
-      PermitRootLogin = "no";
-      PasswordAuthentication = false;
-      KbdInteractiveAuthentication = false;
-      # Skip PAM entirely — we only do key auth via AuthorizedKeysCommand.
-      # unix_chkpwd fails in Kata VMs (setuid not supported on virtiofs).
-      UsePAM = false;
-      # Allow only SEED_* environment variables from authorized_keys.
-      PermitUserEnvironment = "SEED_*";
-      AuthorizedKeysCommand = "/etc/ssh/shell-auth-keys %u %t %k";
-      AuthorizedKeysCommandUser = "root";
-    };
-  };
-
-  # Explicit uid so the NSS module can hardcode it.
-  # isNormalUser so PAM account checks pass (isSystemUser lacks /etc/shadow entry).
-  # initialHashedPassword unlocks the account (PasswordAuthentication is disabled).
-  users.users.seed = {
-    isNormalUser = true;
     uid = 1000;
+    gid = 100;
     home = "/home/seed";
-    shell = "${shellCmd}/bin/seed-shell";
-    initialHashedPassword = "";
-  };
-
-  # Install AuthorizedKeysCommand script to /etc/ssh/ where sshd trusts ownership
-  environment.etc."ssh/shell-auth-keys" = {
-    source = shellAuthKeys;
-    mode = "0755";
+    shell = "/run/current-system/sw/bin/seed-shell";
+    userName = "seed";
+    nssName = "seedshell";
+    forcedCommand = "seed-shell";
+    envPrefix = "SEED";
+    authKeysHook = shellAuthHook;
   };
 }

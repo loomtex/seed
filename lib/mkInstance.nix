@@ -18,6 +18,7 @@ let
       self.nixosModules.instance-base
       self.nixosModules.instance
       self.nixosModules.sops
+      self.nixosModules.ssh-auth
       { networking.hostName = name; }
       { nixpkgs.overlays = [ self.overlays.default ]; }
       module

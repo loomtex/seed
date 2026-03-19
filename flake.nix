@@ -202,6 +202,9 @@
       # sops-nix for instance secrets decryption via TPM
       sops = sops-nix.nixosModules.sops;
 
+      # SSH any-key identity auth (used by seed-shell and silo)
+      ssh-auth = ./ssh-auth.nix;
+
       # Controller: reconciles instance definitions into Kata pods
       controller = ./controller.nix;
     };

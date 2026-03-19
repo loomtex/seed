@@ -12,24 +12,6 @@ let
   hostKeyDir = "${reposDir}/.ssh-host-keys";
   acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 
-  # AuthorizedKeysCommand — called by sshd for every connection
-  #
-  # Always allows login — any valid SSH key is accepted. The key identity
-  # is passed to silo-shell via environment variables. silo-shell handles
-  # per-repo access control (existing repos) and auto-creation (first push).
-  #
-  # NOTE: The script content lives in the nix store, but sshd requires the
-  # AuthorizedKeysCommand path and all parent directories to be owned by root
-  # with no group/world-write. Inside Kata VMs, /nix/store is a virtiofs mount
-  # whose ownership doesn't satisfy this check. We install a copy at /etc/ssh/
-  # via environment.etc, which sshd trusts.
-  siloAuthKeys = pkgs.writeShellScript "silo-auth-keys" ''
-    # Args: %u %t %k (username, key-type, key-blob-base64)
-    KEY_TYPE="$2"
-    KEY_BLOB="$3"
-    echo "restrict,command=\"silo-shell\",environment=\"SILO_KEY_TYPE=$KEY_TYPE\",environment=\"SILO_KEY_BLOB=$KEY_BLOB\" $KEY_TYPE $KEY_BLOB silo-user"
-  '';
-
   # silo-shell — forced command for git operations
   #
   # Handles git-receive-pack (push) and git-upload-pack (pull/clone).
@@ -523,17 +505,19 @@ in {
   sops.secrets.pdns-api-key = {};
   sops.secrets.silo-webhook-secret = { owner = "git"; };
 
-  # git user — all SSH connections land here
-  # isNormalUser so PAM account checks pass (isSystemUser lacks /etc/shadow entry)
-  users.users.git = {
-    isNormalUser = true;
-    group = "git";
+  # SSH auth: any key accepted, identity passed via SILO_KEY_TYPE/SILO_KEY_BLOB.
+  # NSS catchall maps any username to git user — `ssh silo.loom.farm` works.
+  seed.sshAuth = {
+    enable = true;
+    uid = 1000;
+    gid = 100;
     home = reposDir;
     shell = "${siloShell}/bin/silo-shell";
-    createHome = false;
-    # Unlock account — empty hash means no password, but account is not locked.
-    # PasswordAuthentication is disabled so this is safe.
-    initialHashedPassword = "";
+    userName = "git";
+    group = "git";
+    nssName = "siloauth";
+    forcedCommand = "silo-shell";
+    envPrefix = "SILO";
   };
   users.groups.git = {};
 
@@ -567,31 +551,14 @@ in {
     };
   };
 
-  # openssh server
+  # Extra sshd settings on top of what seed.sshAuth provides
   services.openssh = {
-    enable = true;
     ports = [ 22 ];
-    settings = {
-      PasswordAuthentication = false;
-      KbdInteractiveAuthentication = false;
-      UsePAM = false;
-      PermitUserEnvironment = true;
-      PermitRootLogin = "no";
-      AuthorizedKeysFile = "none";
-      AuthorizedKeysCommand = "/etc/ssh/silo-auth-keys %u %t %k";
-      AuthorizedKeysCommandUser = "root";
-    };
     # Persist host keys in PVC
     hostKeys = [
       { path = "${hostKeyDir}/ssh_host_ed25519_key"; type = "ed25519"; }
       { path = "${hostKeyDir}/ssh_host_rsa_key"; type = "rsa"; bits = 4096; }
     ];
-  };
-
-  # Install auth script at /etc/ssh/ where sshd trusts the directory ownership
-  environment.etc."ssh/silo-auth-keys" = {
-    source = siloAuthKeys;
-    mode = "0755";
   };
 
   # TLS certificates via platform ACME endpoint (controller proxies DNS-01 to LE)
