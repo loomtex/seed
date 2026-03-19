@@ -409,7 +409,12 @@ in
   # This lets `ssh seed.loom.farm` work — the client sends the local login
   # name, and sshd accepts it because getpwnam() succeeds via this module.
   # files is checked first (root, nobody, etc.), seedshell catches the rest.
-  system.nssModules = [ nssSeedshell ];
+  # Enable nscd so NixOS allows system.nssModules (it adds the library path to
+  # glibc's NSS search path via /etc/ld-nix.so.conf). instance-base.nix disables
+  # nscd with mkDefault because nsncd (the default) fails in Kata VMs — but the
+  # shell needs it for the NSS catchall, and plain nscd (not nsncd) works fine.
+  services.nscd.enable = true;
+  system.nssModules = lib.mkForce [ nssSeedshell ];
   system.nssDatabases.passwd = lib.mkAfter [ "seedshell" ];
 
   services.openssh = {
