@@ -57,6 +57,50 @@ let
     };
   });
 
+  # SeedFlake CRD definition — dynamic flake registry with invite codes
+  seedFlakeCRD = pkgs.writeText "seed-flake-crd.yaml" (builtins.toJSON {
+    apiVersion = "apiextensions.k8s.io/v1";
+    kind = "CustomResourceDefinition";
+    metadata.name = "seedflakes.seed.loom.farm";
+    spec = {
+      group = "seed.loom.farm";
+      versions = [{
+        name = "v1alpha1";
+        served = true;
+        storage = true;
+        schema.openAPIV3Schema = {
+          type = "object";
+          properties = {
+            spec = {
+              type = "object";
+              properties = {
+                inviteCode = { type = "string"; };
+                flakeUri = { type = "string"; };
+              };
+            };
+            status = {
+              type = "object";
+              properties = {
+                namespace = { type = "string"; };
+                state = { type = "string"; enum = [ "pending" "active" ]; };
+                generation = { type = "string"; };
+                lastReconciled = { type = "string"; };
+              };
+            };
+          };
+        };
+        subresources.status = {};
+      }];
+      scope = "Cluster";
+      names = {
+        plural = "seedflakes";
+        singular = "seedflake";
+        kind = "SeedFlake";
+        shortNames = [ "sf" ];
+      };
+    };
+  });
+
   # Namespace for seed system components
   seedSystemNS = "seed-system";
 
@@ -119,6 +163,11 @@ let
       {
         apiGroups = [ "seed.loom.farm" ];
         resources = [ "seedhosttasks" "seedhosttasks/status" ];
+        verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
+      }
+      {
+        apiGroups = [ "seed.loom.farm" ];
+        resources = [ "seedflakes" "seedflakes/status" ];
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
     ];
@@ -448,6 +497,7 @@ let
     [
       { name = "01-namespace.json"; path = seedSystemNamespace; }
       { name = "02-hosttask-crd.json"; path = seedHostTaskCRD; }
+      { name = "02-flake-crd.json"; path = seedFlakeCRD; }
       { name = "03-controller-sa.json"; path = controllerSA; }
       { name = "03-builder-sa.json"; path = builderSA; }
       { name = "04-controller-role.json"; path = controllerRole; }
