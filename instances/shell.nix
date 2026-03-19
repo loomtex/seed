@@ -31,11 +31,17 @@ let
     # Fetch key index from controller
     INDEX=$(${pkgs.curl}/bin/curl -sf "${controllerApi}/api/keys" 2>/dev/null) || exit 0
 
-    # Look up this key — build name=namespace pairs
-    # API returns: { keys: { "ssh-ed25519 ...": [{ name: "seed", namespace: "s-xxx" }, ...] } }
+    # Look up this key — build name=namespace pairs.
+    # API returns: { keys: { "ssh-ed25519 ... [comment]": [{ name: "seed", namespace: "s-xxx" }, ...] } }
+    # Keys in .authorized_keys may have comments (e.g. "openpgp:0x...") but sshd
+    # only gives us type+blob. Match on the first two space-separated fields.
     REPOS=$(echo "$INDEX" | ${pkgs.jq}/bin/jq -r \
       --arg key "$FULL_KEY" \
-      '.keys[$key] // empty | map("\(.name)=\(.namespace)") | join(",")')
+      '[ .keys | to_entries[]
+         | select(.key | split(" ")[0:2] | join(" ") == $key)
+         | .value[] ]
+       | unique_by(.namespace)
+       | map("\(.name)=\(.namespace)") | join(",")')
 
     if [ -z "$REPOS" ]; then
       exit 0  # Key not found — deny
