@@ -123,8 +123,10 @@ in {
     };
   };
 
-  # nowasm mode needs system ffmpeg/ffprobe for media processing
-  environment.systemPackages = [ pkgs.ffmpeg-headless ];
+  # nowasm mode needs system ffmpeg/ffprobe for media processing.
+  # Must be in the gotosocial service PATH — environment.systemPackages alone
+  # doesn't guarantee visibility to sandboxed systemd services.
+  systemd.services.gotosocial.path = [ pkgs.ffmpeg-headless ];
 
   # PVC ownership
   systemd.tmpfiles.rules = [
