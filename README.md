@@ -181,9 +181,11 @@ Point your web server's ACME client at `SEED_ACME_URL`. Caddy is the easiest opt
 
 {
   seed.expose.https.enable = true;
+  seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
 
   services.caddy = {
     enable = true;
+    dataDir = "/var/lib/caddy";
     configFile = pkgs.writeText "Caddyfile" ''
       {
         acme_ca {$SEED_ACME_URL}
