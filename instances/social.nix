@@ -110,7 +110,7 @@ in {
         # previous OOM-killed pod may have written marker without completing setup)
         USERS=$(${pkgs.curl}/bin/curl -sf http://127.0.0.1:8080/api/v1/instance 2>/dev/null | ${pkgs.jq}/bin/jq -r '.stats.user_count // 0')
         if [ "$USERS" -gt 0 ] && [ -f "$MARKER" ]; then
-          echo "Admin account already exists (user_count=$USERS)"
+          echo "Admin account already exists. Password: $(cat $MARKER)"
           exit 0
         fi
 
@@ -128,7 +128,7 @@ in {
 
         echo "$PASS" > "$MARKER"
         chmod 0600 "$MARKER"
-        echo "Admin account '${adminUser}' created. Initial password saved to $MARKER"
+        echo "Admin account '${adminUser}' created. Password: $PASS"
       '';
     };
   };
