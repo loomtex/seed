@@ -211,8 +211,7 @@ let
                 (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
                 "  phase=\(.value.phase)" +
                 "  restarts=\(.value.restarts)" +
-                "  age=\(.value.age)" +
-                "\n    \(.key).\($ns).seed.loom.farm"
+                "  age=\(.value.age)"
               ), ""'
           fi
         else
@@ -238,8 +237,7 @@ let
                 (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
                 "  phase=\(.value.phase)" +
                 "  restarts=\(.value.restarts)" +
-                "  age=\(.value.age)" +
-                "\n    \(.key).\($ns).seed.loom.farm"
+                "  age=\(.value.age)"
               ), ""'
           fi
         fi
