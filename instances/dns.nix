@@ -110,7 +110,6 @@ let
   '';
 in
 {
-  seed.size = "xs";
   seed.expose.dns.enable = true;
   seed.expose.api = { port = 8081; };
   seed.storage.data = "1Gi";

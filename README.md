@@ -49,7 +49,7 @@ This creates two files:
 { pkgs, ... }:
 
 {
-  seed.size = "s";
+  seed.size = "xs";
   seed.expose.http.enable = true;
   seed.storage.data = "1Gi";
 
@@ -118,7 +118,7 @@ This type-checks the full NixOS evaluation and returns controller metadata witho
 
 ### `seed.size`
 
-VM sizing tier. Defaults to `"s"`.
+VM sizing tier. Defaults to `"xs"`.
 
 | Tier | vCPUs | Memory |
 |------|-------|--------|
@@ -461,7 +461,7 @@ git+https://...                → passed through to nix
 ### Instance option summary
 
 ```nix
-seed.size = "s";                    # xs|s|m|l|xl — VM sizing tier
+seed.size = "xs";                    # xs|s|m|l|xl — VM sizing tier
 seed.expose.<name>.enable = true;   # well-known: port/protocol from service table
 seed.expose.<name> = { port; protocol; }; # custom: specify explicitly
 seed.expose.<name> = port;          # bare port shorthand

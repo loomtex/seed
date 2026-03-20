@@ -373,7 +373,6 @@ let
 
 in
 {
-  seed.size = "xs";
   seed.expose.ssh.enable = true;
 
   environment.systemPackages = [ shellCmd ];

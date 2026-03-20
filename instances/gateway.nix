@@ -12,7 +12,6 @@ let
   webBackend = "web.${ns}.svc.cluster.local";
 in
 {
-  seed.size = "xs";
   seed.expose.dns.enable = true;
   seed.expose.http.enable = true;
   seed.expose.https.enable = true;

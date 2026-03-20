@@ -11,7 +11,6 @@ let
   acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 in
 {
-  seed.size = "xs";
   seed.expose.http.enable = true;
   seed.expose.https.enable = true;
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };

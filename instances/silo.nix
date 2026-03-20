@@ -492,7 +492,6 @@ let
   '';
 
 in {
-  seed.size = "xs";
   seed.expose.ssh.enable = true;
   seed.expose.https.enable = true;
   seed.expose.http.enable = true;

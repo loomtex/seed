@@ -93,7 +93,7 @@ in {
   options.seed = {
     size = lib.mkOption {
       type = lib.types.enum [ "xs" "s" "m" "l" "xl" ];
-      default = "s";
+      default = "xs";
       description = ''
         Instance size tier. Maps to vCPU/memory:
         xs: 1 vCPU, 512MB — s: 1 vCPU, 1GB — m: 2 vCPU, 2GB — l: 4 vCPU, 4GB — xl: 8 vCPU, 8GB

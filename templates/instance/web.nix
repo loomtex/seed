@@ -1,7 +1,6 @@
 { pkgs, ... }:
 
 {
-  seed.size = "s";
   seed.expose.http.enable = true;
   seed.storage.data = "1Gi";
 
