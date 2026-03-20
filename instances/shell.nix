@@ -203,14 +203,16 @@ let
             echo "$RESULT" | $JQ .
           else
             echo "$RESULT" | $JQ -r --arg repo "$ARG" '
-              "\u001b[1;4m\($repo)\u001b[0m",
+              .namespace as $ns |
+              "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m",
               (.instances | to_entries[] |
                 "  \u001b[1m\(.key)\u001b[0m " +
                 (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
                 (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
                 "  phase=\(.value.phase)" +
                 "  restarts=\(.value.restarts)" +
-                "  age=\(.value.age)"
+                "  age=\(.value.age)" +
+                "\n    \(.key).\($ns).seed.loom.farm"
               ), ""'
           fi
         else
@@ -228,14 +230,16 @@ let
             echo "$ALL_JSON" | $JQ .
           else
             echo "$ALL_JSON" | $JQ -r '.[] |
-              "\u001b[1;4m\(.repo)\u001b[0m",
+              .data.namespace as $ns |
+              "\u001b[1;4m\(.repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m",
               (.data.instances | to_entries[] |
                 "  \u001b[1m\(.key)\u001b[0m " +
                 (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
                 (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
                 "  phase=\(.value.phase)" +
                 "  restarts=\(.value.restarts)" +
-                "  age=\(.value.age)"
+                "  age=\(.value.age)" +
+                "\n    \(.key).\($ns).seed.loom.farm"
               ), ""'
           fi
         fi
@@ -311,6 +315,29 @@ let
         echo "$RESULT" | $JQ -r '"restarted \(.instance) (pod \(.pod))"'
         ;;
 
+      keys)
+        require_repos
+        if [ -z "$ARG" ]; then
+          echo "usage: keys <[repo/]instance>" >&2
+          exit 1
+        fi
+        resolve_instance "$ARG"
+        RESULT=$($CURL -sf "$API/ns/$RESOLVED_NS/keys/$RESOLVED_INSTANCE") || {
+          echo "error: failed to fetch keys for $RESOLVED_INSTANCE" >&2
+          exit 1
+        }
+        ERROR=$(echo "$RESULT" | $JQ -r '.error // empty')
+        if [ -n "$ERROR" ]; then
+          echo "error: $ERROR" >&2
+          exit 1
+        fi
+        if [ "$JSON_OUT" = true ]; then
+          echo "$RESULT" | $JQ .
+        else
+          echo "$RESULT" | $JQ -r '"age recipient for \(.instance):\n  \(.publicKey)"'
+        fi
+        ;;
+
       help|--help|-h)
         echo "seed shell — manage your seed instances"
         echo ""
@@ -319,6 +346,7 @@ let
         echo "  status [repo]              show instance status (default: all repos)"
         echo "  logs <[repo/]instance>     show recent logs (default: 100 lines)"
         echo "  restart <[repo/]instance>  restart an instance"
+        echo "  keys <[repo/]instance>     show age public key (for sops encryption)"
         echo "  help                       show this help"
         echo ""
         echo "examples:"
@@ -329,6 +357,7 @@ let
         echo "  logs web                   logs for 'web' (auto-resolves repo)"
         echo "  logs seed/web -f           follow logs for 'web' in 'seed' repo"
         echo "  restart shoot-demo/shoot-demo"
+        echo "  keys web                   age public key for sops encryption"
         echo ""
         echo "flags:"
         echo "  --json                output raw JSON (for scripting)"

@@ -219,7 +219,7 @@ Instances get a virtual TPM device backed by [swtpm](https://github.com/stefanbe
 ### Provisioning flow
 
 1. Deploy the instance without secrets. It boots and generates a TPM identity.
-2. Read the public key (`age1tpm1q...` recipient) — it's stored on the instance's TPM identity PVC.
+2. Read the public key: `ssh seed.loom.farm keys web` — outputs the `age1tpm1q...` recipient.
 3. Encrypt your secrets: `sops --age 'age1tpm1q...' secrets/myapp.yaml`
 4. Redeploy. sops-nix decrypts via the vTPM automatically.
 
@@ -401,9 +401,10 @@ Most errors are caught at stage 1.
 
 ```
 plant <flake-uri> <code>       register a repo (silo:name, github:user/repo)
-status [repo]                  instance status (default: all repos)
+status [repo]                  instance status + namespace + DNS names
 logs <[repo/]instance>         logs (flags: -f, --lines N, --json)
 restart <[repo/]instance>      restart an instance
+keys <[repo/]instance>         show age public key (for sops encryption)
 help                           show usage
 ```
 

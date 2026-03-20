@@ -1,9 +1,10 @@
 // Internal management API for seed-shell.
 //
 // Endpoints:
-//   GET  /api/keys                           — key→namespace index (for SSH auth)
-//   GET  /api/ns/:namespace/status           — instance status overview
-//   GET  /api/ns/:namespace/logs/:instance   — pod logs (last 100 lines)
+//   GET  /api/keys                            — key→namespace index (for SSH auth)
+//   GET  /api/ns/:namespace/status            — instance status overview
+//   GET  /api/ns/:namespace/keys/:instance    — TPM age public key (for sops encryption)
+//   GET  /api/ns/:namespace/logs/:instance    — pod logs (last 100 lines)
 //   POST /api/ns/:namespace/restart/:instance — restart an instance (delete pod)
 //
 // All responses are JSON. The shell authenticates users by SSH key, maps
@@ -128,6 +129,13 @@ export async function handleApiRequest(
     // GET /api/ns/:namespace/status
     if (req.method === "GET" && rest === "status") {
       await handleStatus(res, routeCtx.clients, namespace);
+      return true;
+    }
+
+    // GET /api/ns/:namespace/keys/:instance — TPM age public key
+    const keysMatch = rest.match(/^keys\/([a-z0-9-]+)$/);
+    if (req.method === "GET" && keysMatch) {
+      await handleKeys(res, namespace, keysMatch[1]);
       return true;
     }
 
@@ -437,6 +445,26 @@ async function handleRestart(
   log("api", `restarted instance ${instance} (deleted pod ${podName})`, namespace);
 
   jsonResponse(res, 200, { instance, action: "restarted", pod: podName });
+}
+
+async function handleKeys(
+  res: ServerResponse,
+  namespace: string,
+  instance: string,
+): Promise<void> {
+  const identityPath = `/var/lib/seed-controller/tpm/${namespace}-${instance}/age-identity`;
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const content = await readFile(identityPath, "utf-8");
+    const match = content.match(/^#\s*public key:\s*(\S+)/m);
+    if (match) {
+      jsonResponse(res, 200, { instance, publicKey: match[1] });
+    } else {
+      jsonResponse(res, 404, { error: "age identity exists but no public key found" });
+    }
+  } catch {
+    jsonResponse(res, 404, { error: "no TPM identity provisioned yet (instance must boot once first)" });
+  }
 }
 
 // --- Helpers ---
