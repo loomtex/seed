@@ -24,10 +24,13 @@ There's no Docker, no image registry, no Helm, no YAML. NixOS is the abstraction
 ### 1. Write a flake
 
 ```bash
-nix flake init -t github:loomtex/seed#instance
+nix flake init -t github:loomtex/seed#instance          # nginx static site
+nix flake init -t github:loomtex/seed#instance-caddy    # Caddy reverse proxy with TLS
+nix flake init -t github:loomtex/seed#instance-api      # API server with sops secrets
+nix flake init -t github:loomtex/seed#multi             # web frontend + API backend
 ```
 
-This creates two files:
+The basic `instance` template creates two files:
 
 ```nix
 # flake.nix
@@ -385,6 +388,236 @@ systemd.services.myapp.serviceConfig.EnvironmentFile = "/run/seed/env";
 networking.firewall.allowedTCPPorts = [ 9090 ];
 ```
 
+## Examples
+
+Each example is available as a template (`nix flake init -t github:loomtex/seed#<name>`). All use this `flake.nix` — change the module path and seed name as needed:
+
+```nix
+{
+  inputs.seed.url = "github:loomtex/seed";
+  inputs.nixpkgs.follows = "seed/nixpkgs";
+
+  outputs = { seed, ... }: {
+    seeds.web = seed.lib.mkSeed { name = "web"; module = ./web.nix; };
+  };
+}
+```
+
+### Caddy reverse proxy with TLS (`instance-caddy`)
+
+Caddy proxies HTTPS to a Node.js backend. The platform ACME endpoint provides Let's Encrypt certificates automatically. Note the `{$VAR}` syntax — this is Caddy's env var expansion, not nix interpolation.
+
+```nix
+# web.nix
+{ pkgs, ... }:
+
+let
+  app = pkgs.writeShellScript "app" ''
+    while true; do
+      echo -e "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nHello from Seed!" | \
+        ${pkgs.busybox}/bin/nc -l -p 3000 -q 0
+    done
+  '';
+in {
+  seed.expose.https.enable = true;
+  seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
+
+  services.caddy = {
+    enable = true;
+    dataDir = "/var/lib/caddy";
+    configFile = pkgs.writeText "Caddyfile" ''
+      {
+        acme_ca {$SEED_ACME_URL}
+      }
+
+      {$SEED_FQDN} {
+        reverse_proxy localhost:3000
+      }
+    '';
+  };
+
+  systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
+
+  systemd.services.app = {
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig.ExecStart = app;
+    serviceConfig.Restart = "always";
+  };
+}
+```
+
+### Static site with nginx (`instance`)
+
+No TLS — serves plain HTTP on port 80. Good for behind-a-proxy setups or internal services.
+
+```nix
+# web.nix
+{ pkgs, ... }:
+
+{
+  seed.expose.http.enable = true;
+  seed.storage.data = "1Gi";
+
+  services.nginx.enable = true;
+  services.nginx.virtualHosts.default = {
+    listen = [{ addr = "0.0.0.0"; port = 80; }];
+    root = "/seed/storage/data/www";
+  };
+}
+```
+
+### DNS server
+
+PowerDNS authoritative nameserver. The `dns` protocol exposes both TCP and UDP on port 53 automatically.
+
+```nix
+# dns.nix
+{ config, pkgs, ... }:
+
+{
+  seed.size = "s";
+  seed.expose.dns.enable = true;
+  seed.expose.api = { port = 8081; };
+  seed.storage.data = "1Gi";
+
+  sops.defaultSopsFile = ./secrets/dns.yaml;
+  sops.secrets.pdns-api-key = {};
+
+  services.powerdns = {
+    enable = true;
+    extraConfig = ''
+      launch=gsqlite3
+      gsqlite3-database=/seed/storage/data/pdns.db
+      local-address=0.0.0.0, ::
+      local-port=53
+      api=yes
+      api-key-file=${config.sops.secrets.pdns-api-key.path}
+      webserver=yes
+      webserver-address=0.0.0.0
+      webserver-port=8081
+      webserver-allow-from=0.0.0.0/0
+      socket-dir=/run/pdns
+    '';
+  };
+
+  systemd.services.pdns.serviceConfig.RuntimeDirectory = "pdns";
+  systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 pdns pdns -" ];
+}
+```
+
+### App with secrets (`instance-api`)
+
+A Node.js app that reads an API key from sops-nix. Secrets are encrypted with the instance's TPM-backed age key — see [Secrets](#secrets) for the provisioning flow.
+
+```nix
+# api.nix
+{ config, pkgs, ... }:
+
+let
+  app = pkgs.writeShellScript "api-server" ''
+    API_KEY=$(cat /run/secrets/api-key)
+    ${pkgs.nodejs}/bin/node -e "
+      const http = require('http');
+      const key = process.env.API_KEY || require('fs').readFileSync('/run/secrets/api-key', 'utf8').trim();
+      http.createServer((req, res) => {
+        res.writeHead(200, {'Content-Type': 'text/plain'});
+        res.end('ok');
+      }).listen(3000);
+    "
+  '';
+in {
+  seed.expose.myapp = { port = 3000; };
+  seed.storage.data = "1Gi";
+
+  sops.defaultSopsFile = ./secrets/api.yaml;
+  sops.secrets.api-key = {};
+
+  systemd.services.api = {
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    serviceConfig = {
+      ExecStart = app;
+      Restart = "always";
+    };
+  };
+}
+```
+
+### Multiple instances (`multi`)
+
+A web frontend and API backend sharing a namespace. Each instance is a separate VM with its own resources.
+
+```nix
+# flake.nix
+{
+  inputs.seed.url = "github:loomtex/seed";
+  inputs.nixpkgs.follows = "seed/nixpkgs";
+
+  outputs = { seed, ... }: {
+    seeds.web = seed.lib.mkSeed { name = "web"; module = ./web.nix; };
+    seeds.api = seed.lib.mkSeed { name = "api"; module = ./api.nix; };
+  };
+}
+```
+
+```nix
+# web.nix — Caddy frontend, proxies /api to the api instance
+{ pkgs, ... }:
+
+{
+  seed.expose.https.enable = true;
+  seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
+
+  services.caddy = {
+    enable = true;
+    dataDir = "/var/lib/caddy";
+    configFile = pkgs.writeText "Caddyfile" ''
+      {
+        acme_ca {$SEED_ACME_URL}
+      }
+
+      {$SEED_FQDN} {
+        handle /api/* {
+          reverse_proxy api:3000
+        }
+        handle {
+          root * /seed/storage/data/www
+          file_server
+        }
+      }
+    '';
+  };
+
+  systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
+  seed.storage.data = "1Gi";
+}
+```
+
+```nix
+# api.nix — Node.js API backend
+{ pkgs, ... }:
+
+let
+  server = pkgs.writeShellScript "api" ''
+    ${pkgs.nodejs}/bin/node -e "
+      const http = require('http');
+      http.createServer((req, res) => {
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({status: 'ok'}));
+      }).listen(3000);
+    "
+  '';
+in {
+  seed.expose.myapi = { port = 3000; };
+
+  systemd.services.api = {
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig.ExecStart = server;
+    serviceConfig.Restart = "always";
+  };
+}
+```
+
 ---
 
 ## Technical reference
@@ -394,7 +627,7 @@ Optimized for agents. Everything needed to deploy an instance from scratch.
 ### Deploy sequence
 
 ```
-1. nix flake init -t github:loomtex/seed#instance
+1. nix flake init -t github:loomtex/seed#instance-caddy  (or #instance, #instance-api, #multi)
 2. Edit web.nix (NixOS config with seed.* options)
 3. Create .authorized_keys in repo root (your SSH public key)
 4. nix eval .#seeds.web.meta --json              # validate

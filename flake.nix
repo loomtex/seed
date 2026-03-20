@@ -590,6 +590,21 @@ INITEOF
         path = ./templates/instance;
         description = "Seed instance — NixOS workload running in a Kata VM";
       };
+
+      instance-caddy = {
+        path = ./templates/instance-caddy;
+        description = "Seed instance — Caddy reverse proxy with automatic TLS";
+      };
+
+      instance-api = {
+        path = ./templates/instance-api;
+        description = "Seed instance — API server with encrypted secrets";
+      };
+
+      multi = {
+        path = ./templates/multi;
+        description = "Seed multi-instance — web frontend + API backend";
+      };
     };
   };
 }
