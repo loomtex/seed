@@ -303,6 +303,7 @@ let
               { name = "nix-daemon"; mountPath = "/nix/var/nix/daemon-socket"; }
               { name = "nix-store"; mountPath = "/nix/store"; readOnly = true; }
               { name = "secrets"; mountPath = "/etc/seed/secrets"; readOnly = true; }
+              { name = "tpm-state"; mountPath = "/var/lib/seed-controller/tpm"; readOnly = true; }
             ] ++ lib.optional (cfg.acme.accountKey != "") {
               name = "acme-account-key";
               mountPath = "/etc/seed/acme";
@@ -313,6 +314,7 @@ let
             { name = "nix-daemon"; hostPath.path = "/nix/var/nix/daemon-socket"; }
             { name = "nix-store"; hostPath.path = "/nix/store"; }
             { name = "secrets"; secret = { secretName = "seed-controller-secrets"; optional = true; }; }
+            { name = "tpm-state"; hostPath = { path = "/var/lib/seed-controller/tpm"; type = "DirectoryOrCreate"; }; }
           ] ++ lib.optional (cfg.acme.accountKey != "") {
             name = "acme-account-key";
             secret.secretName = "seed-acme-account-key";
