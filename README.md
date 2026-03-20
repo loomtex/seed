@@ -174,18 +174,49 @@ Your instance receives two environment variables:
 - `SEED_ACME_URL` — the platform's ACME directory endpoint
 - `SEED_FQDN` — your instance's hostname (e.g. `web.s-gaydazldmnsg.seed.loom.farm`)
 
-Point your web server's ACME client at `SEED_ACME_URL`. Example with NixOS's `security.acme` + nginx:
+Point your web server's ACME client at `SEED_ACME_URL`. Caddy is the easiest option — it handles ACME natively:
+
+```nix
+{ pkgs, ... }:
+
+{
+  seed.expose.https.enable = true;
+
+  services.caddy = {
+    enable = true;
+    configFile = pkgs.writeText "Caddyfile" ''
+      {
+        acme_ca {$SEED_ACME_URL}
+      }
+
+      {$SEED_FQDN} {
+        root * /seed/storage/data/www
+        file_server
+      }
+    '';
+  };
+
+  systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
+}
+```
+
+Caddy automatically obtains and renews TLS certificates from the platform ACME endpoint. The `{$SEED_ACME_URL}` and `{$SEED_FQDN}` variables are expanded from the environment at startup.
+
+For nginx, use NixOS's `security.acme` module (which uses lego under the hood):
 
 ```nix
 { config, ... }:
 
-{
-  seed.expose.https = { port = 443; protocol = "http"; };
+let
+  acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
+in {
+  seed.expose.http.enable = true;
+  seed.expose.https.enable = true;
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
 
   security.acme = {
     acceptTerms = true;
-    defaults.server = "$(cat /run/seed/env | grep SEED_ACME_URL | cut -d= -f2-)";
+    defaults.server = acmeServer;
     defaults.email = "you@example.com";
   };
 
@@ -200,7 +231,7 @@ Point your web server's ACME client at `SEED_ACME_URL`. Example with NixOS's `se
 }
 ```
 
-The platform ACME server proxies to Let's Encrypt — certificates are real, browser-trusted certs. Persist `/var/lib/acme` via `seed.storage` to avoid hitting rate limits on redeployment.
+Certificates are real Let's Encrypt certs, browser-trusted. With nginx, persist `/var/lib/acme` via `seed.storage` to avoid hitting rate limits on redeployment. Caddy manages its own cert storage internally.
 
 ## DNS
 
