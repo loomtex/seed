@@ -89,7 +89,7 @@ in {
       RemainAfterExit = true;
       User = "gotosocial";
       Group = "gotosocial";
-      WorkingDirectory = "/var/lib/gotosocial";
+      WorkingDirectory = "/seed/storage/data";
       ExecStart = pkgs.writeShellScript "gotosocial-admin-init" ''
         set -euo pipefail
         MARKER="/seed/storage/data/.admin-created"
