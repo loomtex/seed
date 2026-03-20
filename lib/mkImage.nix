@@ -53,4 +53,10 @@ in pkgs.nix-snapshotter.buildImage {
   resolvedByNix = true;
   copyToRoot = rootfs;
   config.entrypoint = [ "${entrypoint}" ];
+  # Include the toplevel store path in the image config so that changes to the
+  # NixOS closure produce a different image hash. Without this, buildImage with
+  # resolvedByNix=true can produce identical output hashes when only the store
+  # path contents change but the image structure (layer count, entrypoint) stays
+  # the same. See: memory/nix_snapshotter_image_hash_bug.md
+  config.labels."dev.seed.toplevel" = builtins.baseNameOf (toString toplevel);
 }
