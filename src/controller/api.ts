@@ -456,7 +456,7 @@ async function handleKeys(
   try {
     const { readFile } = await import("node:fs/promises");
     const content = await readFile(identityPath, "utf-8");
-    const match = content.match(/^#\s*public key:\s*(\S+)/m);
+    const match = content.match(/^#\s*(?:public key|Recipient):\s*(\S+)/m);
     if (match) {
       jsonResponse(res, 200, { instance, publicKey: match[1] });
     } else {
