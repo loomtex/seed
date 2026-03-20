@@ -4,11 +4,18 @@
 # Misskey, Pixelfed, etc. via ActivityPub. API-only — use any
 # Mastodon-compatible client (Tusky, Elk, Ivory, Phanpy).
 #
-# SQLite-backed, runs on xs tier (~50MB RAM idle). Caddy handles TLS
-# via the platform ACME endpoint.
+# SQLite-backed, runs on xs tier (~50MB RAM). Built with nowasm tag to avoid
+# 413MB peak Wasm compilation at runtime. Uses system ffmpeg instead.
+# Caddy handles TLS via platform ACME.
 { pkgs, ... }:
 
 let
+  # Build GtS without Wasm — uses system ffmpeg/ffprobe for media processing.
+  # Default build compiles Wasm at runtime, which peaks at 413MB and OOMs on xs.
+  gotosocial-nowasm = pkgs.gotosocial.overrideAttrs (old: {
+    tags = (old.tags or []) ++ [ "nowasm" ];
+  });
+
   # Admin account created on first boot. Password should be changed immediately.
   adminUser = "josh";
   adminEmail = "josh@loom.farm";
@@ -19,7 +26,7 @@ let
     db-address: /seed/storage/data/gotosocial.sqlite
   '';
 
-  gts = "${pkgs.gotosocial}/bin/gotosocial --config-path ${adminConfig}";
+  gts = "${gotosocial-nowasm}/bin/gotosocial --config-path ${adminConfig}";
 in {
   seed.expose.https.enable = true;
   seed.storage.data = "5Gi";
@@ -27,6 +34,7 @@ in {
 
   services.gotosocial = {
     enable = true;
+    package = gotosocial-nowasm;
     settings = {
       host = "social.loom.farm";
       protocol = "https";
@@ -69,11 +77,12 @@ in {
 
   # Create admin account on first boot (idempotent — skips if marker exists).
   # Initial password written to PVC marker file. Change it immediately.
+  # Waits for GtS to be fully ready (API responding) before touching the DB.
   systemd.services.gotosocial-admin-init = {
     description = "Create initial GoToSocial admin account";
     wantedBy = [ "multi-user.target" ];
     after = [ "gotosocial.service" ];
-    requires = [ "gotosocial.service" ];
+    wants = [ "gotosocial.service" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -85,11 +94,17 @@ in {
         MARKER="/seed/storage/data/.admin-created"
         [ -f "$MARKER" ] && exit 0
 
-        # Wait for GtS API to be ready (up to 30s)
-        for i in $(seq 1 30); do
-          ${pkgs.curl}/bin/curl -sf http://127.0.0.1:8080/api/v1/instance > /dev/null 2>&1 && break
+        # Wait for GtS API to be fully ready (not 503) — up to 60s
+        for i in $(seq 1 60); do
+          CODE=$(${pkgs.curl}/bin/curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/instance 2>/dev/null || echo "000")
+          [ "$CODE" = "200" ] && break
           sleep 1
         done
+
+        if [ "$CODE" != "200" ]; then
+          echo "GtS API not ready after 60s (last status: $CODE), skipping admin init"
+          exit 0
+        fi
 
         PASS=$(${pkgs.openssl}/bin/openssl rand -base64 24)
 
@@ -107,6 +122,9 @@ in {
       '';
     };
   };
+
+  # nowasm mode needs system ffmpeg/ffprobe for media processing
+  environment.systemPackages = [ pkgs.ffmpeg-headless ];
 
   # PVC ownership
   systemd.tmpfiles.rules = [
