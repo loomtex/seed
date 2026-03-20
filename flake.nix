@@ -251,6 +251,7 @@
       silo = mkSeed { name = "silo"; module = ./instances/silo.nix; };
       shell = mkSeed { name = "shell"; module = ./instances/shell.nix; };
       gateway = mkSeed { name = "gateway"; module = ./instances/gateway.nix; };
+      social = mkSeed { name = "social"; module = ./instances/social.nix; };
     };
 
     # Controller + host agent TypeScript packages
@@ -566,6 +567,7 @@ INITEOF
           http = { host = "3"; port = 80; protocol = "tcp"; instance = "gateway"; };
           https = { host = "3"; port = 443; protocol = "tcp"; instance = "gateway"; };
           shell-ssh = { host = "5"; port = 22; protocol = "tcp"; instance = "shell"; };
+          social-https = { host = "9"; port = 443; protocol = "tcp"; instance = "social"; };
         };
       };
     };

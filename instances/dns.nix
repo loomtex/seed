@@ -39,6 +39,10 @@ let
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::8"; }]; }
 
+    # Social — GoToSocial fediverse instance
+    { name = "social.${zone}"; type = "AAAA"; ttl = 300;
+      records = [{ content = "2001:19f0:5400:20a7::9"; }]; }
+
     # Seed shell — SSH management interface (shell ingress service)
     { name = "seed.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::5"; }]; }
