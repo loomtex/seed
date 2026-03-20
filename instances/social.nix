@@ -20,8 +20,9 @@ let
   adminUser = "josh";
   adminEmail = "josh@loom.farm";
 
-  # Minimal config for gotosocial CLI (just needs DB path)
+  # Config for gotosocial CLI — needs host + DB path at minimum
   adminConfig = pkgs.writeText "gotosocial-admin.yml" ''
+    host: social.loom.farm
     db-type: sqlite
     db-address: /seed/storage/data/gotosocial.sqlite
   '';
