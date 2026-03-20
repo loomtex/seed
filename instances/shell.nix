@@ -374,7 +374,7 @@ let
 in
 {
   seed.size = "xs";
-  seed.expose.ssh = { port = 22; protocol = "tcp"; };
+  seed.expose.ssh.enable = true;
 
   environment.systemPackages = [ shellCmd ];
 

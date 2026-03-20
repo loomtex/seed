@@ -50,12 +50,12 @@ This creates two files:
 
 {
   seed.size = "s";
-  seed.expose.http = 8080;
+  seed.expose.http.enable = true;
   seed.storage.data = "1Gi";
 
   services.nginx.enable = true;
   services.nginx.virtualHosts.default = {
-    listen = [{ addr = "0.0.0.0"; port = 8080; }];
+    listen = [{ addr = "0.0.0.0"; port = 80; }];
     root = "/seed/storage/data/www";
   };
 }
@@ -130,17 +130,26 @@ VM sizing tier. Defaults to `"s"`.
 
 ### `seed.expose`
 
-Ports to expose. Accepts a bare port number (defaults to `protocol = "http"`) or an attrset with `port` and `protocol`.
-
-Protocols: `tcp`, `udp`, `dns` (both TCP+UDP), `http`, `grpc`.
-
-When the protocol is `http` or `grpc`, the platform automatically provisions a TLS certificate for the instance's FQDN.
+Ports to expose. Entry names are looked up in a well-known service table (derived from `/etc/services`) for default port and protocol, so common services need no configuration:
 
 ```nix
-seed.expose.http = 8080;                             # shorthand, gets TLS
-seed.expose.dns = { port = 53; protocol = "dns"; };  # TCP+UDP, no TLS
-seed.expose.grpc = { port = 9090; protocol = "grpc"; }; # gets TLS
+seed.expose.https.enable = true;       # 443/tcp, ACME-enabled
+seed.expose.ssh.enable = true;         # 22/tcp
+seed.expose.dns.enable = true;         # 53, TCP+UDP
+seed.expose.postgresql.enable = true;  # 5432/tcp
 ```
+
+Override defaults or define custom services:
+
+```nix
+seed.expose.https.port = 8443;                          # override default port
+seed.expose.myapp = { port = 9090; protocol = "tcp"; }; # not well-known, specify both
+seed.expose.http = 8080;                                 # bare port shorthand
+```
+
+Protocols: `tcp`, `udp`, `dns` (both TCP+UDP), `http` (ACME-enabled), `grpc` (ACME-enabled).
+
+When the protocol is `http` or `grpc`, the platform injects `SEED_ACME_URL` — an ACME directory endpoint that proxies to Let's Encrypt. Your instance's web server (e.g. Caddy) uses its built-in ACME client to request certificates through this endpoint.
 
 ### `seed.storage`
 
@@ -159,7 +168,7 @@ Deployment strategy. `"recreate"` (default) stops the old instance before starti
 
 ## TLS
 
-Instances with `http` or `grpc` protocol in `seed.expose` get automatic TLS certificates from Let's Encrypt. The platform handles DNS-01 validation — no configuration needed.
+Instances with `http` or `grpc` protocol in `seed.expose` get access to the platform's ACME facade — an RFC 8555 endpoint that proxies DNS-01 validation to Let's Encrypt. Your instance's web server requests certificates through it.
 
 Your instance receives two environment variables:
 - `SEED_ACME_URL` — the platform's ACME directory endpoint
@@ -419,12 +428,14 @@ git+https://...                → passed through to nix
 ### Instance option summary
 
 ```nix
-seed.size = "s";               # xs|s|m|l|xl — VM sizing tier
-seed.expose.<name> = port;     # or { port; protocol = "http"|"tcp"|"udp"|"dns"|"grpc"; }
-seed.storage.<name> = "1Gi";   # or { size; mountPoint; }
-seed.rollout = "recreate";     # or "rolling"
-seed.acme = true;              # auto-detected from expose protocols
-seed.shoot.enable = false;     # ephemeral VM forking
+seed.size = "s";                    # xs|s|m|l|xl — VM sizing tier
+seed.expose.<name>.enable = true;   # well-known: port/protocol from service table
+seed.expose.<name> = { port; protocol; }; # custom: specify explicitly
+seed.expose.<name> = port;          # bare port shorthand
+seed.storage.<name> = "1Gi";        # or { size; mountPoint; }
+seed.rollout = "recreate";          # or "rolling"
+seed.acme = true;                   # auto-detected from expose protocols
+seed.shoot.enable = false;          # ephemeral VM forking
 ```
 
 ### Gotchas

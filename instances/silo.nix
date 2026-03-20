@@ -493,9 +493,9 @@ let
 
 in {
   seed.size = "xs";
-  seed.expose.ssh = { port = 22; protocol = "tcp"; };
-  seed.expose.https = { port = 443; protocol = "http"; };
-  seed.expose.http = { port = 80; protocol = "tcp"; };
+  seed.expose.ssh.enable = true;
+  seed.expose.https.enable = true;
+  seed.expose.http.enable = true;
   seed.storage.repos = "10Gi";
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
   seed.shoot.enable = true;

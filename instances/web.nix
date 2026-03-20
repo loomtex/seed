@@ -12,8 +12,8 @@ let
 in
 {
   seed.size = "xs";
-  seed.expose.http = { port = 80; protocol = "tcp"; };
-  seed.expose.https = { port = 443; protocol = "http"; };
+  seed.expose.http.enable = true;
+  seed.expose.https.enable = true;
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
 
   # security.acme — nginx's enableACME auto-adds serverAliases as SANs

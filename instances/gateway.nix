@@ -13,9 +13,9 @@ let
 in
 {
   seed.size = "xs";
-  seed.expose.dns = { port = 53; protocol = "dns"; };
-  seed.expose.http = { port = 80; protocol = "tcp"; };
-  seed.expose.https = { port = 443; protocol = "tcp"; };
+  seed.expose.dns.enable = true;
+  seed.expose.http.enable = true;
+  seed.expose.https.enable = true;
 
   # HTTPS TCP proxy → web instance (web handles its own TLS via platform ACME)
   systemd.services.https-tcp-proxy = {

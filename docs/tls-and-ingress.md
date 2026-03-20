@@ -9,14 +9,15 @@ infrastructure; instances handle their own L7 (Caddy, nginx, etc.).
 ## `seed.expose`
 
 Declares which ports an instance exposes to the network. The attr
-name is looked up in `/etc/services` for default port and protocol,
-so common services need minimal configuration:
+name is looked up in a well-known service table (derived from
+`/etc/services`) for default port and protocol, so common services
+need minimal configuration:
 
 ```nix
-seed.expose.https.enable = true;       # 443/tcp from /etc/services
+seed.expose.https.enable = true;       # 443/tcp, ACME-enabled
 seed.expose.postgresql.enable = true;  # 5432/tcp
 seed.expose.ssh.enable = true;         # 22/tcp
-seed.expose.domain.enable = true;      # 53/udp (dns protocol handling)
+seed.expose.dns.enable = true;         # 53, TCP+UDP
 ```
 
 Override defaults when needed:
@@ -24,10 +25,10 @@ Override defaults when needed:
 ```nix
 seed.expose.https = {
   enable = true;
-  port = 8443;         # override the /etc/services default
+  port = 8443;         # override the default port
 };
 
-seed.expose.myapp = {  # not in /etc/services — must specify
+seed.expose.myapp = {  # not well-known — must specify
   port = 9090;
   protocol = "tcp";
 };

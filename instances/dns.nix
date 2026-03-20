@@ -111,8 +111,8 @@ let
 in
 {
   seed.size = "xs";
-  seed.expose.dns = { port = 53; protocol = "dns"; };
-  seed.expose.api = { port = 8081; protocol = "tcp"; };
+  seed.expose.dns.enable = true;
+  seed.expose.api = { port = 8081; };
   seed.storage.data = "1Gi";
 
   # sops-nix: decrypt API key using the instance's TPM-backed age identity

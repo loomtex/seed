@@ -18,23 +18,46 @@ let
 
   tier = sizeTiers.${cfg.size};
 
-  # Submodule for seed.expose entries
-  exposeSubmodule = lib.types.submodule {
+  # Well-known services: port and seed protocol defaults derived from
+  # /etc/services conventions. Embedded as a literal table so flake
+  # evaluation stays pure.
+  knownServices = {
+    http       = { port = 80;   protocol = "tcp"; };
+    https      = { port = 443;  protocol = "http"; };  # ACME-enabled
+    ssh        = { port = 22;   protocol = "tcp"; };
+    dns        = { port = 53;   protocol = "dns"; };   # TCP+UDP
+    domain     = { port = 53;   protocol = "dns"; };
+    smtp       = { port = 25;   protocol = "tcp"; };
+    smtps      = { port = 465;  protocol = "tcp"; };
+    imaps      = { port = 993;  protocol = "tcp"; };
+    postgresql = { port = 5432; protocol = "tcp"; };
+    mysql      = { port = 3306; protocol = "tcp"; };
+    redis      = { port = 6379; protocol = "tcp"; };
+    grpc       = { port = 443;  protocol = "grpc"; };  # ACME-enabled
+  };
+
+  # Submodule for seed.expose entries — defaults from well-known service table
+  exposeSubmodule = lib.types.submodule ({ name, ... }: let
+    svc = knownServices.${name} or null;
+  in {
     options = {
+      enable = lib.mkEnableOption "Expose this port" // { default = true; };
       port = lib.mkOption {
         type = lib.types.port;
-        description = "Port number to expose.";
+        default = if svc != null then svc.port
+                  else throw "seed.expose.${name}: port required — '${name}' is not a well-known service. Set port explicitly.";
+        description = "Port number. Defaults to well-known port for the entry name.";
       };
       protocol = lib.mkOption {
         type = lib.types.enum [ "tcp" "udp" "dns" "http" "grpc" ];
-        default = "http";
+        default = if svc != null then svc.protocol else "tcp";
         description = ''
-          Protocol hint for the ingress controller.
-          "dns" exposes on both TCP and UDP (standard for DNS).
+          Protocol hint for the controller. Defaults to well-known protocol.
+          "dns" exposes on both TCP and UDP. "http"/"grpc" enable ACME.
         '';
       };
     };
-  };
+  });
 
   # Submodule for seed.storage entries
   storageSubmodule = lib.types.submodule ({ name, ... }: {
@@ -80,7 +103,7 @@ in {
     expose = lib.mkOption {
       type = lib.types.attrsOf (lib.types.coercedTo
         lib.types.port
-        (port: { inherit port; protocol = "http"; })
+        (port: { inherit port; })
         exposeSubmodule
       );
       default = {};
@@ -122,7 +145,7 @@ in {
 
     acme = lib.mkOption {
       type = lib.types.bool;
-      default = builtins.any (e: e.protocol == "http" || e.protocol == "grpc")
+      default = builtins.any (e: e.enable && (e.protocol == "http" || e.protocol == "grpc"))
         (builtins.attrValues cfg.expose);
       defaultText = lib.literalExpression "true when any expose entry has protocol \"http\" or \"grpc\"";
       description = ''
@@ -156,14 +179,16 @@ in {
     };
   };
 
-  config = {
+  config = let
+    enabledExpose = lib.filterAttrs (_: e: e.enable) cfg.expose;
+  in {
     # Denormalized metadata for the controller
     seed.meta = {
       size = cfg.size;
       resources = tier;
       expose = lib.mapAttrs (_: e: {
         inherit (e) port protocol;
-      }) cfg.expose;
+      }) enabledExpose;
       storage = lib.mapAttrs (name: s: {
         inherit (s) size mountPoint;
       }) cfg.storage;
@@ -243,13 +268,13 @@ in {
 
     # Open firewall for exposed ports
     networking.firewall.allowedTCPPorts =
-      lib.pipe cfg.expose [
+      lib.pipe enabledExpose [
         (lib.filterAttrs (_: e: e.protocol != "udp"))
         (lib.mapAttrsToList (_: e: e.port))
       ];
 
     networking.firewall.allowedUDPPorts =
-      lib.pipe cfg.expose [
+      lib.pipe enabledExpose [
         (lib.filterAttrs (_: e: e.protocol == "udp" || e.protocol == "dns"))
         (lib.mapAttrsToList (_: e: e.port))
       ];
