@@ -1,16 +1,33 @@
 # Seed
 
-No Dockerfiles. No image registries. No Terraform. No Helm charts. No YAML. Write a NixOS module, `git push`, and it boots in a hardware-isolated microVM via [Kata Containers](https://katacontainers.io/).
+NixOS instances running in hardware-isolated microVMs. Write a NixOS module, push, and it boots on [seed.loom.farm](https://loom.farm) with automatic TLS, DNS, persistent storage, and encrypted secrets.
 
-Each instance is a full NixOS system — use `services.nginx`, `services.postgresql`, `services.openssh`, whatever you'd put in a NixOS config. Seed adds a thin `seed.*` module for platform glue: sizing, ports, storage, secrets.
+Each instance is a full NixOS system — `services.nginx`, `services.postgresql`, `services.openssh`, whatever you'd put in a NixOS config. Seed adds a thin `seed.*` module for platform glue.
 
-## Quick start
+If you're an AI agent deploying to Seed (or a human pointing one at it), skip to the [technical reference](#technical-reference).
+
+## How it works
+
+You write a nix flake that exports `seeds.<name>` for each instance. The platform evaluates your flake, builds the NixOS closure, and boots it in a [Kata Containers](https://katacontainers.io/) microVM. Every instance gets:
+
+- **DNS**: `<instance>.<namespace>.seed.loom.farm` — resolves immediately
+- **TLS**: Automatic Let's Encrypt certificates via the platform's embedded ACME server
+- **Storage**: Persistent volumes that survive restarts and redeployments
+- **Secrets**: A virtual TPM device for encrypted secrets via [sops-nix](https://github.com/Mic92/sops-nix)
+- **Git hosting**: Push to [Silo](https://silo.loom.farm) — no GitHub account needed
+- **Logs & management**: `ssh seed.loom.farm logs <instance>`, `status`, `restart`
+
+There's no Docker, no image registry, no Helm, no YAML. NixOS is the abstraction.
+
+## Getting started
+
+### 1. Write a flake
 
 ```bash
 nix flake init -t github:loomtex/seed#instance
 ```
 
-This creates a flake with a single web instance:
+This creates two files:
 
 ```nix
 # flake.nix
@@ -44,11 +61,60 @@ This creates a flake with a single web instance:
 }
 ```
 
-Push this to a git repo and point a Seed node at it. The controller evaluates your flake, builds the NixOS closure on the node, and boots it in a Kata VM — nginx running, persistent volume mounted, port exposed. No build pipeline needed.
+### 2. Add `.authorized_keys`
+
+Create an `.authorized_keys` file in the repo root containing the SSH public keys that should have access. Standard `authorized_keys` format:
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@machine
+```
+
+This is how the platform identifies you. Your SSH key proves ownership of the repo — there are no passwords or API tokens.
+
+### 3. Push and plant
+
+Push your flake to a git remote. You can use Seed's built-in git hosting (Silo) or GitHub:
+
+```bash
+# Option A: Silo (built-in, no account needed)
+git remote add origin silo.loom.farm:my-app.git
+git push -u origin master
+
+# Option B: GitHub
+git remote add origin git@github.com:you/my-app.git
+git push -u origin master
+```
+
+Then register your repo with an invite code:
+
+```bash
+# Silo-hosted repo
+ssh seed.loom.farm plant silo:my-app <invite-code>
+
+# GitHub-hosted repo
+ssh seed.loom.farm plant github:you/my-app <invite-code>
+```
+
+The controller evaluates your flake, builds the NixOS closure, and boots the instance. Check status:
+
+```bash
+ssh seed.loom.farm status
+ssh seed.loom.farm logs web
+```
+
+After the initial `plant`, every `git push` triggers automatic redeployment via webhook.
+
+### 4. Verify locally
+
+Before pushing, validate your instance config:
+
+```bash
+nix eval .#seeds.web.meta --json
+```
+
+This type-checks the full NixOS evaluation and returns controller metadata without building anything. Option mismatches, missing values, and module conflicts surface here — not at deploy time.
 
 ## Instance options
-
-These are the `seed.*` options available inside instance modules.
 
 ### `seed.size`
 
@@ -64,14 +130,16 @@ VM sizing tier. Defaults to `"s"`.
 
 ### `seed.expose`
 
-Ports to expose via k8s Service. Accepts a bare port number (defaults to `protocol = "http"`) or an attrset with `port` and `protocol`.
+Ports to expose. Accepts a bare port number (defaults to `protocol = "http"`) or an attrset with `port` and `protocol`.
 
 Protocols: `tcp`, `udp`, `dns` (both TCP+UDP), `http`, `grpc`.
 
+When the protocol is `http` or `grpc`, the platform automatically provisions a TLS certificate for the instance's FQDN.
+
 ```nix
-seed.expose.http = 8080;                          # shorthand
-seed.expose.dns = { port = 53; protocol = "dns"; }; # explicit
-seed.expose.grpc = { port = 9090; protocol = "grpc"; };
+seed.expose.http = 8080;                             # shorthand, gets TLS
+seed.expose.dns = { port = 53; protocol = "dns"; };  # TCP+UDP, no TLS
+seed.expose.grpc = { port = 9090; protocol = "grpc"; }; # gets TLS
 ```
 
 ### `seed.storage`
@@ -79,34 +147,61 @@ seed.expose.grpc = { port = 9090; protocol = "grpc"; };
 Persistent volumes. Accepts a size string (mounted at `/seed/storage/<name>`) or an attrset with `size` and `mountPoint`.
 
 ```nix
-seed.storage.data = "1Gi";                                      # → /seed/storage/data
+seed.storage.data = "1Gi";                                       # /seed/storage/data
 seed.storage.cache = { size = "500Mi"; mountPoint = "/tmp/cache"; }; # custom mount
 ```
 
-Storage survives pod restarts and redeployments. The underlying PVCs are never garbage-collected.
-
-### `seed.connect`
-
-Service discovery for other instances in the same namespace. Populates environment variables and files:
-
-```nix
-seed.connect.redis = "my-redis";
-seed.connect.db = { service = "postgres"; port = 5432; };
-```
-
-This creates:
-- `$SEED_REDIS_HOST` → `my-redis`
-- `/etc/seed/connect/redis` → `my-redis`
-- `$SEED_DB_HOST` → `postgres`
-- `/etc/seed/connect/db` → `postgres:5432`
+Storage survives pod restarts and redeployments. PVCs are never garbage-collected.
 
 ### `seed.rollout`
 
-Deployment strategy. `"recreate"` (default) stops the old pod before starting the new one — safe for stateful services. `"rolling"` starts the new pod first for zero-downtime updates.
+Deployment strategy. `"recreate"` (default) stops the old instance before starting the new one — safe for stateful services. `"rolling"` starts the new instance first for zero-downtime updates.
+
+## TLS
+
+Instances with `http` or `grpc` protocol in `seed.expose` get automatic TLS certificates from Let's Encrypt. The platform handles DNS-01 validation — no configuration needed.
+
+Your instance receives two environment variables:
+- `SEED_ACME_URL` — the platform's ACME directory endpoint
+- `SEED_FQDN` — your instance's hostname (e.g. `web.s-gaydazldmnsg.seed.loom.farm`)
+
+Point your web server's ACME client at `SEED_ACME_URL`. Example with NixOS's `security.acme` + nginx:
+
+```nix
+{ config, ... }:
+
+{
+  seed.expose.https = { port = 443; protocol = "http"; };
+  seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
+
+  security.acme = {
+    acceptTerms = true;
+    defaults.server = "$(cat /run/seed/env | grep SEED_ACME_URL | cut -d= -f2-)";
+    defaults.email = "you@example.com";
+  };
+
+  services.nginx = {
+    enable = true;
+    virtualHosts."my-app.example.com" = {
+      enableACME = true;
+      forceSSL = true;
+      root = "/seed/storage/data/www";
+    };
+  };
+}
+```
+
+The platform ACME server proxies to Let's Encrypt — certificates are real, browser-trusted certs. Persist `/var/lib/acme` via `seed.storage` to avoid hitting rate limits on redeployment.
+
+## DNS
+
+Every instance is reachable at `<instance>.<namespace>.seed.loom.farm`. The namespace is derived deterministically from your flake URI — you don't choose it, but it's stable.
+
+DNS records are created automatically when the instance deploys. No configuration needed.
 
 ## Secrets
 
-Instances get a virtual TPM device backed by [swtpm](https://github.com/stefanberger/swtpm) on the host. On first boot, a TPM-backed [age](https://github.com/FiloSottile/age) identity is generated at `/seed/tpm/age-identity`. Use this with [sops-nix](https://github.com/Mic92/sops-nix) for encrypted secrets:
+Instances get a virtual TPM device backed by [swtpm](https://github.com/stefanberger/swtpm). On first boot, a TPM-backed [age](https://github.com/FiloSottile/age) identity is generated at `/seed/tpm/age-identity`. Use this with [sops-nix](https://github.com/Mic92/sops-nix) for encrypted secrets:
 
 ```nix
 { config, ... }:
@@ -119,18 +214,18 @@ Instances get a virtual TPM device backed by [swtpm](https://github.com/stefanbe
 }
 ```
 
-The provisioning flow:
+`sops.age.keyFile` defaults to `/seed/tpm/age-identity` — no extra configuration needed.
+
+### Provisioning flow
 
 1. Deploy the instance without secrets. It boots and generates a TPM identity.
-2. Read the public key (the `age1tpm1q...` recipient) from the instance's TPM identity PVC.
-3. Encrypt your secrets file with that recipient: `sops --age 'age1tpm1q...' secrets/myapp.yaml`
+2. Read the public key (`age1tpm1q...` recipient) — it's stored on the instance's TPM identity PVC.
+3. Encrypt your secrets: `sops --age 'age1tpm1q...' secrets/myapp.yaml`
 4. Redeploy. sops-nix decrypts via the vTPM automatically.
-
-`sops.age.keyFile` defaults to `/seed/tpm/age-identity` — no extra configuration needed.
 
 ## Multiple instances
 
-A flake can export any number of instances. They share a k8s namespace derived from the flake URI.
+A flake can export any number of instances. They share a namespace.
 
 ```nix
 {
@@ -145,45 +240,45 @@ A flake can export any number of instances. They share a k8s namespace derived f
 }
 ```
 
-Instances discover each other via `seed.connect`:
+## Silo
 
-```nix
-# api.nix
-{
-  seed.connect.db = "seed-db";  # k8s service name
-  # ...
-}
+Seed includes built-in git hosting at `silo.loom.farm`. No account needed — your SSH key is your identity.
+
+```bash
+git clone silo.loom.farm:my-app.git    # clone (anyone)
+git push silo.loom.farm:my-app.git     # push (requires key in .authorized_keys)
 ```
 
-## Instance authoring notes
+Repos are created automatically on first push. The key that creates the repo becomes the owner. Collaborators are managed via the `.authorized_keys` file in the repo root — push a new key there to grant access.
 
-Instances run NixOS inside Kata VMs with `boot.isContainer = true`. This keeps closures small but has some side effects to be aware of.
+Read access is public. Write access requires a key listed in `.authorized_keys`.
 
-**RuntimeDirectory**: Some services expect `/run/<name>/` to exist. Since `boot.isContainer` skips some tmpfiles setup, add it explicitly:
+When registering with `plant`, use the `silo:` shorthand:
 
-```nix
-systemd.services.myapp.serviceConfig.RuntimeDirectory = "myapp";
+```bash
+ssh seed.loom.farm plant silo:my-app <invite-code>
 ```
 
-**Storage ownership**: PVC filesystems are root-owned. If your service runs as a non-root user, chown the mount point:
+Silo also has a web interface at `https://silo.loom.farm` for browsing repos, with syntax highlighting and tarball downloads.
 
-```nix
-systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 myapp myapp -" ];
+## Seed shell
+
+All management happens over SSH at `seed.loom.farm`:
+
+```bash
+ssh seed.loom.farm status              # instance status across all your repos
+ssh seed.loom.farm status my-repo      # status for a specific repo
+ssh seed.loom.farm logs web            # last 100 log lines
+ssh seed.loom.farm logs web -f         # stream logs
+ssh seed.loom.farm logs web --lines 500
+ssh seed.loom.farm logs my-repo/web    # disambiguate repo/instance
+ssh seed.loom.farm restart web         # restart an instance
+ssh seed.loom.farm help                # show all commands
 ```
 
-**No kubectl exec**: Kata VMs don't support `kubectl exec`. Debug via service APIs, port-forward, or write diagnostics to a PVC mount.
+All commands support `--json` for machine-readable output.
 
-**Environment variables**: k8s-injected env vars (like `SEED_SHOOT_URL`) are captured at `/run/seed/env` during activation. Use `EnvironmentFile` to access them in systemd services — `PassEnvironment` doesn't work in Kata VMs because systemd strips inherited environment on startup:
-
-```nix
-systemd.services.myapp.serviceConfig.EnvironmentFile = "/run/seed/env";
-```
-
-**Firewall**: The NixOS firewall is active inside the VM. `seed.expose` automatically opens declared ports. If you expose additional ports outside of `seed.expose`, open them manually:
-
-```nix
-networking.firewall.allowedTCPPorts = [ 9090 ];
-```
+Any SSH key can connect. Your key identity determines which repos you can manage — if your key is in a repo's `.authorized_keys`, you see that repo.
 
 ## Shoots
 
@@ -198,106 +293,158 @@ This gives the instance a `seed-shoot` command and a `SEED_SHOOT_URL` env var po
 ### Usage
 
 ```bash
-# Run a command in an isolated VM with access to the parent's storage
-seed-shoot echo "hello from shoot"
-
-# Process a file from shared storage
-seed-shoot sha256sum /seed/storage/data/input.bin
-
-# Write results back to shared storage
-seed-shoot sh -c 'process < /seed/storage/data/input > /seed/storage/data/output'
-
-# Set a timeout (milliseconds)
-seed-shoot --timeout 60000 long-running-task
+seed-shoot echo "hello from shoot"              # run in isolated VM
+seed-shoot sha256sum /seed/storage/data/in.bin  # access parent's storage
+seed-shoot --timeout 60000 long-running-task    # timeout in ms
 ```
 
-You can also call the shoot API directly over HTTP:
-
-```bash
-curl -s -X POST -H "Content-Type: application/json" \
-  -d '{"command":["echo","hello"],"timeout":30000}' \
-  "$SEED_SHOOT_URL/shoot"
-# → {"exitCode":0,"stdout":"hello","stderr":""}
-```
-
-### How it works
-
-1. Instance POSTs `{ command, timeout }` to the pool manager on the same node
-2. Pool manager identifies the caller by pod source IP — no auth tokens needed
-3. Pool manager resolves the caller's PVC volumes from the k8s pod spec
-4. An ephemeral CLH VM is restored from a snapshot, with the parent's nix store (read-only) and PVC storage (read-write) mounted via virtiofs
-5. The command runs, stdout/stderr/exitCode are returned, and the VM is destroyed
-6. A fresh VM is added back to the pool
-
-Each shoot runs in its own hardware-isolated microVM. There's no network interface — communication is via shared PVC storage and stdout/stderr only.
+Each shoot runs in its own hardware-isolated microVM. No network interface — communication is via shared storage and stdout/stderr only.
 
 ### Use cases
 
-**Parallel computation**: Fan out work across multiple shoots. Each gets its own CPU and memory, reads from shared storage, writes results back.
-
-```bash
-# Split a large file and process chunks in parallel
-for chunk in /seed/storage/data/chunks/*; do
-  seed-shoot process-chunk "$chunk" &
-done
-wait
-```
-
-**Sandboxed execution**: Run untrusted code or user input in a shoot. If it crashes or misbehaves, only the ephemeral VM is affected — the parent instance is untouched.
-
-**Offline batch jobs**: Queue work into shared storage, let the parent instance fork shoots to process items. No network needed inside the shoot — everything flows through the filesystem.
+- **Parallel computation**: Fan out work across shoots, each gets its own CPU/memory
+- **Sandboxed execution**: Run untrusted code — if it crashes, only the ephemeral VM is affected
+- **Batch processing**: Queue work to shared storage, fork shoots to process items
 
 ### Limitations
 
-- **No network**: Shoots have no network interface. Fetch data before forking, or use shared storage.
-- **No secrets**: Shoots don't get the parent's vTPM. Pass secrets via env vars or write them to shared storage before forking.
-- **No nix builds**: Shoots mount the nix store read-only. You can run any binary that's in the parent's closure, but you can't build new derivations inside a shoot.
-- **Same node only**: Shoots use node-local PVC storage (k3s local-path). The parent and its shoots always run on the same physical node.
+- No network inside shoots
+- No vTPM — pass secrets via shared storage if needed
+- Nix store is read-only (can run binaries, can't build)
+- Same physical node as parent
 
-## Why NixOS
+## Instance authoring notes
 
-Seed uses NixOS as the instance abstraction instead of containers or a custom runtime. Every instance is a real NixOS system evaluated from a nix flake.
+Instances run NixOS inside Kata VMs with `boot.isContainer = true`. This keeps closures small but has some side effects.
 
-This means the full NixOS module ecosystem is available — `services.postgresql`, `security.acme`, `services.openssh`, `sops-nix` — with correct service dependencies, user management, and systemd lifecycle out of the box. Multi-service instances are just NixOS config, not docker-compose files or sidecar hacks.
+**RuntimeDirectory**: Some services expect `/run/<name>/` to exist. Since `boot.isContainer` skips some tmpfiles setup, add it explicitly:
 
-The tradeoff is boot time (systemd startup, not millisecond cold starts) and the learning curve of the Nix module system. Seed isn't a function runtime — it's infrastructure. If you want FaaS, run a FaaS framework in a seed.
+```nix
+systemd.services.myapp.serviceConfig.RuntimeDirectory = "myapp";
+```
 
-But the learning curve matters less than it used to. Because of the decades of human labor put into nixpkgs and NixOS modules, and because NixOS is declarative, typed, reproducible, and introspectable — it is trivially wielded by modern LLMs. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human would face.
+**Storage ownership**: PVC filesystems are root-owned. If your service runs as a non-root user, chown the mount point:
 
-Nix is perfectly positioned to never be typed by a human again. Seed leans into that.
+```nix
+systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 myapp myapp -" ];
+```
 
-## For agents
+**No kubectl exec**: Kata VMs don't support `kubectl exec`. Debug via service APIs, port-forward, or write diagnostics to storage.
 
-### Validate before pushing
+**Environment variables**: k8s-injected env vars are captured at `/run/seed/env` during activation. Use `EnvironmentFile` in systemd services:
 
-`nix eval .#seeds.<name>.meta --json` type-checks the full instance config and returns the controller metadata without building anything. Option type mismatches, missing required values, and module conflicts all surface here — not at deploy time. Use this as a fast feedback loop before committing.
+```nix
+systemd.services.myapp.serviceConfig.EnvironmentFile = "/run/seed/env";
+```
 
-### Errors surface at three stages
+**Firewall**: The NixOS firewall is active inside the VM. `seed.expose` automatically opens declared ports. If you expose additional ports outside of `seed.expose`, open them manually:
 
-1. **Eval** — nix language errors and NixOS option type violations. These fail `nix eval` immediately with a traceback pointing to the offending module.
-2. **Build** — derivation build failures (missing dependencies, broken patches, compile errors). These fail during the controller's build phase after eval succeeds.
-3. **Runtime** — systemd service failures inside the VM. These don't appear in `kubectl logs` after stage 2 boot. Expose a health endpoint, write diagnostics to a `seed.storage` volume, or query service APIs directly via port-forward.
+```nix
+networking.firewall.allowedTCPPorts = [ 9090 ];
+```
 
-Most errors are caught at stage 1. This is the key advantage of a typed, declarative system — the feedback is immediate and precise.
+---
+
+## Technical reference
+
+Optimized for agents. Everything needed to deploy an instance from scratch.
+
+### Deploy sequence
+
+```
+1. nix flake init -t github:loomtex/seed#instance
+2. Edit web.nix (NixOS config with seed.* options)
+3. Create .authorized_keys in repo root (your SSH public key)
+4. nix eval .#seeds.web.meta --json              # validate
+5. git init && git add -A && git commit -m "initial"
+6. git remote add origin silo.loom.farm:my-app.git
+7. git push -u origin master                      # creates repo on silo
+8. ssh seed.loom.farm plant silo:my-app <invite>  # register with platform
+9. ssh seed.loom.farm status                       # verify
+10. ssh seed.loom.farm logs web                    # check logs
+```
+
+Subsequent deploys: `git push` triggers automatic reconciliation via webhook.
+
+### Environment variables injected into instances
+
+| Variable | When | Value |
+|----------|------|-------|
+| `SEED_FQDN` | always | `<instance>.<namespace>.seed.loom.farm` |
+| `SEED_ACME_URL` | `seed.acme = true` | ACME directory URL for TLS certs |
+| `SEED_SHOOT_URL` | `seed.shoot.enable = true` | Pool manager endpoint for ephemeral VMs |
+
+Access via `EnvironmentFile = "/run/seed/env"` in systemd services (not `$ENV` — systemd strips inherited env in Kata VMs).
+
+### Well-known paths
+
+| Path | Description |
+|------|-------------|
+| `/seed/storage/<name>` | Persistent volume mount (default) |
+| `/seed/tpm/age-identity` | TPM-backed age key for sops-nix |
+| `/run/seed/env` | k8s-injected env vars (source this) |
+| `/run/current-system` | NixOS system closure |
 
 ### Content-addressed deployments
 
-Same nix config produces the same store paths, which produces the same generation hash. The controller skips reconciliation entirely when nothing changed. You can reason about whether a change will cause a rollout without deploying — if the store path didn't change, the pod won't restart.
+Same nix config produces the same store paths, which produces the same generation hash. The controller skips reconciliation entirely when nothing changed. If the store path didn't change, the pod won't restart.
 
-### Introspection
+### Errors surface at three stages
 
-The NixOS module system is programmatically queryable. Option types, defaults, the full dependency graph, and every service's systemd unit are all available via `nix eval` before anything runs. You don't need to read documentation to discover what a module provides — evaluate it and inspect the result.
+1. **Eval** (`nix eval`): NixOS option type errors. Immediate, precise tracebacks.
+2. **Build** (`nix build`): Derivation failures (missing deps, compile errors). After eval succeeds.
+3. **Runtime**: systemd service failures inside the VM. Use `ssh seed.loom.farm logs <instance>` or expose a health endpoint.
 
-### Deploy loop
+Most errors are caught at stage 1.
 
-Push to the flake's git remote. The controller receives a webhook, evaluates the flake, builds any changed closures, and reconciles. There's no polling delay — reconciliation starts immediately on push.
+### Seed shell commands
 
-## Hosting
+```
+plant <flake-uri> <code>       register a repo (silo:name, github:user/repo)
+status [repo]                  instance status (default: all repos)
+logs <[repo/]instance>         logs (flags: -f, --lines N, --json)
+restart <[repo/]instance>      restart an instance
+help                           show usage
+```
 
-To run your own Seed node, see [HOSTING.md](HOSTING.md).
+### Silo flake URI formats
+
+```
+silo:my-app                    → tarball+https://silo.loom.farm/my-app/archive/master.tar.gz
+github:user/repo               → passed through to nix
+git+https://...                → passed through to nix
+```
+
+### Instance option summary
+
+```nix
+seed.size = "s";               # xs|s|m|l|xl — VM sizing tier
+seed.expose.<name> = port;     # or { port; protocol = "http"|"tcp"|"udp"|"dns"|"grpc"; }
+seed.storage.<name> = "1Gi";   # or { size; mountPoint; }
+seed.rollout = "recreate";     # or "rolling"
+seed.acme = true;              # auto-detected from expose protocols
+seed.shoot.enable = false;     # ephemeral VM forking
+```
+
+### Gotchas
+
+- `RuntimeDirectory` must be set explicitly for services needing `/run/<name>/`
+- PVC mounts are root-owned — use `systemd.tmpfiles.rules` to chown for non-root services
+- No `kubectl exec` in Kata VMs — debug via logs, port-forward, or storage
+- Use `EnvironmentFile = "/run/seed/env"` for SEED_* env vars in systemd services
+- Persist `/var/lib/acme` via `seed.storage` to avoid LE rate limits on redeploy
+- `nix eval .#seeds.<name>.meta --json` is the fast feedback loop — use it before every push
+
+## Why NixOS
+
+Seed uses NixOS as the instance abstraction instead of containers. Every instance is a real NixOS system evaluated from a nix flake.
+
+The full NixOS module ecosystem is available — `services.postgresql`, `security.acme`, `services.openssh`, `sops-nix` — with correct service dependencies, user management, and systemd lifecycle. Multi-service instances are just NixOS config.
+
+The tradeoff is boot time (systemd startup, not millisecond cold starts). Seed isn't a function runtime — it's infrastructure.
+
+Because NixOS is declarative, typed, reproducible, and introspectable, it is trivially wielded by modern LLMs. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human faces. Nix is perfectly positioned to never be typed by a human again. Seed leans into that.
 
 ## License
 
 MIT
-
-
