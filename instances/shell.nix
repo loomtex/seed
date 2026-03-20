@@ -378,6 +378,10 @@ in
 
   environment.systemPackages = [ shellCmd ];
 
+  # sshd chdir's to the user's home before running the forced command.
+  # The NSS module advertises /home/seed but nothing creates it.
+  systemd.tmpfiles.rules = [ "d /home/seed 0755 seed users -" ];
+
   seed.sshAuth = {
     enable = true;
     uid = 1000;
