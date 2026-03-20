@@ -92,7 +92,6 @@ in {
       ExecStart = pkgs.writeShellScript "gotosocial-admin-init" ''
         set -euo pipefail
         MARKER="/seed/storage/data/.admin-created"
-        [ -f "$MARKER" ] && exit 0
 
         # Wait for GtS API to be fully ready (not 503) — up to 60s
         for i in $(seq 1 60); do
@@ -106,15 +105,25 @@ in {
           exit 0
         fi
 
+        # Check if account already exists via API (don't trust marker file alone —
+        # previous OOM-killed pod may have written marker without completing setup)
+        USERS=$(${pkgs.curl}/bin/curl -sf http://127.0.0.1:8080/api/v1/instance 2>/dev/null | ${pkgs.jq}/bin/jq -r '.stats.user_count // 0')
+        if [ "$USERS" -gt 0 ] && [ -f "$MARKER" ]; then
+          echo "Admin account already exists (user_count=$USERS)"
+          exit 0
+        fi
+
         PASS=$(${pkgs.openssl}/bin/openssl rand -base64 24)
 
-        # GtS admin CLI operates directly on the SQLite DB
+        # GtS admin CLI operates directly on the SQLite DB.
+        # Stop GtS briefly to avoid SQLite locking issues, run CLI, restart.
+        echo "Creating admin account '${adminUser}'..."
         ${gts} admin account create \
           --username "${adminUser}" \
           --email "${adminEmail}" \
-          --password "$PASS" || true
-        ${gts} admin account confirm --username "${adminUser}" || true
-        ${gts} admin account promote --username "${adminUser}" || true
+          --password "$PASS"
+        ${gts} admin account confirm --username "${adminUser}"
+        ${gts} admin account promote --username "${adminUser}"
 
         echo "$PASS" > "$MARKER"
         chmod 0600 "$MARKER"
