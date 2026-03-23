@@ -5,7 +5,7 @@
 # Each tenant gets a realm with self-serve metadata export.
 #
 # Large tier (4 vCPU / 4GB) — JVM needs headroom.
-{ config, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   dbPasswordFile = config.sops.secrets.keycloak-db-password.path;
@@ -17,7 +17,7 @@ in {
 
   # sops secrets via vTPM
   sops.defaultSopsFile = ../secrets/keycloak.yaml;
-  sops.secrets.keycloak-db-password = {};
+  sops.secrets.keycloak-db-password.mode = "0444";
 
   # PostgreSQL — local, same VM
   services.postgresql = {
@@ -60,6 +60,34 @@ in {
   };
 
   systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
+
+  # Kata VMs (boot.isContainer=true) don't support systemd LoadCredential.
+  # Override the init and main services to read password files directly.
+  systemd.services.keycloakPostgreSQLInit.serviceConfig.LoadCredential = lib.mkForce [];
+  systemd.services.keycloakPostgreSQLInit.script = lib.mkForce ''
+    set -o errexit -o pipefail -o nounset -o errtrace
+    shopt -s inherit_errexit
+
+    create_role="$(mktemp)"
+    trap 'rm -f "$create_role"' EXIT
+
+    db_password="$(<"${dbPasswordFile}")"
+    db_password="''${db_password//\'/\'\'}"
+
+    echo "CREATE ROLE keycloak WITH LOGIN PASSWORD '$db_password' CREATEDB" > "$create_role"
+    psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='keycloak'" | grep -q 1 || psql -tA --file="$create_role"
+    psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'keycloak'" | grep -q 1 || psql -tAc 'CREATE DATABASE "keycloak" OWNER "keycloak"'
+  '';
+
+  # Keycloak main service: replace LoadCredential with a fake credentials
+  # dir. The module's ExecStartPre runs replace-secret against
+  # $CREDENTIALS_DIRECTORY — we populate it via tmpfiles + env override.
+  systemd.services.keycloak.serviceConfig.LoadCredential = lib.mkForce [];
+  systemd.services.keycloak.environment.CREDENTIALS_DIRECTORY = "/run/keycloak/credentials";
+  systemd.services.keycloak.preStart = lib.mkBefore ''
+    mkdir -p /run/keycloak/credentials
+    cp ${dbPasswordFile} /run/keycloak/credentials/${builtins.baseNameOf dbPasswordFile}
+  '';
 
   # PVC ownership — PostgreSQL runs as postgres user
   systemd.tmpfiles.rules = [
