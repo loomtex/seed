@@ -218,6 +218,8 @@
     lib.mkK8sComponent = pkgs: import ./lib/mkK8sComponent.nix { inherit pkgs; };
     # Ceph RBD CSI composition: { pkgs, mkK8sComponent } -> config -> manifests
     lib.mkCephCsiRbd = import ./lib/mkCephCsiRbd.nix;
+    # cert-manager: { pkgs, mkK8sComponent } -> config -> { manifests, platformCA, images }
+    lib.mkCertManager = import ./lib/mkCertManager.nix;
 
     # Re-export nix-snapshotter home modules for rootless k3s consumers
     homeModules = nix-snapshotter.homeModules;

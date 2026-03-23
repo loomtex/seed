@@ -12,6 +12,7 @@
     ../../profiles/seed-vpc.nix
     ../../profiles/seed-ceph.nix
     ../../profiles/seed-ceph-csi.nix
+    ../../profiles/seed-cert-manager.nix
   ];
 
   sops = {
