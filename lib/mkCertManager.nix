@@ -159,47 +159,52 @@ let
   '';
 
   # Self-signed ClusterIssuer + CA issuer for internal platform PKI.
-  platformCA = pkgs.writeText "seed-platform-ca.json" (builtins.toJSON [
-    # Bootstrap self-signed issuer
-    {
-      apiVersion = "cert-manager.io/v1";
-      kind = "ClusterIssuer";
-      metadata.name = "seed-selfsigned";
-      spec.selfSigned = {};
-    }
-    # Self-signed root CA certificate
-    {
-      apiVersion = "cert-manager.io/v1";
-      kind = "Certificate";
-      metadata = {
-        name = "seed-root-ca";
-        inherit namespace;
-      };
-      spec = {
-        isCA = true;
-        commonName = "Seed Platform Root CA";
-        secretName = "seed-root-ca";
-        duration = "87600h";    # 10 years
-        renewBefore = "8760h";  # 1 year
-        privateKey = {
-          algorithm = "ECDSA";
-          size = 256;
+  # Uses a k8s List to bundle multiple resources in one file.
+  platformCA = pkgs.writeText "seed-platform-ca.json" (builtins.toJSON {
+    apiVersion = "v1";
+    kind = "List";
+    items = [
+      # Bootstrap self-signed issuer
+      {
+        apiVersion = "cert-manager.io/v1";
+        kind = "ClusterIssuer";
+        metadata.name = "seed-selfsigned";
+        spec.selfSigned = {};
+      }
+      # Self-signed root CA certificate
+      {
+        apiVersion = "cert-manager.io/v1";
+        kind = "Certificate";
+        metadata = {
+          name = "seed-root-ca";
+          inherit namespace;
         };
-        issuerRef = {
-          name = "seed-selfsigned";
-          kind = "ClusterIssuer";
-          group = "cert-manager.io";
+        spec = {
+          isCA = true;
+          commonName = "Seed Platform Root CA";
+          secretName = "seed-root-ca";
+          duration = "87600h";    # 10 years
+          renewBefore = "8760h";  # 1 year
+          privateKey = {
+            algorithm = "ECDSA";
+            size = 256;
+          };
+          issuerRef = {
+            name = "seed-selfsigned";
+            kind = "ClusterIssuer";
+            group = "cert-manager.io";
+          };
         };
-      };
-    }
-    # CA issuer that signs leaf certs with the root CA
-    {
-      apiVersion = "cert-manager.io/v1";
-      kind = "ClusterIssuer";
-      metadata.name = "seed-ca";
-      spec.ca.secretName = "seed-root-ca";
-    }
-  ]);
+      }
+      # CA issuer that signs leaf certs with the root CA
+      {
+        apiVersion = "cert-manager.io/v1";
+        kind = "ClusterIssuer";
+        metadata.name = "seed-ca";
+        spec.ca.secretName = "seed-root-ca";
+      }
+    ];
+  });
 
 in {
   manifests = renderedManifests;
