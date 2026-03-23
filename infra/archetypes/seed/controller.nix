@@ -5,6 +5,7 @@
 {
   imports = [
     ../../profiles/seed-backup.nix
+    ../../profiles/seed-cert-manager.nix
   ];
 
   combine.backup = {
