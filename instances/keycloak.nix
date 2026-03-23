@@ -42,6 +42,8 @@ in {
       http-enabled = true;
       http-host = "127.0.0.1";
       http-port = 8080;
+      # Single-node: disable JGroups clustering to avoid stale member errors
+      cache = "local";
     };
   };
 
