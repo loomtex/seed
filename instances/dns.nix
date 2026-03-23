@@ -43,6 +43,10 @@ let
     { name = "social.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::9"; }]; }
 
+    # Keycloak — OIDC identity provider
+    { name = "id.${zone}"; type = "AAAA"; ttl = 300;
+      records = [{ content = "2001:19f0:5400:20a7::a"; }]; }
+
     # Seed shell — SSH management interface (shell ingress service)
     { name = "seed.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::5"; }]; }
