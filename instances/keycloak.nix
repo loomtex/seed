@@ -37,7 +37,8 @@ in {
 
     settings = {
       # Public hostname — Caddy terminates TLS, Keycloak serves HTTP only
-      hostname = "https://id.loom.farm";
+      hostname = "id.loom.farm";
+      hostname-url = "https://id.loom.farm";
       proxy-headers = "xforwarded";
       http-enabled = true;
       http-host = "127.0.0.1";
