@@ -254,6 +254,7 @@
       shell = mkSeed { name = "shell"; module = ./instances/shell.nix; };
       gateway = mkSeed { name = "gateway"; module = ./instances/gateway.nix; };
       social = mkSeed { name = "social"; module = ./instances/social.nix; };
+      keycloak = mkSeed { name = "keycloak"; module = ./instances/keycloak.nix; };
     };
 
     # Controller + host agent TypeScript packages
