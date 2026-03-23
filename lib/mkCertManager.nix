@@ -71,10 +71,17 @@ let
     hash = "sha256-n46q2nhahwESx7GHSVK36Hdv0GZgg2HIPs7oWTFDk60=";
   };
 
+  # Nix-snapshotter images run as root; override Helm's runAsNonRoot.
+  securityContext = { runAsNonRoot = false; seccompProfile.type = "RuntimeDefault"; };
+
   values = lib.recursiveUpdate {
     installCRDs = installCRDs;
     replicaCount = replicaCount;
     global.imagePullPolicy = "Never";
+    securityContext = securityContext;
+    webhook.securityContext = securityContext;
+    cainjector.securityContext = securityContext;
+    startupapicheck.securityContext = securityContext;
   } extraValues;
 
   # Image ref replacements: sed the rendered manifests to swap quay.io

@@ -285,7 +285,17 @@ in {
           ${lib.concatMapStringsSep "\n" (p: ''
             if [ -f "${p}" ]; then
               echo "Applying extra manifest: ${p}"
-              kubectl apply --server-side --force-conflicts -f "${p}"
+              for attempt in $(seq 1 30); do
+                if kubectl apply --server-side --force-conflicts -f "${p}" 2>&1; then
+                  break
+                fi
+                if [ "$attempt" -eq 30 ]; then
+                  echo "Failed to apply ${p} after 30 attempts" >&2
+                  exit 1
+                fi
+                echo "Retrying in 2s (attempt $attempt/30)..."
+                sleep 2
+              done
             fi
           '') svc.extraManifestPaths}
         '') cfg.k8s.services);
