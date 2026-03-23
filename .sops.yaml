@@ -4,6 +4,7 @@ keys:
   - &dns_tpm age1tpm1qwldjpgyrr4n5qga04hajp6taed7tmwle7mhl3g0kwkxlevamkejqrcmwlh
   - &gateway_tpm age1tpm1qw9qxm64zvnnj5nuhcm2lvx4j9s9sl7huvyjywky7r56hkxzmytmjlrm8cv
   - &silo_tpm age1tpm1qf9a48qekrwlf3gar8skyqmtm03ww5gayr0g8ff9005g77aus8fxcd3vaez
+  - &keycloak_tpm age1tpm1qdwf55qk742qef9xp6lsnyxf97d5zv6mh9ed36vf8aeh70vyd7fcsn9df5d
 
 creation_rules:
   - path_regex: secrets/dns\.yaml$
@@ -36,3 +37,4 @@ creation_rules:
           - *admin_josh
         age:
           - *admin_ada
+          - *keycloak_tpm
