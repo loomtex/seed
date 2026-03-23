@@ -42,8 +42,7 @@ in {
       http-enabled = true;
       http-host = "127.0.0.1";
       http-port = 8080;
-      https-port = -1;
-      hostname-strict-https = false;
+      hostname-strict = false;
     };
   };
 
