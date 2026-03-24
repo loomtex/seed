@@ -4,17 +4,20 @@
 # instances via k8s ClusterIP DNS names:
 # - HTTP/HTTPS → web instance (web handles its own TLS via platform ACME)
 # - DNS TCP/UDP → dns instance
+# - SSH → silo instance (git push/pull over SSH)
 { pkgs, ... }:
 
 let
   ns = "s-gaydazldmnsg";
   dnsBackend = "dns.${ns}.svc.cluster.local";
   webBackend = "web.${ns}.svc.cluster.local";
+  siloBackend = "silo.${ns}.svc.cluster.local";
 in
 {
   seed.expose.dns.enable = true;
   seed.expose.http.enable = true;
   seed.expose.https.enable = true;
+  seed.expose.ssh = { port = 22; protocol = "tcp"; };
 
   # HTTPS TCP proxy → web instance (web handles its own TLS via platform ACME)
   systemd.services.https-tcp-proxy = {
@@ -64,6 +67,18 @@ in
     };
   };
 
-  networking.firewall.allowedTCPPorts = [ 53 80 443 ];
+  # SSH TCP proxy → silo instance (git over SSH)
+  systemd.services.ssh-tcp-proxy = {
+    description = "TCP proxy for SSH to silo";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.socat}/bin/socat TCP6-LISTEN:22,fork,reuseaddr TCP:${siloBackend}:22";
+      Restart = "always";
+      RestartSec = "5s";
+    };
+  };
+
+  networking.firewall.allowedTCPPorts = [ 22 53 80 443 ];
   networking.firewall.allowedUDPPorts = [ 53 ];
 }
