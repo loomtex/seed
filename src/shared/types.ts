@@ -146,7 +146,6 @@ export interface SeedFlake {
 
 export interface ControllerConfig {
   flakePaths: string[];
-  namespaceOverrides: Map<string, string>;
   ipv4Address: string;
   ipv6Block: string;
   webhookSecretFile: string;
