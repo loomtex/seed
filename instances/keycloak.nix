@@ -78,6 +78,10 @@ in {
     echo "CREATE ROLE keycloak WITH LOGIN PASSWORD '$db_password' CREATEDB" > "$create_role"
     psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='keycloak'" | grep -q 1 || psql -tA --file="$create_role"
     psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'keycloak'" | grep -q 1 || psql -tAc 'CREATE DATABASE "keycloak" OWNER "keycloak"'
+
+    # Clear stale JDBC_PING members — single-replica, no valid entries at boot.
+    # Table is lowercase "jgroups_ping" in Keycloak 26.x (not "JGROUPSPING").
+    psql -d keycloak -c 'DELETE FROM jgroups_ping;' 2>/dev/null || true
   '';
 
   # Keycloak main service: replace LoadCredential with a fake credentials
