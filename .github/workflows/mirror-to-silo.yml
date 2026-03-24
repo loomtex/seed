@@ -1,0 +1,32 @@
+name: Mirror to Silo
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to silo
+        env:
+          SILO_SSH_KEY: ${{ secrets.SILO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SILO_SSH_KEY" > ~/.ssh/silo_key
+          chmod 600 ~/.ssh/silo_key
+
+          cat >> ~/.ssh/config <<EOF
+          Host silo.loom.farm
+            IdentityFile ~/.ssh/silo_key
+            StrictHostKeyChecking no
+          EOF
+
+          git remote add silo silo.loom.farm:seed.git
+          git push silo --all --force
+          git push silo --tags --force

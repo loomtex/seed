@@ -10,3 +10,6 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDb0+aftJY+E+fkZJKq7rAptzhp65YzQlc7+En0/RTYx
 
 # ada (pre-rename key)
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp
+
+# github-actions (mirror to silo)
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICjzKAf9esD7U6YFdYKPEcVMTRawvqjg6f6Xk7I78dtA
