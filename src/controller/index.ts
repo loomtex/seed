@@ -43,8 +43,19 @@ function loadConfig(): ControllerConfig {
   const flakePathsRaw = process.env["SEED_FLAKE_PATHS"] || "";
   const flakePaths = flakePathsRaw.split(",").map((s) => s.trim()).filter(Boolean);
 
+  // Parse namespace overrides: "uri=namespace,uri2=namespace2"
+  const namespaceOverrides = new Map<string, string>();
+  const overridesRaw = process.env["SEED_NAMESPACE_OVERRIDES"] || "";
+  for (const entry of overridesRaw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const eqIdx = entry.indexOf("=");
+    if (eqIdx > 0) {
+      namespaceOverrides.set(entry.slice(0, eqIdx), entry.slice(eqIdx + 1));
+    }
+  }
+
   return {
     flakePaths,
+    namespaceOverrides,
     ipv4Address: process.env["SEED_IPV4_ADDRESS"] || "",
     ipv6Block: process.env["SEED_IPV6_BLOCK"] || "",
     webhookSecretFile: process.env["SEED_WEBHOOK_SECRET_FILE"] || "",
@@ -1243,7 +1254,7 @@ async function main(): Promise<void> {
   const namespaceToFlake = new Map<string, string>();
 
   for (const flakePath of config.flakePaths) {
-    const namespace = deriveNamespace(flakePath);
+    const namespace = config.namespaceOverrides.get(flakePath) ?? deriveNamespace(flakePath);
     flakeStates.set(flakePath, {
       flakePath,
       namespace,

@@ -22,7 +22,8 @@
 
   seed.controller = {
     enable = true;
-    flakePaths = [ "github:loomtex/seed" ];
+    flakePaths = [ "tarball+https://silo.loom.farm/seed/archive/master.tar.gz" ];
+    namespaceOverrides."tarball+https://silo.loom.farm/seed/archive/master.tar.gz" = "s-gaydazldmnsg";
     netpol.enable = true;
     webhook = {
       enable = true;

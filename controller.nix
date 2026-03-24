@@ -254,6 +254,7 @@ let
             }];
             env = [
               { name = "SEED_FLAKE_PATHS"; value = builtins.concatStringsSep "," cfg.flakePaths; }
+              { name = "SEED_NAMESPACE_OVERRIDES"; value = builtins.concatStringsSep "," (lib.mapAttrsToList (uri: ns: "${uri}=${ns}") cfg.namespaceOverrides); }
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
               { name = "SEED_BUILDER_IMAGE"; value = cfg.builderImage; }
@@ -525,6 +526,13 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [];
       description = "Bootstrap flake paths containing seeds.* outputs. Additional flakes can be registered dynamically via SeedFlake CRDs.";
+    };
+
+    namespaceOverrides = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = {};
+      description = "Map of flake URI → fixed namespace. Use when changing a flake's URI (e.g. github: → tarball+) to preserve the existing namespace and PVCs.";
+      example = { "tarball+https://silo.loom.farm/seed/archive/master.tar.gz" = "s-gaydazldmnsg"; };
     };
 
     ipv4Address = lib.mkOption {
