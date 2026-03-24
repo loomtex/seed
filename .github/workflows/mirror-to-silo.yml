@@ -21,10 +21,11 @@ jobs:
           echo "$SILO_SSH_KEY" > ~/.ssh/silo_key
           chmod 600 ~/.ssh/silo_key
 
-          cat >> ~/.ssh/config <<EOF
+          cat >> ~/.ssh/config <<'EOF'
           Host silo.loom.farm
             IdentityFile ~/.ssh/silo_key
             StrictHostKeyChecking no
+            AddressFamily inet
           EOF
 
           git remote add silo silo.loom.farm:seed.git

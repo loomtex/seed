@@ -554,6 +554,7 @@ INITEOF
           dns = { port = 53; protocol = "dns"; instance = "gateway"; };
           http = { port = 80; protocol = "tcp"; instance = "gateway"; };
           https = { port = 443; protocol = "tcp"; instance = "gateway"; };
+          silo-ssh = { port = 22; protocol = "tcp"; instance = "silo"; };
         };
       };
 
