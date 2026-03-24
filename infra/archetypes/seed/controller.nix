@@ -22,7 +22,7 @@
 
   seed.controller = {
     enable = true;
-    flakePaths = [ "github:loomtex/seed" ];
+    flakePaths = [ "tarball+https://silo.loom.farm/seed/archive/master.tar.gz" ];
     netpol.enable = true;
     webhook = {
       enable = true;
