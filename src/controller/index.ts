@@ -1191,7 +1191,11 @@ async function handlePlant(
       if (!signature) {
         throw new Error("repo has .seed-identity — signature required for plant (sign the invite code with your identity key)");
       }
-      if (!verifyPlantSignature(inviteCode, signature, identity)) {
+      // Signature may be base64-encoded (shell transport) or raw armored
+      const decodedSig = signature.startsWith("-----BEGIN SSH SIGNATURE-----")
+        ? signature
+        : Buffer.from(signature, "base64").toString("utf-8");
+      if (!verifyPlantSignature(inviteCode, decodedSig, identity)) {
         throw new Error("plant signature verification failed — signature must be created with the private key that generated .seed-identity");
       }
 
