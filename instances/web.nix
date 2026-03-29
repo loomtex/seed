@@ -34,5 +34,19 @@ in
         proxyPass = "http://seed-controller.seed-system.svc.cluster.local:9876/";
       };
     };
+    # Reverse proxy for silo HTTPS — the gateway is L4 (TCP) so all port 443
+    # traffic arrives here. SNI-based routing isn't possible with socat, so we
+    # terminate TLS for silo.loom.farm and proxy to silo's internal nginx.
+    virtualHosts."silo.loom.farm" = {
+      enableACME = true;
+      forceSSL = true;
+      locations."/" = {
+        proxyPass = "https://silo.s-gaydazldmnsg.svc.cluster.local";
+        extraConfig = ''
+          proxy_ssl_verify off;
+          proxy_set_header Host silo.loom.farm;
+        '';
+      };
+    };
   };
 }
