@@ -31,10 +31,6 @@ let
     { name = "*.s-gaydazldmnsg.seed.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
 
-    # seed-demo namespace wildcard — IPv6 only
-    { name = "*.s-mezggnjsgq4t.seed.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::4"; }]; }
-
     # Silo — IPv6-only ingress (HTTPS + SSH via silo's own LoadBalancer)
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::8"; }]; }
