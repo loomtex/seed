@@ -35,9 +35,7 @@ let
     { name = "*.s-mezggnjsgq4t.seed.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::4"; }]; }
 
-    # Silo — IPv6 direct ingress + IPv4 via gateway (Caddy for HTTPS, SSH on port 22)
-    { name = "silo.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "96.30.193.227"; }]; }
+    # Silo — IPv6-only ingress (HTTPS + SSH via silo's own LoadBalancer)
     { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::8"; }]; }
 
