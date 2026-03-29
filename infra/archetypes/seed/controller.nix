@@ -22,7 +22,7 @@
 
   seed.controller = {
     enable = true;
-    flakePaths = [ "github:loomtex/seed" ];
+    flakePaths = []; # All flakes are SeedFlake CRDs now (identity-based)
     netpol.enable = true;
     webhook = {
       enable = true;
