@@ -10,7 +10,7 @@
 // k8s handles pod replacement, restart, and health.
 
 import * as k8s from "@kubernetes/client-node";
-import { loadKubeConfig, makeClients, deriveNamespace, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
+import { loadKubeConfig, makeClients, deriveNamespace, deriveNamespaceFromIdentity, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
 import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult } from "../shared/types.js";
 import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask } from "./manifests.js";
@@ -19,7 +19,8 @@ import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
-import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, type KeyIndex, type NamespaceEntry } from "./api.js";
+import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, type KeyIndex, type NamespaceEntry } from "./api.js";
+import { readSeedIdentity, isValidIpnsCid, verifyPlantSignature } from "../shared/identity.js";
 import { registerDNSRecords, deleteDNSRecords, loadPdnsApiKey } from "./dns.js";
 import { initAcme, updateAcmeNamespaces } from "./acme.js";
 import { execFile } from "node:child_process";
@@ -33,6 +34,7 @@ const execFileAsync = promisify(execFile);
 interface FlakeState {
   flakePath: string;
   namespace: string;
+  identity: string; // IPNS CID from .seed-identity (empty for legacy URI-derived namespaces)
   desired: DesiredState | null;
   reconciling: boolean;
 }
@@ -186,7 +188,7 @@ async function buildKeyIndex(
 
   for (const [flakePath, fs] of flakeStates) {
     const authorizedKeys = await extractAuthorizedKeys(flakePath, refresh);
-    const entry: NamespaceEntry = { name: repoName(flakePath), namespace: fs.namespace };
+    const entry: NamespaceEntry = { name: repoName(flakePath), namespace: fs.namespace, identity: fs.identity };
     for (const key of authorizedKeys) {
       if (!keys[key]) keys[key] = [];
       if (!keys[key].some((e) => e.namespace === fs.namespace)) {
@@ -1079,16 +1081,24 @@ async function loadSeedFlakes(
 
     if (flakeStates.has(uri)) continue; // Already registered (bootstrap or prior load)
 
-    const namespace = deriveNamespace(uri);
+    // Use status.namespace as canonical (preserves namespace across URI changes).
+    // Fall back to identity-derived or URI-derived for CRDs without status set.
+    const identity = sf.spec?.identity || "";
+    let namespace = sf.status?.namespace || "";
+    if (!namespace) {
+      namespace = identity ? deriveNamespaceFromIdentity(identity) : deriveNamespace(uri);
+    }
+
     flakeStates.set(uri, {
       flakePath: uri,
       namespace,
+      identity,
       desired: null,
       reconciling: false,
     });
     namespaceToFlake.set(namespace, uri);
     newPaths.push(uri);
-    log("controller", `registered SeedFlake ${sf.metadata?.name}: ${uri} → ${namespace}`);
+    log("controller", `registered SeedFlake ${sf.metadata?.name}: ${uri} → ${namespace}${identity ? ` (identity: ${identity.slice(0, 16)}...)` : ""}`);
   }
 
   return newPaths;
@@ -1126,7 +1136,8 @@ async function handlePlant(
   flakeUri: string,
   inviteCode: string,
   keyBlob: string,
-): Promise<{ name: string; namespace: string; flakeUri: string }> {
+  signature: string,
+): Promise<{ name: string; namespace: string; flakeUri: string; identity: string }> {
   // Expand silo: shorthand
   const expandedUri = expandFlakeUri(flakeUri, config.siloHost);
 
@@ -1166,9 +1177,44 @@ async function handlePlant(
     throw new Error("your key is not in the repo's .authorized_keys");
   }
 
-  // Claim the invite: set flakeUri, clear inviteCode (read-then-replace)
+  // Read .seed-identity from flake source
+  const flakeStorePath = await getFlakeStorePath(expandedUri);
+  let identity = "";
+  let namespace: string;
+
+  if (flakeStorePath) {
+    const cid = await readSeedIdentity(flakeStorePath);
+    if (cid) {
+      identity = cid;
+
+      // Verify plant signature if identity is present
+      if (!signature) {
+        throw new Error("repo has .seed-identity — signature required for plant (sign the invite code with your identity key)");
+      }
+      if (!verifyPlantSignature(inviteCode, signature, identity)) {
+        throw new Error("plant signature verification failed — signature must be created with the private key that generated .seed-identity");
+      }
+
+      // Check no existing SeedFlake already has this identity
+      for (const sf of existing) {
+        if (sf.spec?.identity === identity && sf.metadata?.name !== target.metadata?.name) {
+          throw new Error(`identity already registered: ${identity.slice(0, 24)}...`);
+        }
+      }
+    }
+  }
+
+  // Derive namespace: from identity if present, otherwise from URI
+  if (identity) {
+    namespace = deriveNamespaceFromIdentity(identity);
+  } else {
+    namespace = deriveNamespace(expandedUri);
+  }
+
+  // Claim the invite: set flakeUri, identity, clear inviteCode (read-then-replace)
   const sfName = target.metadata!.name!;
   target.spec.flakeUri = expandedUri;
+  target.spec.identity = identity;
   target.spec.inviteCode = "";
   await clients.custom.replaceClusterCustomObject({
     group: "seed.loom.farm",
@@ -1179,7 +1225,6 @@ async function handlePlant(
   });
 
   // Set status
-  const namespace = deriveNamespace(expandedUri);
   await updateSeedFlakeStatus(clients, sfName, {
     namespace,
     state: "active",
@@ -1192,6 +1237,7 @@ async function handlePlant(
     flakeStates.set(expandedUri, {
       flakePath: expandedUri,
       namespace,
+      identity,
       desired: null,
       reconciling: false,
     });
@@ -1226,7 +1272,128 @@ async function handlePlant(
     triggerReconcile(expandedUri);
   }
 
-  return { name: sfName, namespace, flakeUri: expandedUri };
+  return { name: sfName, namespace, flakeUri: expandedUri, identity };
+}
+
+/**
+ * Get the store path of a flake's source tree.
+ * Used to read .seed-identity and .authorized_keys from the flake root.
+ */
+async function getFlakeStorePath(flakePath: string): Promise<string | null> {
+  try {
+    const args = ["flake", "metadata", flakePath, "--json", "--refresh"];
+    const { stdout } = await execFileAsync("nix", args, { timeout: 60_000 });
+    const meta = JSON.parse(stdout);
+    return meta.path || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Handle a replant request: change flake URI for an identity-based SeedFlake.
+ * Verifies .seed-identity matches and caller's key is in new repo's .authorized_keys.
+ */
+async function handleReplant(
+  clients: ReturnType<typeof makeClients>,
+  config: ControllerConfig,
+  flakeStates: Map<string, FlakeState>,
+  namespaceToFlake: Map<string, string>,
+  triggerReconcile: (flakePath: string) => void,
+  identity: string,
+  newFlakeUri: string,
+  keyBlob: string,
+): Promise<{ name: string; namespace: string; flakeUri: string; identity: string }> {
+  // Validate identity CID
+  if (!isValidIpnsCid(identity)) {
+    throw new Error("invalid IPNS CID format");
+  }
+
+  // Expand silo: shorthand
+  const expandedUri = expandFlakeUri(newFlakeUri, config.siloHost);
+
+  // Validate URI format
+  if (!isValidFlakeUri(expandedUri)) {
+    throw new Error(`invalid flake URI format: ${newFlakeUri}`);
+  }
+
+  // Find SeedFlake with matching identity
+  const existing = await listSeedFlakes(clients);
+  let target: SeedFlake | null = null;
+  for (const sf of existing) {
+    if (sf.spec?.identity === identity) {
+      target = sf;
+      break;
+    }
+  }
+  if (!target) {
+    throw new Error("no SeedFlake found with this identity");
+  }
+
+  const sfName = target.metadata!.name!;
+  const oldUri = target.spec.flakeUri;
+  const namespace = target.status?.namespace || "";
+  if (!namespace) {
+    throw new Error("SeedFlake has no namespace in status");
+  }
+
+  // Fetch new flake source
+  const newStorePath = await getFlakeStorePath(expandedUri);
+  if (!newStorePath) {
+    throw new Error(`could not fetch flake source: ${expandedUri}`);
+  }
+
+  // Verify .seed-identity in new repo matches
+  const newIdentity = await readSeedIdentity(newStorePath);
+  if (newIdentity !== identity) {
+    throw new Error(".seed-identity in new repo does not match (expected same IPNS CID)");
+  }
+
+  // Verify caller's key is in new repo's .authorized_keys
+  const authorizedKeys = await extractAuthorizedKeys(expandedUri, true);
+  const callerFound = authorizedKeys.some((line) => {
+    const parts = line.split(/\s+/);
+    return parts.length >= 2 && parts[1] === keyBlob;
+  });
+  if (!callerFound) {
+    throw new Error("your key is not in the new repo's .authorized_keys");
+  }
+
+  // Update spec.flakeUri (identity and namespace unchanged)
+  target.spec.flakeUri = expandedUri;
+  await clients.custom.replaceClusterCustomObject({
+    group: "seed.loom.farm",
+    version: "v1alpha1",
+    plural: "seedflakes",
+    name: sfName,
+    body: target,
+  });
+
+  log("controller", `replanted ${sfName}: ${oldUri} → ${expandedUri} (identity preserved)`);
+
+  // Re-key flakeStates: remove old URI, add new
+  if (oldUri && flakeStates.has(oldUri)) {
+    flakeStates.delete(oldUri);
+  }
+  flakeStates.set(expandedUri, {
+    flakePath: expandedUri,
+    namespace,
+    identity,
+    desired: null,
+    reconciling: false,
+  });
+  namespaceToFlake.set(namespace, expandedUri);
+
+  // Update valid namespaces and ACME
+  updateValidNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
+  if (config.acmeEnabled) {
+    updateAcmeNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
+  }
+
+  // Trigger reconciliation with new URI
+  triggerReconcile(expandedUri);
+
+  return { name: sfName, namespace, flakeUri: expandedUri, identity };
 }
 
 // --- Main ---
@@ -1247,6 +1414,7 @@ async function main(): Promise<void> {
     flakeStates.set(flakePath, {
       flakePath,
       namespace,
+      identity: "", // Bootstrap flakes use URI-derived namespaces (no identity yet)
       desired: null,
       reconciling: false,
     });
@@ -1367,9 +1535,12 @@ async function main(): Promise<void> {
     startWebhookServer(port, config.webhookSecretFile, flakeStates, triggerReconcile);
   }
 
-  // Wire up plant handler for the API
-  setPlantHandler(async (flakeUri, inviteCode, keyBlob) => {
-    return handlePlant(clients, config, flakeStates, namespaceToFlake, triggerReconcile, flakeUri, inviteCode, keyBlob);
+  // Wire up plant and replant handlers for the API
+  setPlantHandler(async (flakeUri, inviteCode, keyBlob, signature) => {
+    return handlePlant(clients, config, flakeStates, namespaceToFlake, triggerReconcile, flakeUri, inviteCode, keyBlob, signature);
+  });
+  setReplantHandler(async (identity, newFlakeUri, keyBlob) => {
+    return handleReplant(clients, config, flakeStates, namespaceToFlake, triggerReconcile, identity, newFlakeUri, keyBlob);
   });
 
   /** Wait for a webhook event. Returns immediately if one is already queued. */

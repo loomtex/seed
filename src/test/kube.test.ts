@@ -2,7 +2,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveNamespace, computeGeneration, waitFor } from "../shared/kube.js";
+import { deriveNamespace, deriveNamespaceFromIdentity, computeGeneration, waitFor } from "../shared/kube.js";
+import { ipnsCidFromSshPubkey } from "../shared/identity.js";
 
 describe("deriveNamespace", () => {
   it("matches bash implementation for github:loomtex/seed", () => {
@@ -37,6 +38,42 @@ describe("deriveNamespace", () => {
   it("handles empty string (edge case)", () => {
     const ns = deriveNamespace("");
     assert.match(ns, /^s-[a-z2-7]{12}$/);
+  });
+});
+
+describe("deriveNamespaceFromIdentity", () => {
+  it("produces valid k8s namespace names", () => {
+    const cid = ipnsCidFromSshPubkey(
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHqBMzJB3voP6acB2DdfTb+n3vL8yCvD2A1u+9v6rUHQ test",
+    );
+    const ns = deriveNamespaceFromIdentity(cid);
+    assert.match(ns, /^s-[a-z2-7]{12}$/);
+  });
+
+  it("is deterministic", () => {
+    const cid = "k51qzi5uqu5dlvj2bv6iu53wsol2iy5hdaltiiyr0gcpn8ogz5syi3ubtz8lka";
+    const a = deriveNamespaceFromIdentity(cid);
+    const b = deriveNamespaceFromIdentity(cid);
+    assert.equal(a, b);
+  });
+
+  it("produces different namespace than URI-based derivation", () => {
+    // The identity-derived namespace should differ from URI-derived
+    const cid = ipnsCidFromSshPubkey(
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHqBMzJB3voP6acB2DdfTb+n3vL8yCvD2A1u+9v6rUHQ test",
+    );
+    const identityNs = deriveNamespaceFromIdentity(cid);
+    const uriNs = deriveNamespace("github:loomtex/seed");
+    assert.notEqual(identityNs, uriNs);
+  });
+
+  it("different CIDs produce different namespaces", () => {
+    const cid1 = "k51qzi5uqu5dlvj2bv6iu53wsol2iy5hdaltiiyr0gcpn8ogz5syi3ubtz8lka";
+    const cid2 = "k51qzi5uqu5dggpc3lnx10r5pgfohlbzrkj5p49q7dqevbvoeyyimhqt1dq8qa";
+    assert.notEqual(
+      deriveNamespaceFromIdentity(cid1),
+      deriveNamespaceFromIdentity(cid2),
+    );
   });
 });
 

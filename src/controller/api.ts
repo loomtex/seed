@@ -23,6 +23,7 @@ import { log } from "../shared/kube.js";
 export interface NamespaceEntry {
   name: string;      // repo name (e.g. "seed", "shoot-demo")
   namespace: string; // k8s namespace (e.g. "s-gaydazldmnsg")
+  identity: string;  // IPNS CID from .seed-identity (empty for legacy flakes)
 }
 
 export interface KeyIndex {
@@ -45,13 +46,29 @@ export type PlantHandler = (
   flakeUri: string,
   inviteCode: string,
   keyBlob: string,
-) => Promise<{ name: string; namespace: string; flakeUri: string }>;
+  signature: string,
+) => Promise<{ name: string; namespace: string; flakeUri: string; identity: string }>;
 
 let plantHandler: PlantHandler | null = null;
 
 /** Register the plant handler. Called by the controller after startup. */
 export function setPlantHandler(handler: PlantHandler): void {
   plantHandler = handler;
+}
+
+// --- Replant handler ---
+
+export type ReplantHandler = (
+  identity: string,
+  newFlakeUri: string,
+  keyBlob: string,
+) => Promise<{ name: string; namespace: string; flakeUri: string; identity: string }>;
+
+let replantHandler: ReplantHandler | null = null;
+
+/** Register the replant handler. Called by the controller after startup. */
+export function setReplantHandler(handler: ReplantHandler): void {
+  replantHandler = handler;
 }
 
 // --- Route handler ---
@@ -108,6 +125,12 @@ export async function handleApiRequest(
     // POST /api/plant
     if (req.method === "POST" && pathname === "/api/plant") {
       await handlePlantRequest(req, res);
+      return true;
+    }
+
+    // POST /api/replant
+    if (req.method === "POST" && pathname === "/api/replant") {
+      await handleReplantRequest(req, res);
       return true;
     }
 
@@ -181,7 +204,7 @@ async function handlePlantRequest(
     chunks.push(chunk as Buffer);
   }
 
-  let body: { flakeUri?: string; inviteCode?: string; keyBlob?: string };
+  let body: { flakeUri?: string; inviteCode?: string; keyBlob?: string; signature?: string };
   try {
     body = JSON.parse(Buffer.concat(chunks).toString());
   } catch {
@@ -189,19 +212,58 @@ async function handlePlantRequest(
     return;
   }
 
-  const { flakeUri, inviteCode, keyBlob } = body;
+  const { flakeUri, inviteCode, keyBlob, signature } = body;
   if (!flakeUri || !inviteCode || !keyBlob) {
     jsonResponse(res, 400, { error: "missing required fields: flakeUri, inviteCode, keyBlob" });
     return;
   }
 
   try {
-    const result = await plantHandler(flakeUri, inviteCode, keyBlob);
+    const result = await plantHandler(flakeUri, inviteCode, keyBlob, signature || "");
     log("api", `planted ${result.flakeUri} → ${result.namespace}`);
     jsonResponse(res, 200, result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log("api", `plant failed: ${msg}`);
+    jsonResponse(res, 400, { error: msg });
+  }
+}
+
+async function handleReplantRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  if (!replantHandler) {
+    jsonResponse(res, 503, { error: "replant handler not initialized" });
+    return;
+  }
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+  }
+
+  let body: { identity?: string; newFlakeUri?: string; keyBlob?: string };
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString());
+  } catch {
+    jsonResponse(res, 400, { error: "invalid JSON" });
+    return;
+  }
+
+  const { identity, newFlakeUri, keyBlob } = body;
+  if (!identity || !newFlakeUri || !keyBlob) {
+    jsonResponse(res, 400, { error: "missing required fields: identity, newFlakeUri, keyBlob" });
+    return;
+  }
+
+  try {
+    const result = await replantHandler(identity, newFlakeUri, keyBlob);
+    log("api", `replanted ${result.identity} → ${result.flakeUri}`);
+    jsonResponse(res, 200, result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log("api", `replant failed: ${msg}`);
     jsonResponse(res, 400, { error: msg });
   }
 }

@@ -125,6 +125,7 @@ export interface BuildResult {
 export interface SeedFlakeSpec {
   inviteCode: string;
   flakeUri: string;
+  identity: string;
 }
 
 export interface SeedFlakeStatus {

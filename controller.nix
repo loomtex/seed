@@ -76,6 +76,7 @@ let
               properties = {
                 inviteCode = { type = "string"; };
                 flakeUri = { type = "string"; };
+                identity = { type = "string"; };
               };
             };
             status = {

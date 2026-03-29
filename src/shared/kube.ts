@@ -63,6 +63,19 @@ function encodeBase32(data: Buffer): string {
 }
 
 /**
+ * Derive a deterministic k8s-safe namespace from an IPNS CID (seed identity).
+ * Format: s-<12 chars of base32(sha256(cid))>
+ * Same algorithm as deriveNamespace but keyed on the identity CID.
+ */
+export function deriveNamespaceFromIdentity(ipnsCid: string): string {
+  const hash = createHash("sha256").update(ipnsCid).digest("hex");
+  const hex20 = hash.slice(0, 20);
+  const buf = Buffer.from(hex20);
+  const base32 = encodeBase32(buf).toLowerCase().slice(0, 12);
+  return `s-${base32}`;
+}
+
+/**
  * Compute a generation hash from a sorted map of instance→storepath.
  * Returns the first 12 hex chars of sha256.
  */

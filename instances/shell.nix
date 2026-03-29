@@ -41,7 +41,7 @@ let
            | select(.key | split(" ")[0:2] | join(" ") == $key)
            | .value[] ]
          | unique_by(.namespace)
-         | map("\(.name)=\(.namespace)") | join(",")')
+         | map("\(.name)=\(.namespace)=\(.identity // "")") | join(",")')
     fi
 
     # Output extra environment= directive for authorized_keys line
@@ -71,14 +71,19 @@ let
       fi
     }
 
-    # Parse SEED_REPOS into parallel arrays: REPO_NAMES and REPO_NS
+    # Parse SEED_REPOS into parallel arrays: REPO_NAMES, REPO_NS, REPO_IDENTITY
+    # Format: name=namespace=identity (3-part), or name=namespace (2-part legacy)
     declare -a REPO_NAMES=()
     declare -a REPO_NS=()
+    declare -a REPO_IDENTITY=()
     if [ -n "$REPOS_RAW" ]; then
       IFS=',' read -ra PAIRS <<< "$REPOS_RAW"
       for pair in "''${PAIRS[@]}"; do
-        REPO_NAMES+=("''${pair%%=*}")
-        REPO_NS+=("''${pair#*=}")
+        # Split on '=' — name=namespace=identity
+        IFS='=' read -r _name _ns _id <<< "$pair"
+        REPO_NAMES+=("$_name")
+        REPO_NS+=("$_ns")
+        REPO_IDENTITY+=("''${_id:-}")
       done
     fi
 
@@ -151,13 +156,14 @@ let
     FOLLOW=false
     LINES=""
 
+    ARG3=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --json)   JSON_OUT=true ;;
         --follow) FOLLOW=true ;;
         -f)       FOLLOW=true ;;
         --lines)  shift; LINES="''${1:-}" ;;
-        *)        if [ -z "$ARG" ]; then ARG="$1"; elif [ -z "$ARG2" ]; then ARG2="$1"; fi ;;
+        *)        if [ -z "$ARG" ]; then ARG="$1"; elif [ -z "$ARG2" ]; then ARG2="$1"; elif [ -z "$ARG3" ]; then ARG3="$1"; fi ;;
       esac
       shift
     done
@@ -165,20 +171,27 @@ let
     case "$ACTION" in
       plant)
         if [ -z "$ARG" ] || [ -z "$ARG2" ]; then
-          echo "usage: plant <flake-uri> <invite-code>" >&2
+          echo "usage: plant <flake-uri> <invite-code> [<signature>]" >&2
           echo "" >&2
           echo "examples:" >&2
           echo "  plant github:me/my-app a3f8c2e1" >&2
           echo "  plant silo:my-app a3f8c2e1" >&2
+          echo "  plant silo:my-app a3f8c2e1 <base64-ssh-signature>" >&2
           exit 1
         fi
         if [ -z "$KEY_BLOB" ]; then
           echo "error: key identity not available" >&2
           exit 1
         fi
+        # Build JSON payload — include signature if provided
+        PLANT_JSON="{\"flakeUri\":\"$ARG\",\"inviteCode\":\"$ARG2\",\"keyBlob\":\"$KEY_BLOB\""
+        if [ -n "$ARG3" ]; then
+          PLANT_JSON="$PLANT_JSON,\"signature\":\"$ARG3\""
+        fi
+        PLANT_JSON="$PLANT_JSON}"
         RESULT=$($CURL -sf -X POST "$API/plant" \
           -H "Content-Type: application/json" \
-          -d "{\"flakeUri\":\"$ARG\",\"inviteCode\":\"$ARG2\",\"keyBlob\":\"$KEY_BLOB\"}") || {
+          -d "$PLANT_JSON") || {
           echo "error: plant failed" >&2
           exit 1
         }
@@ -187,7 +200,38 @@ let
           echo "error: $ERROR" >&2
           exit 1
         fi
-        echo "$RESULT" | $JQ -r '"planted \(.flakeUri)\n  name: \(.name)\n  namespace: \(.namespace)"'
+        echo "$RESULT" | $JQ -r '"planted \(.flakeUri)\n  name: \(.name)\n  namespace: \(.namespace)" + (if .identity != "" then "\n  identity: \(.identity)" else "" end)'
+        ;;
+
+      replant)
+        if [ -z "$ARG" ] || [ -z "$ARG2" ]; then
+          echo "usage: replant <identity-cid> <new-flake-uri>" >&2
+          echo "" >&2
+          echo "change the source URI for an identity-based repo." >&2
+          echo "your SSH key must be in .authorized_keys of the new repo," >&2
+          echo "and the new repo must have the same .seed-identity file." >&2
+          echo "" >&2
+          echo "examples:" >&2
+          echo "  replant k51qzi5... silo:my-app" >&2
+          echo "  replant k51qzi5... github:me/my-app" >&2
+          exit 1
+        fi
+        if [ -z "$KEY_BLOB" ]; then
+          echo "error: key identity not available" >&2
+          exit 1
+        fi
+        RESULT=$($CURL -sf -X POST "$API/replant" \
+          -H "Content-Type: application/json" \
+          -d "{\"identity\":\"$ARG\",\"newFlakeUri\":\"$ARG2\",\"keyBlob\":\"$KEY_BLOB\"}") || {
+          echo "error: replant failed" >&2
+          exit 1
+        }
+        ERROR=$(echo "$RESULT" | $JQ -r '.error // empty')
+        if [ -n "$ERROR" ]; then
+          echo "error: $ERROR" >&2
+          exit 1
+        fi
+        echo "$RESULT" | $JQ -r '"replanted → \(.flakeUri)\n  name: \(.name)\n  namespace: \(.namespace)\n  identity: \(.identity)"'
         ;;
 
       status)
@@ -228,6 +272,12 @@ let
           if [ "$JSON_OUT" = true ]; then
             echo "$ALL_JSON" | $JQ .
           else
+            # Build identity lookup for display
+            declare -A REPO_ID_MAP
+            for i in "''${!REPO_NAMES[@]}"; do
+              REPO_ID_MAP["''${REPO_NAMES[$i]}"]="''${REPO_IDENTITY[$i]:-}"
+            done
+
             echo "$ALL_JSON" | $JQ -r '.[] |
               .data.namespace as $ns |
               "\u001b[1;4m\(.repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m",
@@ -239,6 +289,14 @@ let
                 "  restarts=\(.value.restarts)" +
                 "  age=\(.value.age)"
               ), ""'
+
+            # Show identity CIDs if present
+            for i in "''${!REPO_NAMES[@]}"; do
+              local id="''${REPO_IDENTITY[$i]:-}"
+              if [ -n "$id" ]; then
+                printf '  \033[2midentity: %s\033[0m\n' "$id"
+              fi
+            done
           fi
         fi
         ;;
@@ -340,22 +398,24 @@ let
         echo "seed shell — manage your seed instances"
         echo ""
         echo "commands:"
-        echo "  plant <flake-uri> <code>   register a repo with an invite code"
-        echo "  status [repo]              show instance status (default: all repos)"
-        echo "  logs <[repo/]instance>     show recent logs (default: 100 lines)"
-        echo "  restart <[repo/]instance>  restart an instance"
-        echo "  keys <[repo/]instance>     show age public key (for sops encryption)"
-        echo "  help                       show this help"
+        echo "  plant <flake-uri> <code> [sig]  register a repo with an invite code"
+        echo "  replant <identity> <new-uri>    change source URI (identity preserved)"
+        echo "  status [repo]                   show instance status (default: all repos)"
+        echo "  logs <[repo/]instance>          show recent logs (default: 100 lines)"
+        echo "  restart <[repo/]instance>       restart an instance"
+        echo "  keys <[repo/]instance>          show age public key (for sops encryption)"
+        echo "  help                            show this help"
         echo ""
         echo "examples:"
-        echo "  plant github:me/app a3f8   register with invite code"
-        echo "  plant silo:my-app a3f8     register a silo repo"
-        echo "  status                     status of all repos"
-        echo "  status seed                status of the 'seed' repo"
-        echo "  logs web                   logs for 'web' (auto-resolves repo)"
-        echo "  logs seed/web -f           follow logs for 'web' in 'seed' repo"
+        echo "  plant github:me/app a3f8        register with invite code"
+        echo "  plant silo:my-app a3f8 <sig>    register with identity signature"
+        echo "  replant k51qzi5... silo:my-app  change source URI"
+        echo "  status                          status of all repos"
+        echo "  status seed                     status of the 'seed' repo"
+        echo "  logs web                        logs for 'web' (auto-resolves repo)"
+        echo "  logs seed/web -f                follow logs for 'web' in 'seed' repo"
         echo "  restart shoot-demo/shoot-demo"
-        echo "  keys web                   age public key for sops encryption"
+        echo "  keys web                        age public key for sops encryption"
         echo ""
         echo "flags:"
         echo "  --json                output raw JSON (for scripting)"
