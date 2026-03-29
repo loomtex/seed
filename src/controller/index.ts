@@ -1722,6 +1722,22 @@ async function main(): Promise<void> {
   // Start k8s API watches for drift correction (cluster-wide).
   startWatches(kc, clients, flakeStates, namespaceToFlake);
 
+  // Periodic DNS sync — re-register instance AAAA records every 60s.
+  // Catches drift from pdns restarts (records wiped on boot) without requiring
+  // a full reconciliation.
+  if (pdnsApiKey) {
+    setInterval(async () => {
+      for (const [, fs] of flakeStates) {
+        if (!fs.desired || fs.reconciling) continue;
+        try {
+          await registerInstanceDNS(clients, config, pdnsApiKey, fs.namespace, fs.desired);
+        } catch (err) {
+          log("controller", `periodic DNS sync failed for ${fs.namespace}: ${err}`);
+        }
+      }
+    }, 60_000);
+  }
+
   // Event-driven loop: wait for webhook, then reconcile only affected flakes.
   // Crashes on failure — k8s restart gives free backoff and retry.
   while (true) {
