@@ -38,3 +38,10 @@ creation_rules:
         age:
           - *admin_ada
           - *keycloak_tpm
+
+  - path_regex: secrets/identity\.yaml$
+    key_groups:
+      - pgp:
+          - *admin_josh
+        age:
+          - *admin_ada

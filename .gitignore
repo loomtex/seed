@@ -7,3 +7,4 @@ infra/.pulumi-state/
 infra/legacy/node_modules/
 eval-results.json
 eval-results/
+.seed-identity-key
