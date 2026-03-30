@@ -553,10 +553,6 @@ INITEOF
           register = true;
           default = true;
         };
-        "seed-demo.online" = {
-          register = true;
-          default = false;
-        };
       };
     };
 
