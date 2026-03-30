@@ -38,14 +38,15 @@ export async function checkAvailability(
     log(COMPONENT, `availability check failed for ${domain}: ${reply.detail}`);
     return false;
   }
-  // Available domains appear in reply.available.domain (string, object with
-  // text in "$t", or array of either — NameSilo XML-to-JSON is inconsistent)
+  // Available domains: reply.available.domain can be a string, an object
+  // with { domain: "name", price: ... }, or an array of either.
   const available = (data as { reply?: { available?: { domain?: unknown } } })
     .reply?.available?.domain;
   if (!available) return false;
   const list = Array.isArray(available) ? available : [available];
   return list.some((d) => {
-    const name = typeof d === "string" ? d : (d as Record<string, unknown>)?.["$t"] ?? String(d);
+    const name = typeof d === "string" ? d
+      : (d as Record<string, unknown>)?.domain ?? String(d);
     return String(name).toLowerCase() === domain.toLowerCase();
   });
 }
