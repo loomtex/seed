@@ -189,6 +189,7 @@ let
     json       = { pkg = tree-sitter-json;       exts = [ "json" ];           injection = "^json$"; };
     toml       = { pkg = tree-sitter-toml;       exts = [ "toml" ];           injection = "^toml$"; };
     yaml       = { pkg = tree-sitter-yaml;       exts = [ "yml" "yaml" ];     injection = "^yaml$"; };
+    html       = { pkg = tree-sitter-html;       exts = [ "htm" "html" ];     injection = "^html$"; };
     lua        = { pkg = tree-sitter-lua;        exts = [ "lua" ];            injection = "^lua$"; };
     make       = { pkg = tree-sitter-make;       exts = [ "mk" "Makefile" ];  injection = "^(make|makefile)$"; };
   };
