@@ -2,8 +2,8 @@
 // Pure functions: metadata in → k8s manifest objects out.
 
 import type * as k8s from "@kubernetes/client-node";
-import { seedLabels, LABELS, ANNOTATIONS } from "../shared/labels.js";
-import type { SeedMeta, SeedHostTask, SeedHostTaskSpec, SeedDNSRecord, SeedDNSRecordSpec } from "../shared/types.js";
+import { seedLabels, LABELS, MANAGED_BY_VALUE, ANNOTATIONS } from "../shared/labels.js";
+import type { SeedMeta, SeedHostTask, SeedHostTaskSpec, SeedDNSRecord, SeedDNSRecordSpec, SeedDomain, SeedDomainSpec, CombineDomainConfig } from "../shared/types.js";
 
 /** Generate a Deployment manifest for a seed instance. */
 export function generateDeployment(
@@ -267,11 +267,38 @@ export function generateDNSRecord(
 }
 
 /**
+ * Resolve a DNS name against declared domains.
+ * - If the name ends with a declared domain, it's already fully qualified
+ * - Otherwise, append the default domain
+ * Returns the resolved FQDN and the domain it belongs to (for domainRef).
+ */
+export function resolveDNSName(
+  rawName: string,
+  domains: Record<string, CombineDomainConfig>,
+): { fqdn: string; domain: string } | null {
+  const domainNames = Object.keys(domains);
+  const defaultDomain = domainNames.find((d) => domains[d].default) || domainNames[0];
+
+  if (!defaultDomain) return null;
+
+  // Check if name already ends with a declared domain
+  const normalizedName = rawName.endsWith(".") ? rawName.slice(0, -1) : rawName;
+  for (const domain of domainNames) {
+    if (normalizedName === domain || normalizedName.endsWith(`.${domain}`)) {
+      return { fqdn: `${normalizedName}.`, domain };
+    }
+  }
+
+  // Not fully qualified — append default domain
+  const fqdn = `${normalizedName}.${defaultDomain}.`;
+  return { fqdn, domain: defaultDomain };
+}
+
+/**
  * Generate all DNS records for an instance.
  * - Auto record: <instance>.<namespace>.<instanceDomain> via sourceRef
- * - Custom names from seed.dns.names via sourceRef
+ * - Custom names from seed.dns.names via sourceRef (resolved against domains)
  * - Zone apex names automatically get a wildcard record
- * - IPv4 A records for instances with ipv4Address
  *
  * CRDs are always generated — the DNS reconciler handles validation
  * (blacklisted domains get an error status, not synced to pdns).
@@ -282,6 +309,7 @@ export function generateInstanceDNSRecords(
   namespace: string,
   meta: SeedMeta,
   instanceDomain: string,
+  domains?: Record<string, CombineDomainConfig>,
 ): SeedDNSRecord[] {
   const records: SeedDNSRecord[] = [];
   const hasExpose = Object.keys(meta.expose).length > 0;
@@ -290,6 +318,7 @@ export function generateInstanceDNSRecords(
   const ingressServiceName = `${instance}-ingress`;
 
   // Auto AAAA record: <instance>.<namespace>.<instanceDomain>
+  // No domainRef — platform zone is always ready (bootstrap)
   const autoFqdn = `${instance}.${namespace}.${instanceDomain}.`;
   records.push(generateDNSRecord(
     `dns-${instance}-auto`,
@@ -307,47 +336,92 @@ export function generateInstanceDNSRecords(
   // Custom DNS names from seed.dns.names
   const customNames = meta.dns?.names || [];
   for (const rawName of customNames) {
-    const fqdn = rawName.endsWith(".") ? rawName : `${rawName}.`;
-    // Sanitize name for k8s resource name: replace dots and wildcards
-    const safeName = rawName.replace(/\./g, "-").replace(/\*/g, "wildcard");
+    // Resolve non-FQDN names against declared domains
+    const resolved = domains
+      ? resolveDNSName(rawName, domains)
+      : { fqdn: rawName.endsWith(".") ? rawName : `${rawName}.`, domain: "" };
 
-    // AAAA record via sourceRef
+    if (!resolved) continue;
+
+    const { fqdn, domain } = resolved;
+    // Sanitize name for k8s resource name: replace dots and wildcards
+    const safeName = fqdn.replace(/\.$/, "").replace(/\./g, "-").replace(/\*/g, "wildcard");
+
+    // Build spec with optional domainRef (gate sync on zone readiness)
+    const spec: SeedDNSRecordSpec = {
+      name: fqdn,
+      type: "AAAA",
+      ttl: 300,
+      sourceRef: { kind: "Service", name: ingressServiceName },
+    };
+    if (domain) {
+      spec.domainRef = { name: domain };
+    }
+
     records.push(generateDNSRecord(
       `dns-${instance}-${safeName}`,
       namespace,
       generation,
       instance,
-      {
-        name: fqdn,
-        type: "AAAA",
-        ttl: 300,
-        sourceRef: { kind: "Service", name: ingressServiceName },
-      },
+      spec,
     ));
 
     // Zone apex → also generate wildcard
-    const isApex = !rawName.startsWith("*.") && rawName.split(".").length === 2;
+    const normalizedFqdn = fqdn.endsWith(".") ? fqdn.slice(0, -1) : fqdn;
+    const isApex = !normalizedFqdn.startsWith("*.") && normalizedFqdn.split(".").length === 2;
     if (isApex) {
       const wildcardFqdn = `*.${fqdn}`;
       const wildcardSafeName = `wildcard-${safeName}`;
+
+      const wildcardSpec: SeedDNSRecordSpec = {
+        name: wildcardFqdn,
+        type: "AAAA",
+        ttl: 300,
+        sourceRef: { kind: "Service", name: ingressServiceName },
+      };
+      if (domain) {
+        wildcardSpec.domainRef = { name: domain };
+      }
 
       records.push(generateDNSRecord(
         `dns-${instance}-${wildcardSafeName}`,
         namespace,
         generation,
         instance,
-        {
-          name: wildcardFqdn,
-          type: "AAAA",
-          ttl: 300,
-          sourceRef: { kind: "Service", name: ingressServiceName },
-        },
+        wildcardSpec,
       ));
-
     }
   }
 
   return records;
+}
+
+/** Generate a SeedDomain CRD manifest from combine.domains config. */
+export function generateDomainCRD(
+  domainName: string,
+  config: CombineDomainConfig,
+  generation: string,
+  namespace: string,
+): SeedDomain {
+  // Sanitize domain name for k8s resource name
+  const resourceName = `domain-${domainName.replace(/\./g, "-")}`;
+  return {
+    apiVersion: "seed.loom.farm/v1alpha1",
+    kind: "SeedDomain",
+    metadata: {
+      name: resourceName,
+      namespace,
+      labels: {
+        [LABELS.MANAGED_BY]: MANAGED_BY_VALUE,
+        [LABELS.GENERATION]: generation,
+      },
+    },
+    spec: {
+      name: domainName,
+      register: config.register,
+      ...(config.register ? { registrar: "namesilo" as const } : {}),
+    },
+  };
 }
 
 /** Find the first TCP-capable exposed port for readiness probing. */

@@ -12,8 +12,8 @@
 import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, makeClients, deriveNamespace, deriveNamespaceFromIdentity, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
-import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult, SeedDNSRecord } from "../shared/types.js";
-import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask, generateInstanceDNSRecords } from "./manifests.js";
+import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult, SeedDNSRecord, SeedDomain, CombineConfig, CombineDomainConfig } from "../shared/types.js";
+import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask, generateInstanceDNSRecords, generateDomainCRD } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
@@ -22,6 +22,7 @@ import { startWebhookServer } from "./webhook.js";
 import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, type KeyIndex, type NamespaceEntry } from "./api.js";
 import { readSeedIdentity, isValidIpnsCid, verifyPlantSignature } from "../shared/identity.js";
 import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
+import { startDomainController } from "./domains.js";
 import { initAcme, updateAcmeNamespaces } from "./acme.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -60,6 +61,7 @@ function loadConfig(): ControllerConfig {
     acmeEnabled: !!process.env["SEED_ACME_ENABLED"],
     acmeAccountKeyFile: process.env["SEED_ACME_ACCOUNT_KEY_FILE"] || "",
     siloHost: process.env["SEED_SILO_HOST"] || "silo.loom.farm",
+    namesiloApiKeyFile: process.env["SEED_NAMESILO_API_KEY_FILE"] || "",
   };
 }
 
@@ -216,6 +218,7 @@ export function renderDesiredState(
   hostTaskStatuses: Map<string, { ready: boolean; socketPath: string }>,
   acmeUrl?: string,
   instanceDomain?: string,
+  domains?: Record<string, CombineDomainConfig>,
 ): DesiredState {
   const generation = computeGeneration(
     new Map([...buildResults].map(([name, r]) => [name, r.imagePath])),
@@ -269,6 +272,7 @@ export function renderDesiredState(
       namespace,
       meta,
       instanceDomain || "seed.loom.farm",
+      domains,
     );
 
     instances.set(name, { imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, hostTask, dnsRecords });
@@ -282,11 +286,20 @@ export function renderDesiredState(
     ? generateIPv6Services(ipv6Config, generation, namespace)
     : [];
 
+  // Generate SeedDomain CRDs from combine.domains
+  const domainCRDs: SeedDomain[] = [];
+  if (domains) {
+    for (const [domainName, domainConfig] of Object.entries(domains)) {
+      domainCRDs.push(generateDomainCRD(domainName, domainConfig, generation, namespace));
+    }
+  }
+
   return {
     generation,
     namespace,
     instances,
     routes: { ipv4: ipv4Services, ipv6: ipv6Services },
+    domains: domainCRDs,
   };
 }
 
@@ -488,6 +501,47 @@ async function applyDesiredState(
     }
   }
 
+  // Apply SeedDomain CRDs
+  for (const domain of desired.domains) {
+    try {
+      const existing = await clients.custom.getNamespacedCustomObject({
+        group: "seed.loom.farm",
+        version: "v1alpha1",
+        namespace,
+        plural: "seeddomains",
+        name: domain.metadata!.name!,
+      }) as SeedDomain;
+      // Update generation label if changed, preserve status
+      const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
+      if (existingGen !== desired.generation) {
+        existing.metadata = existing.metadata || {};
+        existing.metadata.labels = {
+          ...existing.metadata.labels,
+          ...domain.metadata!.labels,
+        };
+        existing.spec = domain.spec;
+        await clients.custom.replaceNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seeddomains",
+          name: domain.metadata!.name!,
+          body: existing,
+        });
+        log("controller", `updated SeedDomain ${domain.spec.name}`);
+      }
+    } catch {
+      await clients.custom.createNamespacedCustomObject({
+        group: "seed.loom.farm",
+        version: "v1alpha1",
+        namespace,
+        plural: "seeddomains",
+        body: domain,
+      });
+      log("controller", `created SeedDomain ${domain.spec.name}`);
+    }
+  }
+
   // Apply SeedDNSRecords
   for (const [name, instance] of desired.instances) {
     for (const dnsRecord of instance.dnsRecords) {
@@ -548,6 +602,12 @@ async function reapOldResources(
   const desiredServices = new Set<string>();
   const desiredHostTasks = new Set<string>();
   const desiredDNSRecords = new Set<string>();
+  const desiredDomains = new Set<string>();
+
+  for (const domain of desired.domains) {
+    const name = domain.metadata?.name;
+    if (name) desiredDomains.add(name);
+  }
 
   for (const [, instance] of desired.instances) {
     const depName = instance.deployment.metadata?.name;
@@ -656,6 +716,31 @@ async function reapOldResources(
     }
   } catch (err) {
     log("controller", `error reaping SeedDNSRecords: ${err}`);
+  }
+
+  // Reap SeedDomains not in desired state
+  try {
+    const domains = await clients.custom.listNamespacedCustomObject({
+      group: "seed.loom.farm",
+      version: "v1alpha1",
+      namespace,
+      plural: "seeddomains",
+    }) as { items: SeedDomain[] };
+    for (const domain of domains.items) {
+      const name = domain.metadata?.name;
+      if (name && !desiredDomains.has(name)) {
+        log("controller", `reaping SeedDomain: ${name}`);
+        await clients.custom.deleteNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seeddomains",
+          name,
+        });
+      }
+    }
+  } catch (err) {
+    log("controller", `error reaping SeedDomains: ${err}`);
   }
 
   // PVCs are never reaped
@@ -795,6 +880,7 @@ async function loadExistingDesired(
     namespace,
     instances,
     routes: { ipv4: ipv4Routes, ipv6: ipv6Routes },
+    domains: [],
   };
 }
 
@@ -1635,6 +1721,15 @@ async function main(): Promise<void> {
         )) as IPv6Config;
       } catch { /* no seed.ipv6 output */ }
 
+      // Read combine.domains from flake
+      let combineConfig: CombineConfig | null = null;
+      try {
+        combineConfig = (await nixEvalJson(
+          `${flakePath}#combine`,
+          useRefresh,
+        )) as CombineConfig;
+      } catch { /* no combine output */ }
+
       // Always render + apply + reap, even if generation matches.
       // This ensures controller code changes take effect without waiting for an image change.
       const deployed = await deployedGeneration(clients, namespace);
@@ -1670,6 +1765,7 @@ async function main(): Promise<void> {
         hostTaskStatuses,
         acmeUrl,
         config.instanceDomain,
+        combineConfig?.domains,
       );
 
       // Apply desired state (SeedHostTasks already applied, skipped inside)
@@ -1729,6 +1825,7 @@ async function main(): Promise<void> {
   // Replaces the old registerInstanceDNS polling + 60s periodic timer.
   if (pdnsApiKey && config.pdnsApiUrl) {
     startDNSReconciler(kc, clients.core, clients.custom, config.pdnsApiUrl, pdnsApiKey, config.pdnsZone);
+    startDomainController(kc, clients.core, clients.custom, config.pdnsApiUrl, pdnsApiKey, config.namesiloApiKeyFile);
   }
 
   // Event-driven loop: wait for webhook, then reconcile only affected flakes.

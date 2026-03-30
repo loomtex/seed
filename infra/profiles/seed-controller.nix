@@ -12,6 +12,9 @@
   sops.secrets."seed/controller/acme-account-key" = {
     sopsFile = ../secrets/seed-system-atl1.yaml;
   };
+  sops.secrets."seed/namesilo-key" = {
+    sopsFile = ../secrets/seed-system-atl1.yaml;
+  };
 
   sops.templates."seed-controller-secrets.json" = {
     content = builtins.toJSON {
@@ -24,6 +27,7 @@
       stringData = {
         "gh-webhook-secret" = config.sops.placeholder."seed/controller/gh-webhook-secret";
         "pdns-api-key" = config.sops.placeholder."seed/controller/pdns-api-key";
+        "namesilo-api-key" = config.sops.placeholder."seed/namesilo-key";
       };
     };
   };

@@ -140,6 +140,13 @@ let
                   };
                   required = [ "kind" "name" ];
                 };
+                domainRef = {
+                  type = "object";
+                  properties = {
+                    name = { type = "string"; };
+                  };
+                  required = [ "name" ];
+                };
               };
               required = [ "name" "type" "ttl" ];
             };
@@ -180,6 +187,66 @@ let
     };
   });
 
+  # SeedDomain CRD definition — domain registration + zone lifecycle
+  seedDomainCRD = pkgs.writeText "seed-domain-crd.yaml" (builtins.toJSON {
+    apiVersion = "apiextensions.k8s.io/v1";
+    kind = "CustomResourceDefinition";
+    metadata.name = "seeddomains.seed.loom.farm";
+    spec = {
+      group = "seed.loom.farm";
+      versions = [{
+        name = "v1alpha1";
+        served = true;
+        storage = true;
+        schema.openAPIV3Schema = {
+          type = "object";
+          properties = {
+            spec = {
+              type = "object";
+              properties = {
+                name = { type = "string"; };
+                register = { type = "boolean"; };
+                registrar = { type = "string"; enum = [ "namesilo" ]; };
+              };
+              required = [ "name" ];
+            };
+            status = {
+              type = "object";
+              properties = {
+                phase = { type = "string"; enum = [
+                  "Pending" "Registering" "Registered" "Delegating"
+                  "Delegated" "ZoneReady" "Error"
+                ]; };
+                registered = { type = "boolean"; };
+                nsConfigured = { type = "boolean"; };
+                zoneReady = { type = "boolean"; };
+                registrarDomainId = { type = "string"; };
+                expiresAt = { type = "string"; };
+                message = { type = "string"; };
+                lastSyncedAt = { type = "string"; };
+              };
+            };
+          };
+        };
+        subresources.status = {};
+        additionalPrinterColumns = [
+          { name = "Domain"; type = "string"; jsonPath = ".spec.name"; }
+          { name = "Phase"; type = "string"; jsonPath = ".status.phase"; }
+          { name = "Zone Ready"; type = "boolean"; jsonPath = ".status.zoneReady"; }
+          { name = "Expires"; type = "string"; jsonPath = ".status.expiresAt"; }
+          { name = "Age"; type = "date"; jsonPath = ".metadata.creationTimestamp"; }
+        ];
+      }];
+      scope = "Namespaced";
+      names = {
+        plural = "seeddomains";
+        singular = "seeddomain";
+        kind = "SeedDomain";
+        shortNames = [ "sd" ];
+      };
+    };
+  });
+
   # Namespace for seed system components
   seedSystemNS = "seed-system";
 
@@ -211,7 +278,7 @@ let
     rules = [
       {
         apiGroups = [ "" ];
-        resources = [ "namespaces" "pods" "persistentvolumeclaims" "services" "configmaps" "endpoints" ];
+        resources = [ "namespaces" "pods" "persistentvolumeclaims" "services" "configmaps" "endpoints" "events" ];
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
       {
@@ -252,6 +319,11 @@ let
       {
         apiGroups = [ "seed.loom.farm" ];
         resources = [ "seeddnsrecords" "seeddnsrecords/status" ];
+        verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
+      }
+      {
+        apiGroups = [ "seed.loom.farm" ];
+        resources = [ "seeddomains" "seeddomains/status" ];
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
     ];
@@ -369,6 +441,8 @@ let
               name = "SEED_PDNS_ZONE"; value = cfg.dns.zone;
             } ++ lib.optional (cfg.dns.instanceDomain != "seed.loom.farm") {
               name = "SEED_INSTANCE_DOMAIN"; value = cfg.dns.instanceDomain;
+            } ++ lib.optional (cfg.registrar.apiKeyFile != "") {
+              name = "SEED_NAMESILO_API_KEY_FILE"; value = cfg.registrar.apiKeyFile;
             } ++ lib.optional (cfg.webhook.secretFile != "") {
               name = "SEED_WEBHOOK_SECRET_FILE"; value = cfg.webhook.secretFile;
             } ++ lib.optional (cfg.acme.accountKey != "") {
@@ -586,6 +660,7 @@ let
       { name = "02-hosttask-crd.json"; path = seedHostTaskCRD; }
       { name = "02-flake-crd.json"; path = seedFlakeCRD; }
       { name = "02-dnsrecord-crd.json"; path = seedDNSRecordCRD; }
+      { name = "02-domain-crd.json"; path = seedDomainCRD; }
       { name = "03-controller-sa.json"; path = controllerSA; }
       { name = "03-builder-sa.json"; path = builderSA; }
       { name = "04-controller-role.json"; path = controllerRole; }
@@ -689,6 +764,14 @@ in {
       type = lib.types.bool;
       default = true;
       description = "Enable vTPM (swtpm) for all instances via SeedHostTask CRDs.";
+    };
+
+    registrar = {
+      apiKeyFile = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "Path to file containing the NameSilo API key for domain registration.";
+      };
     };
 
     dns = {

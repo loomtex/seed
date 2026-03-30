@@ -90,6 +90,52 @@ export function computeGeneration(
   return createHash("sha256").update(input).digest("hex").slice(0, 12);
 }
 
+/** Record a k8s Event against a custom resource. */
+export async function recordEvent(
+  core: k8s.CoreV1Api,
+  involvedObject: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+    namespace: string;
+    uid?: string;
+  },
+  type: "Normal" | "Warning",
+  reason: string,
+  message: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  try {
+    await core.createNamespacedEvent({
+      namespace: involvedObject.namespace,
+      body: {
+        apiVersion: "v1",
+        kind: "Event",
+        metadata: {
+          generateName: `${involvedObject.name}.`,
+          namespace: involvedObject.namespace,
+        },
+        involvedObject: {
+          apiVersion: involvedObject.apiVersion,
+          kind: involvedObject.kind,
+          name: involvedObject.name,
+          namespace: involvedObject.namespace,
+          uid: involvedObject.uid,
+        },
+        type,
+        reason,
+        message,
+        firstTimestamp: new Date(now),
+        lastTimestamp: new Date(now),
+        reportingComponent: "seed-controller",
+        reportingInstance: "seed-controller",
+      },
+    });
+  } catch {
+    // Best-effort — don't fail the reconcile over an event
+  }
+}
+
 /** Simple structured logger. */
 export function log(
   component: string,

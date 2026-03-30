@@ -546,6 +546,16 @@ INITEOF
       };
     };
 
+    # Platform services — domain registration, etc.
+    combine = {
+      domains = {
+        "loom.farm" = {
+          register = true;
+          default = true;
+        };
+      };
+    };
+
     # Platform config — routing, networking, etc.
     seed = {
       ipv4 = {

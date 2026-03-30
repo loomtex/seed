@@ -117,6 +117,7 @@ export interface DesiredState {
     ipv4: k8s.V1Service[];
     ipv6: k8s.V1Service[];
   };
+  domains: SeedDomain[];
 }
 
 // --- Builder Job result (stored in ConfigMap) ---
@@ -149,6 +150,53 @@ export interface SeedFlake {
   status?: SeedFlakeStatus;
 }
 
+// --- combine.domains (from nix eval) ---
+
+export interface CombineDomainConfig {
+  register: boolean;
+  default: boolean;
+}
+
+export interface CombineConfig {
+  domains: Record<string, CombineDomainConfig>;
+}
+
+// --- SeedDomain CRD ---
+
+export type SeedDomainPhase =
+  | "Pending"
+  | "Registering"
+  | "Registered"
+  | "Delegating"
+  | "Delegated"
+  | "ZoneReady"
+  | "Error";
+
+export interface SeedDomainSpec {
+  name: string;
+  register: boolean;
+  registrar?: "namesilo";
+}
+
+export interface SeedDomainStatus {
+  phase: SeedDomainPhase;
+  registered: boolean;
+  nsConfigured: boolean;
+  zoneReady: boolean;
+  registrarDomainId?: string;
+  expiresAt?: string;
+  message: string;
+  lastSyncedAt: string;
+}
+
+export interface SeedDomain {
+  apiVersion: "seed.loom.farm/v1alpha1";
+  kind: "SeedDomain";
+  metadata: k8s.V1ObjectMeta;
+  spec: SeedDomainSpec;
+  status?: SeedDomainStatus;
+}
+
 // --- SeedDNSRecord CRD ---
 
 export interface SeedDNSRecordSourceRef {
@@ -162,6 +210,7 @@ export interface SeedDNSRecordSpec {
   ttl: number;
   records?: { content: string }[];
   sourceRef?: SeedDNSRecordSourceRef;
+  domainRef?: { name: string };
 }
 
 export interface SeedDNSRecordStatus {
@@ -196,4 +245,5 @@ export interface ControllerConfig {
   acmeEnabled: boolean;
   acmeAccountKeyFile: string;
   siloHost: string;
+  namesiloApiKeyFile: string;
 }

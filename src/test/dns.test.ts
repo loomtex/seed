@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import {
   generateDNSRecord,
   generateInstanceDNSRecords,
+  generateDomainCRD,
+  resolveDNSName,
 } from "../controller/manifests.js";
-import type { SeedMeta } from "../shared/types.js";
+import type { SeedMeta, CombineDomainConfig } from "../shared/types.js";
 
 function makeMeta(overrides?: Partial<SeedMeta>): SeedMeta {
   return {
@@ -187,5 +189,161 @@ describe("generateInstanceDNSRecords", () => {
     const resourceNames = records.map((r) => r.metadata.name);
     const unique = new Set(resourceNames);
     assert.equal(resourceNames.length, unique.size, "resource names should be unique");
+  });
+
+  it("adds domainRef when domains config provided", () => {
+    const domains: Record<string, CombineDomainConfig> = {
+      "loom.farm": { register: true, default: true },
+    };
+    const meta = makeMeta({
+      expose: { https: { port: 443, protocol: "http" } },
+      dns: { names: ["id.loom.farm"] },
+    });
+    const records = generateInstanceDNSRecords("keycloak", gen, ns, meta, domain, domains);
+
+    const custom = records.find((r) => r.spec.name === "id.loom.farm.");
+    assert.ok(custom, "should have custom record");
+    assert.deepEqual(custom.spec.domainRef, { name: "loom.farm" });
+  });
+
+  it("auto records do NOT have domainRef", () => {
+    const domains: Record<string, CombineDomainConfig> = {
+      "loom.farm": { register: true, default: true },
+    };
+    const meta = makeMeta({
+      expose: { https: { port: 443, protocol: "http" } },
+    });
+    const records = generateInstanceDNSRecords("web", gen, ns, meta, domain, domains);
+
+    const auto = records.find((r) => r.metadata.name === "dns-web-auto");
+    assert.ok(auto, "should have auto record");
+    assert.equal(auto.spec.domainRef, undefined, "auto records should not have domainRef");
+  });
+
+  it("resolves non-FQDN names with default domain", () => {
+    const domains: Record<string, CombineDomainConfig> = {
+      "loom.farm": { register: true, default: true },
+    };
+    const meta = makeMeta({
+      expose: { https: { port: 443, protocol: "http" } },
+      dns: { names: ["www"] },
+    });
+    const records = generateInstanceDNSRecords("web", gen, ns, meta, domain, domains);
+
+    const www = records.find((r) => r.spec.name === "www.loom.farm.");
+    assert.ok(www, "should resolve bare 'www' to 'www.loom.farm.'");
+    assert.deepEqual(www.spec.domainRef, { name: "loom.farm" });
+  });
+
+  it("wildcard records also get domainRef", () => {
+    const domains: Record<string, CombineDomainConfig> = {
+      "loom.farm": { register: true, default: true },
+    };
+    const meta = makeMeta({
+      expose: { https: { port: 443, protocol: "http" } },
+      dns: { names: ["loom.farm"] },
+    });
+    const records = generateInstanceDNSRecords("web", gen, ns, meta, domain, domains);
+
+    const wildcard = records.find((r) => r.spec.name === "*.loom.farm.");
+    assert.ok(wildcard, "should have wildcard");
+    assert.deepEqual(wildcard.spec.domainRef, { name: "loom.farm" });
+  });
+});
+
+describe("resolveDNSName", () => {
+  const domains: Record<string, CombineDomainConfig> = {
+    "loom.farm": { register: true, default: true },
+    "example.com": { register: false, default: false },
+  };
+
+  it("resolves bare name with default domain", () => {
+    const result = resolveDNSName("www", domains);
+    assert.ok(result);
+    assert.equal(result.fqdn, "www.loom.farm.");
+    assert.equal(result.domain, "loom.farm");
+  });
+
+  it("recognizes FQDN under declared domain", () => {
+    const result = resolveDNSName("id.loom.farm", domains);
+    assert.ok(result);
+    assert.equal(result.fqdn, "id.loom.farm.");
+    assert.equal(result.domain, "loom.farm");
+  });
+
+  it("recognizes FQDN under non-default domain", () => {
+    const result = resolveDNSName("app.example.com", domains);
+    assert.ok(result);
+    assert.equal(result.fqdn, "app.example.com.");
+    assert.equal(result.domain, "example.com");
+  });
+
+  it("recognizes zone apex as FQDN", () => {
+    const result = resolveDNSName("loom.farm", domains);
+    assert.ok(result);
+    assert.equal(result.fqdn, "loom.farm.");
+    assert.equal(result.domain, "loom.farm");
+  });
+
+  it("appends default domain to unrecognized multi-part name", () => {
+    const result = resolveDNSName("foo.bar", domains);
+    assert.ok(result);
+    assert.equal(result.fqdn, "foo.bar.loom.farm.");
+    assert.equal(result.domain, "loom.farm");
+  });
+
+  it("handles trailing dot in input", () => {
+    const result = resolveDNSName("id.loom.farm.", domains);
+    assert.ok(result);
+    assert.equal(result.fqdn, "id.loom.farm.");
+    assert.equal(result.domain, "loom.farm");
+  });
+
+  it("returns null when no domains configured", () => {
+    const result = resolveDNSName("www", {});
+    assert.equal(result, null);
+  });
+});
+
+describe("generateDomainCRD", () => {
+  it("generates a valid SeedDomain CRD", () => {
+    const crd = generateDomainCRD(
+      "loom.farm",
+      { register: true, default: true },
+      "gen123",
+      "s-test",
+    );
+
+    assert.equal(crd.apiVersion, "seed.loom.farm/v1alpha1");
+    assert.equal(crd.kind, "SeedDomain");
+    assert.equal(crd.metadata.name, "domain-loom-farm");
+    assert.equal(crd.metadata.namespace, "s-test");
+    assert.equal(crd.spec.name, "loom.farm");
+    assert.equal(crd.spec.register, true);
+    assert.equal(crd.spec.registrar, "namesilo");
+  });
+
+  it("omits registrar for pre-owned domains", () => {
+    const crd = generateDomainCRD(
+      "example.com",
+      { register: false, default: false },
+      "gen123",
+      "s-test",
+    );
+
+    assert.equal(crd.spec.register, false);
+    assert.equal(crd.spec.registrar, undefined);
+  });
+
+  it("includes generation label", () => {
+    const crd = generateDomainCRD(
+      "loom.farm",
+      { register: true, default: true },
+      "gen456",
+      "s-test",
+    );
+
+    assert.equal(crd.metadata.labels?.["seed.loom.farm/generation"], "gen456");
+    assert.equal(crd.metadata.labels?.["seed.loom.farm/managed-by"], "seed");
   });
 });
