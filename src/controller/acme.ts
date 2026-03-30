@@ -47,6 +47,8 @@ export interface AcmeConfig {
   pdnsZone: string;
   instanceDomain: string;
   validNamespaces: Set<string>;
+  /** Additional zones from ZoneReady SeedDomains (e.g. "seed-demo.online") */
+  validZones: Set<string>;
 }
 
 // --- State ---
@@ -151,6 +153,10 @@ export function updateAcmeNamespaces(namespaces: Set<string>): void {
   if (config) config.validNamespaces = namespaces;
 }
 
+export function updateAcmeValidZones(zones: Set<string>): void {
+  if (config) config.validZones = zones;
+}
+
 // --- Domain validation ---
 
 /** Validate that a domain is authorized for a known namespace.
@@ -197,6 +203,12 @@ function validateDomain(domain: string): boolean {
     const prefix = domain.slice(0, -zoneSuffix.length);
     // Single-level subdomain only (e.g. silo.loom.farm, not a.b.loom.farm)
     if (!prefix.includes(".")) return config.validNamespaces.size > 0;
+  }
+
+  // Check against additional valid zones from SeedDomains (e.g. seed-demo.online)
+  for (const validZone of config.validZones) {
+    if (domain === validZone) return true;
+    if (domain.endsWith(`.${validZone}`)) return true;
   }
 
   return false;
@@ -874,9 +886,21 @@ async function pollLeResource(
 
 // --- pdns TXT record helpers (for LE DNS-01 challenges) ---
 
+/** Determine which pdns zone a FQDN belongs to. Checks validZones first, falls back to pdnsZone. */
+function zoneForName(fqdn: string): string {
+  const name = fqdn.endsWith(".") ? fqdn.slice(0, -1) : fqdn;
+  for (const z of config!.validZones) {
+    if (name === z || name.endsWith(`.${z}`)) {
+      return z.endsWith(".") ? z : `${z}.`;
+    }
+  }
+  return config!.pdnsZone;
+}
+
 async function pdnsPatchTxt(name: string, value: string): Promise<void> {
   const fqdn = name.endsWith(".") ? name : `${name}.`;
-  const url = `${config!.pdnsApiUrl}/api/v1/servers/localhost/zones/${config!.pdnsZone}`;
+  const zone = zoneForName(fqdn);
+  const url = `${config!.pdnsApiUrl}/api/v1/servers/localhost/zones/${zone}`;
 
   const resp = await fetch(url, {
     method: "PATCH",
@@ -907,7 +931,8 @@ async function pdnsPatchTxt(name: string, value: string): Promise<void> {
 
 async function pdnsDeleteTxt(name: string): Promise<void> {
   const fqdn = name.endsWith(".") ? name : `${name}.`;
-  const url = `${config!.pdnsApiUrl}/api/v1/servers/localhost/zones/${config!.pdnsZone}`;
+  const zone = zoneForName(fqdn);
+  const url = `${config!.pdnsApiUrl}/api/v1/servers/localhost/zones/${zone}`;
 
   const resp = await fetch(url, {
     method: "PATCH",

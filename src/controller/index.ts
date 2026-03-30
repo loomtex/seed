@@ -23,7 +23,7 @@ import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setRep
 import { readSeedIdentity, isValidIpnsCid, verifyPlantSignature } from "../shared/identity.js";
 import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
 import { startDomainController } from "./domains.js";
-import { initAcme, updateAcmeNamespaces } from "./acme.js";
+import { initAcme, updateAcmeNamespaces, updateAcmeValidZones } from "./acme.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -1558,6 +1558,7 @@ async function main(): Promise<void> {
         pdnsZone: config.pdnsZone,
         instanceDomain: config.instanceDomain,
         validNamespaces: new Set([...flakeStates.values()].map((fs) => fs.namespace)),
+        validZones: new Set(),
       });
       log("controller", "ACME endpoint enabled");
     } catch (err) {
@@ -1795,6 +1796,23 @@ async function main(): Promise<void> {
       }
 
       log("controller", `reconciliation complete (generation=${generation})`, flakePath);
+
+      // Update ACME valid zones from ZoneReady SeedDomains
+      if (config.acmeEnabled) {
+        try {
+          const domains = await clients.custom.listClusterCustomObject({
+            group: "seed.loom.farm",
+            version: "v1alpha1",
+            plural: "seeddomains",
+          }) as { items: SeedDomain[] };
+          const zones = new Set(
+            domains.items
+              .filter((d) => d.status?.zoneReady)
+              .map((d) => d.spec.name),
+          );
+          updateAcmeValidZones(zones);
+        } catch { /* SeedDomain CRD may not exist */ }
+      }
     } finally {
       fs.reconciling = false;
     }
