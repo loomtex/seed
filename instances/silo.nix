@@ -240,10 +240,10 @@ let
     ${tsJson}
     TSJSON
 
-    # Prebuilt parser from nixpkgs (matches tree-sitter ABI)
-    cp ${grammar}/parser $out/.cache/tree-sitter/lib/${name}.so
-    # Future timestamp so tree-sitter skips recompilation
-    touch -t 203001010000 $out/.cache/tree-sitter/lib/${name}.so
+    # Prebuilt parser from nixpkgs (matches tree-sitter ABI).
+    # Symlink works because nix store timestamps are all epoch,
+    # so tree-sitter's "is .so newer than source?" check passes.
+    ln -s ${grammar}/parser $out/.cache/tree-sitter/lib/${name}.so
   '') tsGrammars));
 
   tsConfig = pkgs.writeText "ts-config.json" (builtins.toJSON {
