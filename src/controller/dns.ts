@@ -8,7 +8,7 @@
 // SOA, NS, and glue records (managed by pdns-sync-zones) are untouched.
 
 import * as k8s from "@kubernetes/client-node";
-import { log } from "../shared/kube.js";
+import { log, stableStringify } from "../shared/kube.js";
 import { readFile } from "node:fs/promises";
 import type { SeedDNSRecord, SeedDNSRecordStatus, SeedDomain } from "../shared/types.js";
 
@@ -281,11 +281,22 @@ export function startDNSReconciler(
         }
       }
 
-      // Update CRD statuses
+      // Update CRD statuses — skip no-op updates to avoid informer feedback loop.
+      // Compare synced, message, and resolvedRecords; ignore lastSyncedAt.
       for (const { record, status } of statusUpdates) {
         const name = record.metadata?.name;
         const ns = record.metadata?.namespace;
         if (!name || !ns) continue;
+
+        // Skip if status hasn't meaningfully changed
+        const prev = record.status;
+        if (prev
+          && prev.synced === status.synced
+          && prev.message === status.message
+          && stableStringify(prev.resolvedRecords) === stableStringify(status.resolvedRecords)) {
+          continue;
+        }
+
         try {
           const existing = await custom.getNamespacedCustomObject({
             group: CRD_GROUP,
