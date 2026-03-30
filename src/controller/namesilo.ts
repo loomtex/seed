@@ -38,12 +38,16 @@ export async function checkAvailability(
     log(COMPONENT, `availability check failed for ${domain}: ${reply.detail}`);
     return false;
   }
-  // Available domains appear in reply.available.domain (string or array)
-  const available = (data as { reply?: { available?: { domain?: string | string[] } } })
+  // Available domains appear in reply.available.domain (string, object with
+  // text in "$t", or array of either — NameSilo XML-to-JSON is inconsistent)
+  const available = (data as { reply?: { available?: { domain?: unknown } } })
     .reply?.available?.domain;
   if (!available) return false;
   const list = Array.isArray(available) ? available : [available];
-  return list.some((d) => d.toLowerCase() === domain.toLowerCase());
+  return list.some((d) => {
+    const name = typeof d === "string" ? d : (d as Record<string, unknown>)?.["$t"] ?? String(d);
+    return String(name).toLowerCase() === domain.toLowerCase();
+  });
 }
 
 /** Register a domain with NS delegation to our nameservers. */
