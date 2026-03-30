@@ -294,9 +294,14 @@ in {
         (lib.mapAttrsToList (_: e: e.port))
       ];
 
-    # ACME directory URL is injected as SEED_ACME_URL env var by the controller.
-    # Write it to /seed/acme/directory for services that read files.
-    # The env var is captured from PID 1 at /run/seed/env by instance-base.nix.
+    # When ACME is enabled, configure security.acme to use the platform's
+    # embedded ACME endpoint. NixOS requires acceptTerms + email even though
+    # our internal server doesn't use them (it proxies to LE server-side).
+    security.acme = lib.mkIf cfg.acme {
+      acceptTerms = true;
+      defaults.server = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
+      defaults.email = lib.mkDefault "acme@seed.loom.farm";
+    };
 
     # Service discovery: environment variables
     environment.sessionVariables = lib.mapAttrs'

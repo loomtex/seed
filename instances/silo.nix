@@ -10,7 +10,6 @@ let
   reposDir = "/seed/storage/repos";
   # Dotfile so cgit scan-path skips it (hidden dirs are ignored)
   hostKeyDir = "${reposDir}/.ssh-host-keys";
-  acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 
   # silo-shell — forced command for git operations
   #
@@ -561,13 +560,6 @@ in {
     ];
   };
 
-  # TLS certificates via platform ACME endpoint (controller proxies DNS-01 to LE)
-  # security.acme — nginx's enableACME auto-adds serverAliases as SANs
-  security.acme = {
-    acceptTerms = true;
-    defaults.server = acmeServer;
-    defaults.email = "acme@loom.farm";
-  };
 
   networking.firewall.allowedTCPPorts = [ 22 80 443 ];
 
