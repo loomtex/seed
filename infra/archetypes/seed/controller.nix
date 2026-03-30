@@ -32,6 +32,7 @@
       apiUrl = "http://dns.s-gaydazldmnsg.svc.cluster.local:8081";
       apiKeyFile = "/etc/seed/secrets/pdns-api-key";
     };
+    registrar.apiKeyFile = "/etc/seed/secrets/namesilo-api-key";
     acme.accountKey = config.sops.placeholder."seed/controller/acme-account-key";
   };
 
