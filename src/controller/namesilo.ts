@@ -99,19 +99,21 @@ export async function getDomainInfo(
     return null;
   }
 
+  // NameSilo returns nameservers as an array of { nameserver, position } objects
   const info = (data as {
     reply?: {
-      nameservers?: { nameserver?: string | string[] };
+      nameservers?: { nameserver: string; position: number }[] | { nameserver: string; position: number };
       expires?: string;
       locked?: string;
       status?: string;
     };
   }).reply;
 
-  const rawNs = info?.nameservers?.nameserver;
-  const nameservers = rawNs
+  const rawNs = info?.nameservers;
+  const nsList = rawNs
     ? (Array.isArray(rawNs) ? rawNs : [rawNs])
     : [];
+  const nameservers = nsList.map((ns) => ns.nameserver);
 
   return {
     nameservers,
