@@ -225,6 +225,35 @@ let
     # Highlight + injection queries
     for f in ${grammar}/queries/*; do ln -s "$f" $DIR/queries/; done
 
+    # Append filename-based injections for nix: func "file.ext" ''content''
+    if [ "$name" = "nix" ]; then
+      rm $DIR/queries/injections.scm
+      cp ${grammar}/queries/injections.scm $DIR/queries/injections.scm
+      cat >> $DIR/queries/injections.scm << 'INJECT'
+${lib.concatMapStrings ({ ext, lang }: ''
+
+((apply_expression
+   function: (apply_expression
+     argument: (string_expression (string_fragment) @_filename))
+   argument: (indented_string_expression (string_fragment) @injection.content))
+ (#match? @_filename "\\.${ext}$")
+ (#set! injection.language "${lang}")
+ (#set! injection.combined))
+'') [
+  { ext = "html?";  lang = "html"; }
+  { ext = "css";    lang = "css"; }
+  { ext = "m?js";   lang = "javascript"; }
+  { ext = "ts";     lang = "typescript"; }
+  { ext = "json";   lang = "json"; }
+  { ext = "ya?ml";  lang = "yaml"; }
+  { ext = "toml";   lang = "toml"; }
+  { ext = "lua";    lang = "lua"; }
+  { ext = "py";     lang = "python"; }
+  { ext = "nix";    lang = "nix"; }
+]}
+INJECT
+    fi
+
     # tree-sitter.json metadata (language discovery)
     cat > $DIR/tree-sitter.json << 'TSJSON'
     ${tsJson}
