@@ -247,7 +247,7 @@ let
     # Append filename-based injection rules for nix indented strings.
     # Generated from tsGrammars — any grammar with file extensions gets
     # an injection rule matching that extension in nix string arguments.
-    if [ "$name" = "nix" ]; then
+    if [ "${name}" = "nix" ]; then
       rm $DIR/queries/injections.scm
       cp ${grammar}/queries/injections.scm $DIR/queries/injections.scm
       cat >> $DIR/queries/injections.scm < ${nixInjectionRules}
