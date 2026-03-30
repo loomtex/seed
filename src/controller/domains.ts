@@ -275,10 +275,61 @@ export function startDomainController(
         plural: CRD_PLURAL,
       }) as { items: SeedDomain[] };
 
+      // Build conflict map: domain name → oldest CRD (by creation timestamp).
+      // If two namespaces declare the same domain, only the first one wins.
+      const domainOwner = new Map<string, { ns: string; created: string }>();
+      for (const d of result.items) {
+        const dName = d.spec.name;
+        const dNs = d.metadata?.namespace ?? "";
+        const dCreated = String(d.metadata?.creationTimestamp ?? "");
+        const existing = domainOwner.get(dName);
+        if (!existing || dCreated < existing.created) {
+          domainOwner.set(dName, { ns: dNs, created: dCreated });
+        }
+      }
+
       for (const domain of result.items) {
         const name = domain.metadata?.name;
         const ns = domain.metadata?.namespace;
         if (!name || !ns) continue;
+
+        // Conflict check: reject if another namespace owns this domain
+        const owner = domainOwner.get(domain.spec.name);
+        if (owner && owner.ns !== ns) {
+          const prev = domain.status;
+          const errMsg = `domain ${domain.spec.name} is already claimed by namespace ${owner.ns}`;
+          if (prev?.phase !== "Error" || prev?.message !== errMsg) {
+            try {
+              const existing = await custom.getNamespacedCustomObject({
+                group: CRD_GROUP,
+                version: CRD_VERSION,
+                namespace: ns,
+                plural: CRD_PLURAL,
+                name,
+              }) as SeedDomain;
+              existing.status = {
+                phase: "Error",
+                registered: false,
+                nsConfigured: false,
+                zoneReady: false,
+                message: errMsg,
+                lastSyncedAt: new Date().toISOString(),
+              };
+              await custom.replaceNamespacedCustomObjectStatus({
+                group: CRD_GROUP,
+                version: CRD_VERSION,
+                namespace: ns,
+                plural: CRD_PLURAL,
+                name,
+                body: existing,
+              });
+              log(COMPONENT, `${domain.spec.name}: conflict — ${errMsg}`);
+            } catch (err) {
+              log(COMPONENT, `conflict status update failed for ${name}: ${err}`);
+            }
+          }
+          continue;
+        }
 
         // Skip if already in terminal state and not due for refresh
         if (domain.status?.phase === "ZoneReady" && domain.status?.zoneReady) {
