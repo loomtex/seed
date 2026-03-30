@@ -434,6 +434,7 @@ let
 in
 {
   seed.expose.ssh.enable = true;
+  seed.dns.names = [ "seed.loom.farm" ];
 
   environment.systemPackages = [ shellCmd ];
 

@@ -13,6 +13,7 @@ in
 {
   seed.expose.http.enable = true;
   seed.expose.https.enable = true;
+  seed.dns.names = [ "loom.farm" "www.loom.farm" ];
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
 
   # security.acme — nginx's enableACME auto-adds serverAliases as SANs

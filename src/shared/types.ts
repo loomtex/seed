@@ -50,6 +50,10 @@ export interface SeedShootConfig {
   enable: boolean;
 }
 
+export interface SeedDnsConfig {
+  names?: string[];
+}
+
 export interface SeedMeta {
   name: string;
   system: string;
@@ -61,6 +65,7 @@ export interface SeedMeta {
   rollout?: "recreate" | "rolling";
   acme?: boolean;
   shoot?: SeedShootConfig;
+  dns?: SeedDnsConfig;
 }
 
 // --- Route blocks (from nix eval of flake outputs) ---
@@ -101,6 +106,7 @@ export interface InstanceState {
   ingressService: k8s.V1Service | null;
   pvcs: k8s.V1PersistentVolumeClaim[];
   hostTask: SeedHostTask | null;
+  dnsRecords: SeedDNSRecord[];
 }
 
 export interface DesiredState {
@@ -141,6 +147,36 @@ export interface SeedFlake {
   metadata: k8s.V1ObjectMeta;
   spec: SeedFlakeSpec;
   status?: SeedFlakeStatus;
+}
+
+// --- SeedDNSRecord CRD ---
+
+export interface SeedDNSRecordSourceRef {
+  kind: "Service";
+  name: string;
+}
+
+export interface SeedDNSRecordSpec {
+  name: string;
+  type: "A" | "AAAA" | "CNAME";
+  ttl: number;
+  records?: { content: string }[];
+  sourceRef?: SeedDNSRecordSourceRef;
+}
+
+export interface SeedDNSRecordStatus {
+  synced: boolean;
+  resolvedRecords?: { content: string }[];
+  message: string;
+  lastSyncedAt: string;
+}
+
+export interface SeedDNSRecord {
+  apiVersion: "seed.loom.farm/v1alpha1";
+  kind: "SeedDNSRecord";
+  metadata: k8s.V1ObjectMeta;
+  spec: SeedDNSRecordSpec;
+  status?: SeedDNSRecordStatus;
 }
 
 // --- Controller configuration ---

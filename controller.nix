@@ -102,6 +102,84 @@ let
     };
   });
 
+  # SeedDNSRecord CRD definition
+  seedDNSRecordCRD = pkgs.writeText "seed-dnsrecord-crd.yaml" (builtins.toJSON {
+    apiVersion = "apiextensions.k8s.io/v1";
+    kind = "CustomResourceDefinition";
+    metadata.name = "seeddnsrecords.seed.loom.farm";
+    spec = {
+      group = "seed.loom.farm";
+      versions = [{
+        name = "v1alpha1";
+        served = true;
+        storage = true;
+        schema.openAPIV3Schema = {
+          type = "object";
+          properties = {
+            spec = {
+              type = "object";
+              properties = {
+                name = { type = "string"; };
+                type = { type = "string"; enum = [ "A" "AAAA" "CNAME" ]; };
+                ttl = { type = "integer"; };
+                records = {
+                  type = "array";
+                  items = {
+                    type = "object";
+                    properties = {
+                      content = { type = "string"; };
+                    };
+                    required = [ "content" ];
+                  };
+                };
+                sourceRef = {
+                  type = "object";
+                  properties = {
+                    kind = { type = "string"; };
+                    name = { type = "string"; };
+                  };
+                  required = [ "kind" "name" ];
+                };
+              };
+              required = [ "name" "type" "ttl" ];
+            };
+            status = {
+              type = "object";
+              properties = {
+                synced = { type = "boolean"; };
+                resolvedRecords = {
+                  type = "array";
+                  items = {
+                    type = "object";
+                    properties = {
+                      content = { type = "string"; };
+                    };
+                  };
+                };
+                message = { type = "string"; };
+                lastSyncedAt = { type = "string"; };
+              };
+            };
+          };
+        };
+        subresources.status = {};
+        additionalPrinterColumns = [
+          { name = "DNS Name"; type = "string"; jsonPath = ".spec.name"; }
+          { name = "Type"; type = "string"; jsonPath = ".spec.type"; }
+          { name = "Synced"; type = "boolean"; jsonPath = ".status.synced"; }
+          { name = "Age"; type = "date"; jsonPath = ".metadata.creationTimestamp"; }
+        ];
+      }];
+      scope = "Namespaced";
+      names = {
+        plural = "seeddnsrecords";
+        singular = "seeddnsrecord";
+        kind = "SeedDNSRecord";
+        shortNames = [ "sdr" ];
+      };
+    };
+  });
+
   # Namespace for seed system components
   seedSystemNS = "seed-system";
 
@@ -169,6 +247,11 @@ let
       {
         apiGroups = [ "seed.loom.farm" ];
         resources = [ "seedflakes" "seedflakes/status" ];
+        verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
+      }
+      {
+        apiGroups = [ "seed.loom.farm" ];
+        resources = [ "seeddnsrecords" "seeddnsrecords/status" ];
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
     ];
@@ -502,6 +585,7 @@ let
       { name = "01-namespace.json"; path = seedSystemNamespace; }
       { name = "02-hosttask-crd.json"; path = seedHostTaskCRD; }
       { name = "02-flake-crd.json"; path = seedFlakeCRD; }
+      { name = "02-dnsrecord-crd.json"; path = seedDNSRecordCRD; }
       { name = "03-controller-sa.json"; path = controllerSA; }
       { name = "03-builder-sa.json"; path = builderSA; }
       { name = "04-controller-role.json"; path = controllerRole; }

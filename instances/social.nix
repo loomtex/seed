@@ -30,6 +30,7 @@ let
   gts = "${gotosocial-nowasm}/bin/gotosocial --config-path ${adminConfig}";
 in {
   seed.expose.https.enable = true;
+  seed.dns.names = [ "social.loom.farm" ];
   seed.storage.data = "5Gi";
   seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
 

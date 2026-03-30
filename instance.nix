@@ -159,6 +159,20 @@ in {
       '';
     };
 
+    dns = {
+      names = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        example = [ "id.loom.farm" "loom.farm" ];
+        description = ''
+          Custom DNS names for this instance. Each name gets an AAAA record
+          pointing at the instance's ingress IPv6 address (from MetalLB).
+          Zone apex names (e.g. "loom.farm") automatically generate a wildcard
+          record (*.loom.farm) too.
+        '';
+      };
+    };
+
     shoot = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -199,6 +213,7 @@ in {
       rollout = cfg.rollout;
       acme = cfg.acme;
       shoot = lib.optionalAttrs cfg.shoot.enable { enable = true; };
+      dns = lib.optionalAttrs (cfg.dns.names != []) { names = cfg.dns.names; };
     };
 
     # seed-shoot wrapper script

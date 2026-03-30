@@ -495,6 +495,7 @@ in {
   seed.expose.ssh.enable = true;
   seed.expose.https.enable = true;
   seed.expose.http.enable = true;
+  seed.dns.names = [ "silo.loom.farm" ];
   seed.storage.repos = "10Gi";
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
   seed.shoot.enable = true;

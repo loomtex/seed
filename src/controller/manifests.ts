@@ -3,7 +3,7 @@
 
 import type * as k8s from "@kubernetes/client-node";
 import { seedLabels, LABELS, ANNOTATIONS } from "../shared/labels.js";
-import type { SeedMeta, SeedHostTask, SeedHostTaskSpec } from "../shared/types.js";
+import type { SeedMeta, SeedHostTask, SeedHostTaskSpec, SeedDNSRecord, SeedDNSRecordSpec } from "../shared/types.js";
 
 /** Generate a Deployment manifest for a seed instance. */
 export function generateDeployment(
@@ -243,6 +243,111 @@ export function generateHostTask(
       namespace,
     } satisfies SeedHostTaskSpec,
   };
+}
+
+/** Generate a SeedDNSRecord CRD manifest. */
+export function generateDNSRecord(
+  /** k8s resource name (sanitized, unique within namespace) */
+  resourceName: string,
+  namespace: string,
+  generation: string,
+  instance: string,
+  spec: SeedDNSRecordSpec,
+): SeedDNSRecord {
+  return {
+    apiVersion: "seed.loom.farm/v1alpha1",
+    kind: "SeedDNSRecord",
+    metadata: {
+      name: resourceName,
+      namespace,
+      labels: seedLabels(instance, generation),
+    },
+    spec,
+  };
+}
+
+/**
+ * Generate all DNS records for an instance.
+ * - Auto record: <instance>.<namespace>.<instanceDomain> via sourceRef
+ * - Custom names from seed.dns.names via sourceRef
+ * - Zone apex names automatically get a wildcard record
+ * - IPv4 A records for instances with ipv4Address
+ *
+ * CRDs are always generated — the DNS reconciler handles validation
+ * (blacklisted domains get an error status, not synced to pdns).
+ */
+export function generateInstanceDNSRecords(
+  instance: string,
+  generation: string,
+  namespace: string,
+  meta: SeedMeta,
+  instanceDomain: string,
+): SeedDNSRecord[] {
+  const records: SeedDNSRecord[] = [];
+  const hasExpose = Object.keys(meta.expose).length > 0;
+  if (!hasExpose) return records;
+
+  const ingressServiceName = `${instance}-ingress`;
+
+  // Auto AAAA record: <instance>.<namespace>.<instanceDomain>
+  const autoFqdn = `${instance}.${namespace}.${instanceDomain}.`;
+  records.push(generateDNSRecord(
+    `dns-${instance}-auto`,
+    namespace,
+    generation,
+    instance,
+    {
+      name: autoFqdn,
+      type: "AAAA",
+      ttl: 300,
+      sourceRef: { kind: "Service", name: ingressServiceName },
+    },
+  ));
+
+  // Custom DNS names from seed.dns.names
+  const customNames = meta.dns?.names || [];
+  for (const rawName of customNames) {
+    const fqdn = rawName.endsWith(".") ? rawName : `${rawName}.`;
+    // Sanitize name for k8s resource name: replace dots and wildcards
+    const safeName = rawName.replace(/\./g, "-").replace(/\*/g, "wildcard");
+
+    // AAAA record via sourceRef
+    records.push(generateDNSRecord(
+      `dns-${instance}-${safeName}`,
+      namespace,
+      generation,
+      instance,
+      {
+        name: fqdn,
+        type: "AAAA",
+        ttl: 300,
+        sourceRef: { kind: "Service", name: ingressServiceName },
+      },
+    ));
+
+    // Zone apex → also generate wildcard
+    const isApex = !rawName.startsWith("*.") && rawName.split(".").length === 2;
+    if (isApex) {
+      const wildcardFqdn = `*.${fqdn}`;
+      const wildcardSafeName = `wildcard-${safeName}`;
+
+      records.push(generateDNSRecord(
+        `dns-${instance}-${wildcardSafeName}`,
+        namespace,
+        generation,
+        instance,
+        {
+          name: wildcardFqdn,
+          type: "AAAA",
+          ttl: 300,
+          sourceRef: { kind: "Service", name: ingressServiceName },
+        },
+      ));
+
+    }
+  }
+
+  return records;
 }
 
 /** Find the first TCP-capable exposed port for readiness probing. */

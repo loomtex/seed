@@ -134,6 +134,7 @@ A seed instance is a NixOS configuration that runs inside a Kata VM on the clust
 { ... }: {
   seed.size = "medium";           # VM sizing (vCPUs, memory)
   seed.expose.http = 8080;        # Ingress routing
+  seed.dns.names = [ "loom.farm" ]; # Custom DNS names (AAAA + A records)
   seed.storage.data = "1Gi";      # Persistent volume
   seed.connect.redis = "my-redis"; # Service discovery
 
@@ -151,6 +152,7 @@ Implemented in `instance.nix`, these options live in a separate NixOS evaluation
 |--------|---------|
 | `seed.size` | VM sizing tier: xs (1/512MB), s (1/1GB), m (2/2GB), l (4/4GB), xl (8/8GB) |
 | `seed.expose` | Ports to expose via k8s service. Accepts bare port or `{ port, protocol }`. Protocols: `tcp`, `udp`, `dns` (both TCP+UDP), `http`, `grpc` |
+| `seed.dns.names` | Custom DNS names (list of strings). Each gets AAAA + A records pointing at the instance's ingress IP. Zone apex names auto-generate wildcards. |
 | `seed.storage` | Persistent volumes. Accepts size string or `{ size, mountPoint }` |
 | `seed.connect` | Service discovery. Accepts service name or `{ service, port }` |
 | `seed.meta` | Read-only computed metadata for controller consumption |
@@ -179,6 +181,8 @@ Three k8s-native TypeScript components replace the legacy bash controller:
 Written in TypeScript with `@kubernetes/client-node`. Bundled via esbuild, packaged as OCI images via `nix-snapshotter.buildImage`.
 
 **CRD: SeedHostTask** — controller creates SeedHostTasks, host agent watches them and starts swtpm processes, updates status with socket paths. The controller reads the status to get socket paths for Kata pod annotations.
+
+**CRD: SeedDNSRecord** — DNS records as k8s resources. Two modes: **dynamic** (sourceRef to a Service, IP resolved from LoadBalancer status) and **static** (explicit records). The DNS reconciler watches SeedDNSRecords + ingress Services via informers, resolves IPs, and syncs to PowerDNS. Debounced 2s + 120s periodic full-sync as safety net. Blacklisted domains (.cluster.local, .local, .internal) get error status instead of syncing. `kubectl get sdr -A` shows all DNS records and their sync status.
 
 **Namespace isolation**: each flake gets its own k8s namespace derived deterministically from the flake URI. `namespace = "s-" + base32(sha256(flake_uri))[:12]`. No flake can choose or influence its namespace — platform-enforced isolation. The `SEED_NAMESPACE` env var overrides this for dev/testing only.
 

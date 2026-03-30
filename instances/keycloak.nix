@@ -12,6 +12,7 @@ let
 in {
   seed.size = "l";
   seed.expose.https.enable = true;
+  seed.dns.names = [ "id.loom.farm" ];
   seed.storage.data = "5Gi";
   seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
 

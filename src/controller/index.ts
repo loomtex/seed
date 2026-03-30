@@ -12,8 +12,8 @@
 import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, makeClients, deriveNamespace, deriveNamespaceFromIdentity, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
-import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult } from "../shared/types.js";
-import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask } from "./manifests.js";
+import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult, SeedDNSRecord } from "../shared/types.js";
+import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask, generateInstanceDNSRecords } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
@@ -21,7 +21,7 @@ import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
 import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, type KeyIndex, type NamespaceEntry } from "./api.js";
 import { readSeedIdentity, isValidIpnsCid, verifyPlantSignature } from "../shared/identity.js";
-import { registerDNSRecords, deleteDNSRecords, loadPdnsApiKey } from "./dns.js";
+import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
 import { initAcme, updateAcmeNamespaces } from "./acme.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -263,7 +263,15 @@ export function renderDesiredState(
       ? generateHostTask(name, namespace, generation)
       : null;
 
-    instances.set(name, { imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, hostTask });
+    const dnsRecords = generateInstanceDNSRecords(
+      name,
+      generation,
+      namespace,
+      meta,
+      instanceDomain || "seed.loom.farm",
+    );
+
+    instances.set(name, { imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, hostTask, dnsRecords });
   }
 
   // Route services
@@ -479,6 +487,49 @@ async function applyDesiredState(
       log("controller", `route service error: ${err}`);
     }
   }
+
+  // Apply SeedDNSRecords
+  for (const [name, instance] of desired.instances) {
+    for (const dnsRecord of instance.dnsRecords) {
+      try {
+        const existing = await clients.custom.getNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seeddnsrecords",
+          name: dnsRecord.metadata!.name!,
+        }) as SeedDNSRecord;
+        // Update generation label if changed
+        const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
+        if (existingGen !== desired.generation) {
+          existing.metadata = existing.metadata || {};
+          existing.metadata.labels = {
+            ...existing.metadata.labels,
+            ...dnsRecord.metadata!.labels,
+          };
+          existing.spec = dnsRecord.spec;
+          await clients.custom.replaceNamespacedCustomObject({
+            group: "seed.loom.farm",
+            version: "v1alpha1",
+            namespace,
+            plural: "seeddnsrecords",
+            name: dnsRecord.metadata!.name!,
+            body: existing,
+          });
+          log("controller", `updated SeedDNSRecord ${dnsRecord.metadata!.name}`, name);
+        }
+      } catch {
+        await clients.custom.createNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seeddnsrecords",
+          body: dnsRecord,
+        });
+        log("controller", `created SeedDNSRecord ${dnsRecord.metadata!.name}`, name);
+      }
+    }
+  }
 }
 
 /**
@@ -496,6 +547,7 @@ async function reapOldResources(
   const desiredDeployments = new Set<string>();
   const desiredServices = new Set<string>();
   const desiredHostTasks = new Set<string>();
+  const desiredDNSRecords = new Set<string>();
 
   for (const [, instance] of desired.instances) {
     const depName = instance.deployment.metadata?.name;
@@ -511,6 +563,10 @@ async function reapOldResources(
     if (instance.hostTask) {
       const name = instance.hostTask.metadata?.name;
       if (name) desiredHostTasks.add(name);
+    }
+    for (const dnsRecord of instance.dnsRecords) {
+      const name = dnsRecord.metadata?.name;
+      if (name) desiredDNSRecords.add(name);
     }
   }
   for (const svc of [...desired.routes.ipv4, ...desired.routes.ipv6]) {
@@ -575,6 +631,31 @@ async function reapOldResources(
     }
   } catch (err) {
     log("controller", `error reaping SeedHostTasks: ${err}`);
+  }
+
+  // Reap SeedDNSRecords not in desired state
+  try {
+    const dnsRecords = await clients.custom.listNamespacedCustomObject({
+      group: "seed.loom.farm",
+      version: "v1alpha1",
+      namespace,
+      plural: "seeddnsrecords",
+    }) as { items: SeedDNSRecord[] };
+    for (const record of dnsRecords.items) {
+      const name = record.metadata?.name;
+      if (name && !desiredDNSRecords.has(name)) {
+        log("controller", `reaping SeedDNSRecord: ${name}`);
+        await clients.custom.deleteNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seeddnsrecords",
+          name,
+        });
+      }
+    }
+  } catch (err) {
+    log("controller", `error reaping SeedDNSRecords: ${err}`);
   }
 
   // PVCs are never reaped
@@ -663,6 +744,7 @@ async function loadExistingDesired(
         ingressService: null,
         pvcs: [],
         hostTask: null,
+        dnsRecords: [],
       });
     }
   } catch {
@@ -947,80 +1029,6 @@ function findDesiredService(
     if (svc.metadata?.name === name) return svc;
   }
   return null;
-}
-
-// --- DNS auto-registration ---
-
-/**
- * Read assigned IPv6 addresses from ingress services and register AAAA records.
- * Waits briefly for MetalLB to assign IPs if not yet available.
- */
-async function registerInstanceDNS(
-  clients: ReturnType<typeof makeClients>,
-  config: ControllerConfig,
-  pdnsApiKey: string,
-  namespace: string,
-  desired: DesiredState,
-): Promise<void> {
-  const instanceIPs = new Map<string, string[]>();
-  const pendingInstances: string[] = [];
-
-  // Collect instances that have ingress services
-  for (const [name, instance] of desired.instances) {
-    if (!instance.ingressService) continue;
-    pendingInstances.push(name);
-  }
-
-  if (pendingInstances.length === 0) return;
-
-  // Wait for MetalLB to assign IPs (up to 30s)
-  const maxWait = 30_000;
-  const pollInterval = 2_000;
-  const start = Date.now();
-
-  while (Date.now() - start < maxWait) {
-    const remaining: string[] = [];
-    for (const name of pendingInstances) {
-      const svcName = `${name}-ingress`;
-      try {
-        const svc = await clients.core.readNamespacedService({ name: svcName, namespace });
-        const ingress = svc.status?.loadBalancer?.ingress;
-        if (ingress && ingress.length > 0) {
-          const ips = ingress.map((i) => i.ip).filter((ip): ip is string => !!ip);
-          if (ips.length > 0) {
-            instanceIPs.set(name, ips);
-            continue;
-          }
-        }
-      } catch {
-        // Service might not exist yet
-      }
-      remaining.push(name);
-    }
-
-    if (remaining.length === 0) break;
-    pendingInstances.length = 0;
-    pendingInstances.push(...remaining);
-    await sleep(pollInterval);
-  }
-
-  if (pendingInstances.length > 0) {
-    log("dns", `warning: no IP assigned for ingress services: ${pendingInstances.map((n) => `${n}-ingress`).join(", ")}`);
-  }
-
-  // Register AAAA records
-  try {
-    await registerDNSRecords(
-      config.pdnsApiUrl,
-      pdnsApiKey,
-      config.pdnsZone,
-      namespace,
-      config.instanceDomain,
-      instanceIPs,
-    );
-  } catch (err) {
-    log("dns", `DNS registration failed: ${err}`);
-  }
 }
 
 // --- SeedFlake CRD helpers ---
@@ -1670,11 +1678,6 @@ async function main(): Promise<void> {
       // Reap resources not in desired state
       await reapOldResources(clients, namespace, desired);
 
-      // DNS auto-registration: read assigned IPv6 from ingress services, register AAAA records
-      if (pdnsApiKey) {
-        await registerInstanceDNS(clients, config, pdnsApiKey, namespace, desired);
-      }
-
       fs.desired = desired;
 
       // Update SeedFlake status if this flake came from a CRD
@@ -1722,20 +1725,10 @@ async function main(): Promise<void> {
   // Start k8s API watches for drift correction (cluster-wide).
   startWatches(kc, clients, flakeStates, namespaceToFlake);
 
-  // Periodic DNS sync — re-register instance AAAA records every 60s.
-  // Catches drift from pdns restarts (records wiped on boot) without requiring
-  // a full reconciliation.
-  if (pdnsApiKey) {
-    setInterval(async () => {
-      for (const [, fs] of flakeStates) {
-        if (!fs.desired || fs.reconciling) continue;
-        try {
-          await registerInstanceDNS(clients, config, pdnsApiKey, fs.namespace, fs.desired);
-        } catch (err) {
-          log("controller", `periodic DNS sync failed for ${fs.namespace}: ${err}`);
-        }
-      }
-    }, 60_000);
+  // Start DNS reconciler — watches SeedDNSRecord CRDs and syncs to pdns.
+  // Replaces the old registerInstanceDNS polling + 60s periodic timer.
+  if (pdnsApiKey && config.pdnsApiUrl) {
+    startDNSReconciler(kc, clients.core, clients.custom, config.pdnsApiUrl, pdnsApiKey, config.pdnsZone);
   }
 
   // Event-driven loop: wait for webhook, then reconcile only affected flakes.

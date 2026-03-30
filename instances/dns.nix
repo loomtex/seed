@@ -11,6 +11,9 @@
 let
   zone = "loom.farm.";
 
+  # Bootstrap records only — SOA, NS, and glue.
+  # All application records (A, AAAA, CNAME) are managed by SeedDNSRecord CRDs
+  # and synced to pdns by the controller's DNS reconciler.
   rrsets = [
     { name = zone; type = "SOA"; ttl = 300;
       records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026031301 10800 3600 604800 300"; }]; }
@@ -24,39 +27,6 @@ let
       records = [{ content = "96.30.193.227"; }]; }
     { name = "ns2.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::2"; }]; }
-
-    # Namespace wildcard — all instances in our namespace
-    { name = "*.s-gaydazldmnsg.seed.${zone}"; type = "A"; ttl = 300;
-      records = [{ content = "96.30.193.227"; }]; }
-    { name = "*.s-gaydazldmnsg.seed.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::3"; }]; }
-
-    # Silo — IPv6-only ingress (HTTPS + SSH via silo's own LoadBalancer)
-    { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::8"; }]; }
-
-    # Social — GoToSocial fediverse instance
-    { name = "social.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::9"; }]; }
-
-    # Keycloak — OIDC identity provider
-    { name = "id.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::a"; }]; }
-
-    # Seed shell — SSH management interface (shell ingress service)
-    { name = "seed.${zone}"; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::5"; }]; }
-
-    # www.loom.farm → web instance
-    { name = "www.${zone}"; type = "CNAME"; ttl = 300;
-      records = [{ content = zone; }]; }
-
-    # Zone apex — can't CNAME at apex, use A/AAAA
-    # IPv4 still goes through gateway (shared IP), IPv6 goes direct to web
-    { name = zone; type = "A"; ttl = 300;
-      records = [{ content = "96.30.193.227"; }]; }
-    { name = zone; type = "AAAA"; ttl = 300;
-      records = [{ content = "2001:19f0:5400:20a7::7"; }]; }
   ];
 
   zoneData = pkgs.writeText "loom-farm-zone.json" (builtins.toJSON {
