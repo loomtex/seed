@@ -194,6 +194,25 @@ let
     make       = { pkg = tree-sitter-make;       exts = [ "mk" "Makefile" ];  injection = "^(make|makefile)$"; };
   };
 
+  # Filename-based injection rules for nix indented strings.
+  # Appended to the nix grammar's injections.scm so tree-sitter
+  # highlights content in: func "file.ext" ''content''
+  nixInjectionRules = pkgs.writeText "nix-injection-rules.scm"
+    (lib.concatStrings (lib.mapAttrsToList (lang: cfg:
+      let extPattern = if builtins.length cfg.exts == 1
+        then builtins.head cfg.exts
+        else "(${lib.concatStringsSep "|" cfg.exts})";
+      in ''
+
+        ((apply_expression
+           function: (apply_expression
+             argument: (string_expression (string_fragment) @_filename))
+           argument: (indented_string_expression (string_fragment) @injection.content))
+         (#match? @_filename "\\.${extPattern}$")
+         (#set! injection.language "${lang}")
+         (#set! injection.combined))
+      '') tsGrammars));
+
   # Assemble grammar directories + prebuilt parser cache
   tsGrammarDir = pkgs.runCommand "ts-grammars" {} (''
     mkdir -p $out/.cache/tree-sitter/lib
@@ -225,28 +244,13 @@ let
     # Highlight + injection queries
     for f in ${grammar}/queries/*; do ln -s "$f" $DIR/queries/; done
 
-    # Append filename-based injections for nix: func "file.ext" ''content''
+    # Append filename-based injection rules for nix indented strings.
     # Generated from tsGrammars — any grammar with file extensions gets
     # an injection rule matching that extension in nix string arguments.
     if [ "$name" = "nix" ]; then
       rm $DIR/queries/injections.scm
       cp ${grammar}/queries/injections.scm $DIR/queries/injections.scm
-      cat >> $DIR/queries/injections.scm << 'INJECT'
-${lib.concatStrings (lib.mapAttrsToList (lang: cfg:
-  let extPattern = if builtins.length cfg.exts == 1
-    then builtins.head cfg.exts
-    else "(${lib.concatStringsSep "|" cfg.exts})";
-  in ''
-
-((apply_expression
-   function: (apply_expression
-     argument: (string_expression (string_fragment) @_filename))
-   argument: (indented_string_expression (string_fragment) @injection.content))
- (#match? @_filename "\\.${extPattern}$")
- (#set! injection.language "${lang}")
- (#set! injection.combined))
-'') tsGrammars)}
-INJECT
+      cat >> $DIR/queries/injections.scm < ${nixInjectionRules}
     fi
 
     # tree-sitter.json metadata (language discovery)
