@@ -271,6 +271,7 @@ export function startDNSReconciler(
   informer.on("delete", () => scheduleReconcile());
   informer.on("error", (err) => {
     log("dns", `informer error: ${err}`);
+    setTimeout(() => informer.start(), 5_000);
   });
   informer.on("connect", () => {
     log("dns", "informer connected");
@@ -294,6 +295,7 @@ export function startDNSReconciler(
   svcInformer.on("update", () => scheduleReconcile());
   svcInformer.on("error", (err) => {
     log("dns", `service informer error: ${err}`);
+    setTimeout(() => svcInformer.start(), 5_000);
   });
 
   svcInformer.start();

@@ -11,9 +11,13 @@
 let
   zone = "loom.farm.";
 
-  # Bootstrap records only — SOA, NS, and glue.
-  # All application records (A, AAAA, CNAME) are managed by SeedDNSRecord CRDs
-  # and synced to pdns by the controller's DNS reconciler.
+  # Bootstrap records — SOA, NS, glue, and infrastructure hosts.
+  # Application records are managed by SeedDNSRecord CRDs and synced to pdns
+  # by the controller's DNS reconciler.
+  #
+  # silo.loom.farm is included here because the controller needs to resolve it
+  # to fetch flakes — it must exist before the CRD reconciler can run.
+  # The CRD reconciler uses REPLACE (idempotent), so both sources coexist safely.
   rrsets = [
     { name = zone; type = "SOA"; ttl = 300;
       records = [{ content = "ns1.loom.farm. hostmaster.loom.farm. 2026031301 10800 3600 604800 300"; }]; }
@@ -27,6 +31,10 @@ let
       records = [{ content = "96.30.193.227"; }]; }
     { name = "ns2.${zone}"; type = "AAAA"; ttl = 300;
       records = [{ content = "2001:19f0:5400:20a7::2"; }]; }
+    # Bootstrap: silo is the git server the controller fetches flakes from.
+    # Address is the IPv6 route block address (deterministic, from flake.nix).
+    { name = "silo.${zone}"; type = "AAAA"; ttl = 300;
+      records = [{ content = "2001:19f0:5400:20a7::8"; }]; }
   ];
 
   zoneData = pkgs.writeText "loom-farm-zone.json" (builtins.toJSON {
