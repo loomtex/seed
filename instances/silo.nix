@@ -177,8 +177,18 @@ let
   # Prebuilt parsers from nixpkgs are used directly (correct ABI) — no gcc
   # needed at runtime. The .so cache uses future timestamps so tree-sitter
   # skips recompilation.
+  # Use our fork with filename-based injection rules baked in
+  tree-sitter-nix-patched = pkgs.tree-sitter-grammars.tree-sitter-nix.overrideAttrs (old: {
+    src = pkgs.fetchFromGitHub {
+      owner = "nuketownada";
+      repo = "tree-sitter-nix";
+      rev = "fbe078f";
+      hash = "sha256-FQds8dl9Ews7gpigMm7bpp5E8XPk6Tra2+xrwrWsW1A=";
+    };
+  });
+
   tsGrammars = with pkgs.tree-sitter-grammars; {
-    nix        = { pkg = tree-sitter-nix;        exts = [ "nix" ];            injection = "^nix$"; };
+    nix        = { pkg = tree-sitter-nix-patched; exts = [ "nix" ];            injection = "^nix$"; };
     bash       = { pkg = tree-sitter-bash;       exts = [ "sh" "bash" ];      injection = "^(shell|bash|sh)$"; };
     c          = { pkg = tree-sitter-c;          exts = [ "c" "h" ];          injection = "^c$"; };
     go         = { pkg = tree-sitter-go;         exts = [ "go" ];             injection = "^go$"; };
@@ -193,25 +203,6 @@ let
     lua        = { pkg = tree-sitter-lua;        exts = [ "lua" ];            injection = "^lua$"; };
     make       = { pkg = tree-sitter-make;       exts = [ "mk" "Makefile" ];  injection = "^(make|makefile)$"; };
   };
-
-  # Filename-based injection rules for nix indented strings.
-  # Appended to the nix grammar's injections.scm so tree-sitter
-  # highlights content in: func "file.ext" ''content''
-  nixInjectionRules = pkgs.writeText "nix-injection-rules.scm"
-    (lib.concatStrings (lib.mapAttrsToList (lang: cfg:
-      let extPattern = if builtins.length cfg.exts == 1
-        then builtins.head cfg.exts
-        else "(${lib.concatStringsSep "|" cfg.exts})";
-      in ''
-
-        ((apply_expression
-           function: (apply_expression
-             argument: (string_expression (string_fragment) @_filename))
-           argument: (indented_string_expression (string_fragment) @injection.content))
-         (#match? @_filename "\\.${extPattern}$")
-         (#set! injection.language "${lang}")
-         (#set! injection.combined))
-      '') tsGrammars));
 
   # Assemble grammar directories + prebuilt parser cache
   tsGrammarDir = pkgs.runCommand "ts-grammars" {} (''
@@ -243,15 +234,6 @@ let
 
     # Highlight + injection queries
     for f in ${grammar}/queries/*; do ln -s "$f" $DIR/queries/; done
-
-    # Append filename-based injection rules for nix indented strings.
-    # Generated from tsGrammars — any grammar with file extensions gets
-    # an injection rule matching that extension in nix string arguments.
-    if [ "${name}" = "nix" ]; then
-      rm $DIR/queries/injections.scm
-      cp --no-preserve=mode ${grammar}/queries/injections.scm $DIR/queries/injections.scm
-      cat >> $DIR/queries/injections.scm < ${nixInjectionRules}
-    fi
 
     # tree-sitter.json metadata (language discovery)
     cat > $DIR/tree-sitter.json << 'TSJSON'
