@@ -100,24 +100,6 @@ in
   seed.expose.api = { port = 8081; };
   seed.storage.data = { size = "1Gi"; mountPoint = "/var/lib/pdns"; user = "pdns"; group = "pdns"; };
 
-  # One-time migration: previous persist module put pdns.db at var/lib/pdns/
-  # subdir on PVC. Now PVC is mounted directly at /var/lib/pdns, so move it
-  # back to PVC root.
-  system.activationScripts.migratePdnsDb = {
-    deps = [ "specialfs" ];
-    text = ''
-      dir="/var/lib/pdns"
-      if [ -f "$dir/var/lib/pdns/pdns.db" ] && [ ! -f "$dir/pdns.db" ]; then
-        echo "migrating pdns.db from persist subdir to PVC root"
-        mv "$dir/var/lib/pdns/pdns.db" "$dir/pdns.db"
-        [ -f "$dir/var/lib/pdns/pdns.db-wal" ] && mv "$dir/var/lib/pdns/pdns.db-wal" "$dir/pdns.db-wal"
-        [ -f "$dir/var/lib/pdns/pdns.db-shm" ] && mv "$dir/var/lib/pdns/pdns.db-shm" "$dir/pdns.db-shm"
-        rm -rf "$dir/var"
-        chown pdns:pdns "$dir"/pdns.db*
-      fi
-    '';
-  };
-
   # sops-nix: decrypt API key using the instance's TPM-backed age identity
   sops.defaultSopsFile = ../secrets/dns.yaml;
   sops.secrets.pdns-api-key = {};

@@ -16,21 +16,6 @@ in {
   seed.storage.data = { size = "5Gi"; mountPoint = "/var/lib/postgresql"; user = "postgres"; group = "postgres"; mode = "0750"; };
   seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
 
-  # One-time migration: PVC was at /seed/storage/data with data in postgresql/
-  # subdir. Now PVC is mounted at /var/lib/postgresql, so rename postgresql/ to
-  # 17/ (NixOS default dataDir includes version suffix).
-  system.activationScripts.migratePostgresql = {
-    deps = [ "specialfs" ];
-    text = ''
-      dir="/var/lib/postgresql"
-      if [ -d "$dir/postgresql" ] && [ ! -d "$dir/17" ]; then
-        echo "migrating postgresql/ to 17/"
-        mv "$dir/postgresql" "$dir/17"
-        chown -R postgres:postgres "$dir/17"
-      fi
-    '';
-  };
-
   # sops secrets via vTPM
   sops.defaultSopsFile = ../secrets/keycloak.yaml;
   sops.secrets.keycloak-db-password.mode = "0444";
