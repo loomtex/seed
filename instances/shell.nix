@@ -292,7 +292,7 @@ let
 
             # Show identity CIDs if present
             for i in "''${!REPO_NAMES[@]}"; do
-              local id="''${REPO_IDENTITY[$i]:-}"
+              id="''${REPO_IDENTITY[$i]:-}"
               if [ -n "$id" ]; then
                 printf '  \033[2midentity: %s\033[0m\n' "$id"
               fi
