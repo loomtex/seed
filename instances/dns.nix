@@ -100,6 +100,37 @@ in
   seed.expose.api = { port = 8081; };
   seed.storage.data = "1Gi";
 
+  # One-time migration: move pdns.db from PVC root to persist-backed path.
+  # Previously: /seed/storage/data/pdns.db (manual placement)
+  # Now: /seed/storage/data/var/lib/pdns/pdns.db (impermanence-style)
+  # Runs before seedPersist bind mounts so the file is in place when pdns starts.
+  system.activationScripts.migratePdnsDb = {
+    deps = [ "specialfs" ];
+    text = ''
+      old="/seed/storage/data/pdns.db"
+      new="/seed/storage/data/var/lib/pdns"
+      if [ -f "$old" ] && [ ! -f "$new/pdns.db" ]; then
+        echo "migrating pdns.db to persist-backed path"
+        mkdir -p "$new"
+        mv "$old" "$new/pdns.db"
+        # Move WAL/SHM files too if they exist
+        [ -f "$old-wal" ] && mv "$old-wal" "$new/pdns.db-wal"
+        [ -f "$old-shm" ] && mv "$old-shm" "$new/pdns.db-shm"
+        chown -R pdns:pdns "$new"
+      fi
+    '';
+  };
+  system.activationScripts.seedPersist.deps = [ "migratePdnsDb" ];
+
+  # Persist pdns state across pod restarts via PVC bind mounts.
+  # pdns writes to its default paths; the persist module bind-mounts
+  # them from the PVC so the data survives pod restarts.
+  seed.persist."/seed/storage/data" = {
+    directories = [
+      { directory = "/var/lib/pdns"; user = "pdns"; group = "pdns"; mode = "0755"; }
+    ];
+  };
+
   # sops-nix: decrypt API key using the instance's TPM-backed age identity
   sops.defaultSopsFile = ../secrets/dns.yaml;
   sops.secrets.pdns-api-key = {};
@@ -108,7 +139,7 @@ in
     enable = true;
     extraConfig = ''
       launch=gsqlite3
-      gsqlite3-database=/seed/storage/data/pdns.db
+      gsqlite3-database=/var/lib/pdns/pdns.db
       primary=yes
       local-address=0.0.0.0, ::
       local-port=53
@@ -134,13 +165,13 @@ in
     "+${pkgs.writeShellScript "pdns-pre-start" ''
       # Clear INCEPTION-INCREMENT SOA-EDIT-API metadata — removed in pdns 4.9,
       # causes 500 on all record updates (including ACME DNS-01 challenges).
-      if [ -f /seed/storage/data/pdns.db ]; then
-        ${pkgs.sqlite}/bin/sqlite3 /seed/storage/data/pdns.db \
+      if [ -f /var/lib/pdns/pdns.db ]; then
+        ${pkgs.sqlite}/bin/sqlite3 /var/lib/pdns/pdns.db \
           "DELETE FROM domainmetadata WHERE kind IN ('SOA-EDIT-API','SOA-EDIT') AND content='INCEPTION-INCREMENT';"
       fi
 
       # Ensure pdns user owns the database and WAL files
-      chown pdns:pdns /seed/storage/data/pdns.db*
+      chown pdns:pdns /var/lib/pdns/pdns.db*
 
       # Inject sops-decrypted API key into pdns config (if available).
       # On a fresh node with no identity, pdns starts without an API key.
@@ -153,21 +184,17 @@ in
     ''}"
   ];
 
-  # Ensure pdns user owns the storage directory
-  systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 pdns pdns -" ];
-
   # Initialize SQLite schema if missing (handles empty db files too)
   systemd.services.pdns-init-db = {
     description = "Initialize PowerDNS SQLite database";
     wantedBy = [ "pdns.service" ];
     before = [ "pdns.service" ];
-    after = [ "systemd-tmpfiles-setup.service" ];
     serviceConfig = {
       Type = "oneshot";
       User = "pdns";
       Group = "pdns";
       ExecStart = pkgs.writeShellScript "pdns-init-db" ''
-        DB=/seed/storage/data/pdns.db
+        DB=/var/lib/pdns/pdns.db
         if ${pkgs.sqlite}/bin/sqlite3 "$DB" "SELECT 1 FROM records LIMIT 1" 2>/dev/null; then
           echo "Schema exists, preserving records"
           exit 0

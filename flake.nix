@@ -196,6 +196,9 @@
       # Instance-level: seed.size, seed.expose, seed.storage, seed.connect
       instance = ./instance.nix;
 
+      # Instance persistence — impermanence-style bind mounts from PVC to rootfs
+      instance-persist = ./instance-persist.nix;
+
       # Stripped NixOS profile for Kata VM guests
       instance-base = ./instance-base.nix;
 
