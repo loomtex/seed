@@ -18,6 +18,35 @@ import type { KubeClients } from "../shared/kube.js";
 import { LABELS, MANAGED_SELECTOR } from "../shared/labels.js";
 import { log } from "../shared/kube.js";
 
+// --- Reconcile status (per-namespace) ---
+
+export interface ReconcileStatus {
+  phase: "idle" | "evaluating" | "building" | "applying" | "failed" | "complete";
+  generation: string;         // current or last-applied generation hash (short)
+  startedAt: string;          // ISO timestamp
+  finishedAt: string;         // ISO timestamp (empty if in progress)
+  error: string;              // last error message (empty on success)
+  instances: Record<string, InstanceBuildStatus>;
+}
+
+export interface InstanceBuildStatus {
+  phase: "pending" | "building" | "done" | "error";
+  error: string;
+}
+
+// Mutable reconcile status, keyed by namespace.
+const reconcileStatuses = new Map<string, ReconcileStatus>();
+
+/** Get reconcile status for a namespace. */
+export function getReconcileStatus(namespace: string): ReconcileStatus | undefined {
+  return reconcileStatuses.get(namespace);
+}
+
+/** Update reconcile status for a namespace. */
+export function updateReconcileStatus(namespace: string, status: ReconcileStatus): void {
+  reconcileStatuses.set(namespace, status);
+}
+
 // --- Key index ---
 
 export interface NamespaceEntry {
@@ -319,7 +348,8 @@ async function handleStatus(
     instances[instanceName] = { ready, phase, restarts, age, image };
   }
 
-  jsonResponse(res, 200, { namespace, instances });
+  const reconcile = reconcileStatuses.get(namespace) || null;
+  jsonResponse(res, 200, { namespace, instances, reconcile });
 }
 
 /** Parse a journal JSON line into a human-readable string. */

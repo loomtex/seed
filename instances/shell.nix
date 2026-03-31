@@ -274,7 +274,17 @@ let
                   "  phase=\(.value.phase)" +
                   "  restarts=\(.value.restarts)" +
                   "  age=\(.value.age)"
-                ), ""'
+                ),
+                (if .reconcile then
+                  if .reconcile.phase == "failed" then
+                    "\n  \u001b[31mLast build (\(.reconcile.generation // "unknown")[0:12]) failed:\u001b[0m \(.reconcile.error)"
+                  elif .reconcile.phase == "building" or .reconcile.phase == "evaluating" or .reconcile.phase == "applying" then
+                    "\n  \u001b[33m⧗ \(.reconcile.phase)\u001b[0m" +
+                    ([.reconcile.instances | to_entries[] | select(.value.phase == "building") | .key] |
+                      if length > 0 then " — building: \(join(", "))" else "" end)
+                  else empty end
+                else empty end),
+                ""'
             fi
           else
             # Status for all repos — build identity map as JSON for jq
@@ -305,7 +315,17 @@ let
                   "  phase=\(.value.phase)" +
                   "  restarts=\(.value.restarts)" +
                   "  age=\(.value.age)"
-                ), ""'
+                ),
+                (if .data.reconcile then
+                  if .data.reconcile.phase == "failed" then
+                    "\n  \u001b[31mLast build (\(.data.reconcile.generation // "unknown")[0:12]) failed:\u001b[0m \(.data.reconcile.error)"
+                  elif .data.reconcile.phase == "building" or .data.reconcile.phase == "evaluating" or .data.reconcile.phase == "applying" then
+                    "\n  \u001b[33m⧗ \(.data.reconcile.phase)\u001b[0m" +
+                    ([.data.reconcile.instances | to_entries[] | select(.value.phase == "building") | .key] |
+                      if length > 0 then " — building: \(join(", "))" else "" end)
+                  else empty end
+                else empty end),
+                ""'
             fi
           fi
 

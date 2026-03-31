@@ -19,7 +19,7 @@ import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
-import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, type KeyIndex, type NamespaceEntry } from "./api.js";
+import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, updateReconcileStatus, type KeyIndex, type NamespaceEntry, type ReconcileStatus } from "./api.js";
 import { readSeedIdentity, isValidIpnsCid, verifyPlantSignature } from "../shared/identity.js";
 import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
 import { startDomainController } from "./domains.js";
@@ -1656,9 +1656,27 @@ async function main(): Promise<void> {
     fs.reconciling = true;
     log("controller", `reconciliation starting...${useRefresh ? " (--refresh)" : ""}`, flakePath);
 
+    // Initialize reconcile status
+    const rStatus: ReconcileStatus = {
+      phase: "evaluating",
+      generation: "",
+      startedAt: new Date().toISOString(),
+      finishedAt: "",
+      error: "",
+      instances: {},
+    };
+    updateReconcileStatus(namespace, rStatus);
+
     try {
       // List instances from flake
       const instanceNames = await listInstances(flakePath, useRefresh);
+
+      // Mark all instances as pending build
+      for (const name of instanceNames) {
+        rStatus.instances[name] = { phase: "pending", error: "" };
+      }
+      rStatus.phase = "building";
+      updateReconcileStatus(namespace, rStatus);
 
       // Build all instances
       let buildResults: Map<string, BuildResult>;
@@ -1687,6 +1705,8 @@ async function main(): Promise<void> {
         // Direct nix build (when running on host with nix access)
         buildResults = new Map();
         for (const name of instanceNames) {
+          rStatus.instances[name] = { phase: "building", error: "" };
+          updateReconcileStatus(namespace, rStatus);
           log("controller", `building image...`, name);
           const imagePath = await nixBuild(
             `${flakePath}#seeds.${name}.image`,
@@ -1700,6 +1720,13 @@ async function main(): Promise<void> {
           buildResults.set(name, { imagePath, meta });
         }
       }
+
+      // Mark all instances as built
+      for (const name of buildResults.keys()) {
+        rStatus.instances[name] = { phase: "done", error: "" };
+      }
+      rStatus.phase = "applying";
+      updateReconcileStatus(namespace, rStatus);
 
       // Compute generation
       const generation = computeGeneration(
@@ -1797,6 +1824,13 @@ async function main(): Promise<void> {
 
       log("controller", `reconciliation complete (generation=${generation})`, flakePath);
 
+      // Mark reconcile status complete
+      rStatus.phase = "complete";
+      rStatus.generation = generation.slice(0, 12);
+      rStatus.finishedAt = new Date().toISOString();
+      rStatus.error = "";
+      updateReconcileStatus(namespace, rStatus);
+
       // Update ACME valid zones from ZoneReady SeedDomains
       if (config.acmeEnabled) {
         try {
@@ -1813,6 +1847,13 @@ async function main(): Promise<void> {
           updateAcmeValidZones(zones);
         } catch { /* SeedDomain CRD may not exist */ }
       }
+    } catch (err) {
+      // Mark reconcile status as failed
+      rStatus.phase = "failed";
+      rStatus.finishedAt = new Date().toISOString();
+      rStatus.error = err instanceof Error ? err.message : String(err);
+      updateReconcileStatus(namespace, rStatus);
+      throw err;
     } finally {
       fs.reconciling = false;
     }
