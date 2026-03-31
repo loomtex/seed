@@ -58,6 +58,7 @@ let
 
     CURL="${pkgs.curl}/bin/curl"
     JQ="${pkgs.jq}/bin/jq"
+    SLEEP="${pkgs.coreutils}/bin/sleep"
     API="${controllerApi}/api"
     REPOS_RAW="''${SEED_REPOS:-}"
     KEY_BLOB="''${SEED_KEY_BLOB:-}"
@@ -249,7 +250,7 @@ let
             NS=$(resolve_repo "$ARG") || exit 1
             RESULT=$($CURL -sf "$API/ns/$NS/status") || {
               echo "error: failed to fetch status for $ARG" >&2
-              [ "$WATCH" -gt 0 ] && { sleep "$WATCH"; continue; }
+              [ "$WATCH" -gt 0 ] && { $SLEEP "$WATCH"; continue; }
               exit 1
             }
             if [ "$JSON_OUT" = true ]; then
@@ -330,7 +331,7 @@ let
           fi
 
           [ "$WATCH" -eq 0 ] && break
-          sleep "$WATCH"
+          $SLEEP "$WATCH"
         done
         ;;
 
