@@ -246,9 +246,18 @@ let
           if [ "$JSON_OUT" = true ]; then
             echo "$RESULT" | $JQ .
           else
-            echo "$RESULT" | $JQ -r --arg repo "$ARG" '
+            # Look up identity for this repo
+            IDENTITY=""
+            for i in "''${!REPO_NAMES[@]}"; do
+              if [ "''${REPO_NAMES[$i]}" = "$ARG" ]; then
+                IDENTITY="''${REPO_IDENTITY[$i]:-}"
+                break
+              fi
+            done
+            echo "$RESULT" | $JQ -r --arg repo "$ARG" --arg id "$IDENTITY" '
               .namespace as $ns |
-              "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m",
+              "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
+                (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end),
               (.instances | to_entries[] |
                 "  \u001b[1m\(.key)\u001b[0m " +
                 (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
@@ -259,11 +268,14 @@ let
               ), ""'
           fi
         else
-          # Status for all repos
+          # Status for all repos — build identity map as JSON for jq
           ALL_JSON="[]"
+          ID_JSON="{}"
           for i in "''${!REPO_NAMES[@]}"; do
             REPO="''${REPO_NAMES[$i]}"
             NS="''${REPO_NS[$i]}"
+            id="''${REPO_IDENTITY[$i]:-}"
+            [ -n "$id" ] && ID_JSON=$(echo "$ID_JSON" | $JQ --arg repo "$REPO" --arg id "$id" '. + {($repo): $id}')
             RESULT=$($CURL -sf "$API/ns/$NS/status" 2>/dev/null) || continue
             ALL_JSON=$(echo "$ALL_JSON" | $JQ --arg repo "$REPO" --argjson result "$RESULT" \
               '. + [{ repo: $repo, data: $result }]')
@@ -272,15 +284,11 @@ let
           if [ "$JSON_OUT" = true ]; then
             echo "$ALL_JSON" | $JQ .
           else
-            # Build identity lookup for display
-            declare -A REPO_ID_MAP
-            for i in "''${!REPO_NAMES[@]}"; do
-              REPO_ID_MAP["''${REPO_NAMES[$i]}"]="''${REPO_IDENTITY[$i]:-}"
-            done
-
-            echo "$ALL_JSON" | $JQ -r '.[] |
+            echo "$ALL_JSON" | $JQ -r --argjson ids "$ID_JSON" '.[] |
               .data.namespace as $ns |
-              "\u001b[1;4m\(.repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m",
+              .repo as $repo |
+              "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
+                (if $ids[$repo] then "  \u001b[2m\($ids[$repo])\u001b[0m" else "" end),
               (.data.instances | to_entries[] |
                 "  \u001b[1m\(.key)\u001b[0m " +
                 (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
@@ -289,14 +297,6 @@ let
                 "  restarts=\(.value.restarts)" +
                 "  age=\(.value.age)"
               ), ""'
-
-            # Show identity CIDs if present
-            for i in "''${!REPO_NAMES[@]}"; do
-              id="''${REPO_IDENTITY[$i]:-}"
-              if [ -n "$id" ]; then
-                printf '  \033[2midentity: %s\033[0m\n' "$id"
-              fi
-            done
           fi
         fi
         ;;
