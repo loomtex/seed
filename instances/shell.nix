@@ -155,6 +155,7 @@ let
     JSON_OUT=false
     FOLLOW=false
     LINES=""
+    WATCH=0
 
     ARG3=""
     while [ $# -gt 0 ]; do
@@ -163,6 +164,7 @@ let
         --follow) FOLLOW=true ;;
         -f)       FOLLOW=true ;;
         --lines)  shift; LINES="''${1:-}" ;;
+        --watch|-w) WATCH="''${2:-5}"; shift ;;
         *)        if [ -z "$ARG" ]; then ARG="$1"; elif [ -z "$ARG2" ]; then ARG2="$1"; elif [ -z "$ARG3" ]; then ARG3="$1"; fi ;;
       esac
       shift
@@ -236,69 +238,80 @@ let
 
       status)
         require_repos
-        if [ -n "$ARG" ]; then
-          # Status for a specific repo
-          NS=$(resolve_repo "$ARG") || exit 1
-          RESULT=$($CURL -sf "$API/ns/$NS/status") || {
-            echo "error: failed to fetch status for $ARG" >&2
-            exit 1
-          }
-          if [ "$JSON_OUT" = true ]; then
-            echo "$RESULT" | $JQ .
-          else
-            # Look up identity for this repo
-            IDENTITY=""
-            for i in "''${!REPO_NAMES[@]}"; do
-              if [ "''${REPO_NAMES[$i]}" = "$ARG" ]; then
-                IDENTITY="''${REPO_IDENTITY[$i]:-}"
-                break
-              fi
-            done
-            echo "$RESULT" | $JQ -r --arg repo "$ARG" --arg id "$IDENTITY" '
-              .namespace as $ns |
-              "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
-                (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end),
-              (.instances | to_entries[] |
-                "  \u001b[1m\(.key)\u001b[0m " +
-                (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
-                (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
-                "  phase=\(.value.phase)" +
-                "  restarts=\(.value.restarts)" +
-                "  age=\(.value.age)"
-              ), ""'
+        while true; do
+          if [ "$WATCH" -gt 0 ]; then
+            printf '\033[2J\033[H'
+            printf '\033[2mEvery %ss — %s\033[0m\n\n' "$WATCH" "$(date +%T)"
           fi
-        else
-          # Status for all repos — build identity map as JSON for jq
-          ALL_JSON="[]"
-          ID_JSON="{}"
-          for i in "''${!REPO_NAMES[@]}"; do
-            REPO="''${REPO_NAMES[$i]}"
-            NS="''${REPO_NS[$i]}"
-            id="''${REPO_IDENTITY[$i]:-}"
-            [ -n "$id" ] && ID_JSON=$(echo "$ID_JSON" | $JQ --arg repo "$REPO" --arg id "$id" '. + {($repo): $id}')
-            RESULT=$($CURL -sf "$API/ns/$NS/status" 2>/dev/null) || continue
-            ALL_JSON=$(echo "$ALL_JSON" | $JQ --arg repo "$REPO" --argjson result "$RESULT" \
-              '. + [{ repo: $repo, data: $result }]')
-          done
 
-          if [ "$JSON_OUT" = true ]; then
-            echo "$ALL_JSON" | $JQ .
+          if [ -n "$ARG" ]; then
+            # Status for a specific repo
+            NS=$(resolve_repo "$ARG") || exit 1
+            RESULT=$($CURL -sf "$API/ns/$NS/status") || {
+              echo "error: failed to fetch status for $ARG" >&2
+              [ "$WATCH" -gt 0 ] && { sleep "$WATCH"; continue; }
+              exit 1
+            }
+            if [ "$JSON_OUT" = true ]; then
+              echo "$RESULT" | $JQ .
+            else
+              # Look up identity for this repo
+              IDENTITY=""
+              for i in "''${!REPO_NAMES[@]}"; do
+                if [ "''${REPO_NAMES[$i]}" = "$ARG" ]; then
+                  IDENTITY="''${REPO_IDENTITY[$i]:-}"
+                  break
+                fi
+              done
+              echo "$RESULT" | $JQ -r --arg repo "$ARG" --arg id "$IDENTITY" '
+                .namespace as $ns |
+                "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
+                  (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end),
+                (.instances | to_entries[] |
+                  "  \u001b[1m\(.key)\u001b[0m " +
+                  (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
+                  (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
+                  "  phase=\(.value.phase)" +
+                  "  restarts=\(.value.restarts)" +
+                  "  age=\(.value.age)"
+                ), ""'
+            fi
           else
-            echo "$ALL_JSON" | $JQ -r --argjson ids "$ID_JSON" '.[] |
-              .data.namespace as $ns |
-              .repo as $repo |
-              "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
-                (if $ids[$repo] then "  \u001b[2m\($ids[$repo])\u001b[0m" else "" end),
-              (.data.instances | to_entries[] |
-                "  \u001b[1m\(.key)\u001b[0m " +
-                (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
-                (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
-                "  phase=\(.value.phase)" +
-                "  restarts=\(.value.restarts)" +
-                "  age=\(.value.age)"
-              ), ""'
+            # Status for all repos — build identity map as JSON for jq
+            ALL_JSON="[]"
+            ID_JSON="{}"
+            for i in "''${!REPO_NAMES[@]}"; do
+              REPO="''${REPO_NAMES[$i]}"
+              NS="''${REPO_NS[$i]}"
+              id="''${REPO_IDENTITY[$i]:-}"
+              [ -n "$id" ] && ID_JSON=$(echo "$ID_JSON" | $JQ --arg repo "$REPO" --arg id "$id" '. + {($repo): $id}')
+              RESULT=$($CURL -sf "$API/ns/$NS/status" 2>/dev/null) || continue
+              ALL_JSON=$(echo "$ALL_JSON" | $JQ --arg repo "$REPO" --argjson result "$RESULT" \
+                '. + [{ repo: $repo, data: $result }]')
+            done
+
+            if [ "$JSON_OUT" = true ]; then
+              echo "$ALL_JSON" | $JQ .
+            else
+              echo "$ALL_JSON" | $JQ -r --argjson ids "$ID_JSON" '.[] |
+                .data.namespace as $ns |
+                .repo as $repo |
+                "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
+                  (if $ids[$repo] then "  \u001b[2m\($ids[$repo])\u001b[0m" else "" end),
+                (.data.instances | to_entries[] |
+                  "  \u001b[1m\(.key)\u001b[0m " +
+                  (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
+                  (if .value.ready then "\u001b[32mready\u001b[0m" else "\u001b[31mnot ready\u001b[0m" end) +
+                  "  phase=\(.value.phase)" +
+                  "  restarts=\(.value.restarts)" +
+                  "  age=\(.value.age)"
+                ), ""'
+            fi
           fi
-        fi
+
+          [ "$WATCH" -eq 0 ] && break
+          sleep "$WATCH"
+        done
         ;;
 
       logs)
@@ -400,7 +413,7 @@ let
         echo "commands:"
         echo "  plant <flake-uri> <code> [sig]  register a repo with an invite code"
         echo "  replant <identity> <new-uri>    change source URI (identity preserved)"
-        echo "  status [repo]                   show instance status (default: all repos)"
+        echo "  status [repo] [-w N]            show instance status (default: all repos)"
         echo "  logs <[repo/]instance>          show recent logs (default: 100 lines)"
         echo "  restart <[repo/]instance>       restart an instance"
         echo "  keys <[repo/]instance>          show age public key (for sops encryption)"
