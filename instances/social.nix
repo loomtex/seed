@@ -24,14 +24,14 @@ let
   adminConfig = pkgs.writeText "gotosocial-admin.yml" ''
     host: social.loom.farm
     db-type: sqlite
-    db-address: /seed/storage/data/gotosocial.sqlite
+    db-address: /var/lib/gotosocial/gotosocial.sqlite
   '';
 
   gts = "${gotosocial-nowasm}/bin/gotosocial --config-path ${adminConfig}";
 in {
   seed.expose.https.enable = true;
   seed.dns.names = [ "social.loom.farm" ];
-  seed.storage.data = "5Gi";
+  seed.storage.data = { size = "5Gi"; mountPoint = "/var/lib/gotosocial"; user = "gotosocial"; group = "gotosocial"; mode = "0750"; };
   seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
 
   services.gotosocial = {
@@ -45,10 +45,10 @@ in {
 
       # SQLite — no external DB needed
       db-type = "sqlite";
-      db-address = "/seed/storage/data/gotosocial.sqlite";
+      db-address = "/var/lib/gotosocial/gotosocial.sqlite";
 
       # Media storage on PVC
-      storage-local-base-path = "/seed/storage/data/storage";
+      storage-local-base-path = "/var/lib/gotosocial/storage";
 
       # Federation
       instance-expose-public-timeline = true;
@@ -90,10 +90,10 @@ in {
       RemainAfterExit = true;
       User = "gotosocial";
       Group = "gotosocial";
-      WorkingDirectory = "/seed/storage/data";
+      WorkingDirectory = "/var/lib/gotosocial";
       ExecStart = pkgs.writeShellScript "gotosocial-admin-init" ''
         set -euo pipefail
-        MARKER="/seed/storage/data/.admin-created"
+        MARKER="/var/lib/gotosocial/.admin-created"
 
         # Wait for GtS API to be fully ready (not 503) — up to 60s
         for i in $(seq 1 60); do
@@ -139,8 +139,4 @@ in {
   # doesn't guarantee visibility to sandboxed systemd services.
   systemd.services.gotosocial.path = [ pkgs.ffmpeg-headless ];
 
-  # PVC ownership
-  systemd.tmpfiles.rules = [
-    "d /seed/storage/data 0750 gotosocial gotosocial -"
-  ];
 }

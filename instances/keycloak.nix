@@ -13,19 +13,31 @@ in {
   seed.size = "l";
   seed.expose.https.enable = true;
   seed.dns.names = [ "id.loom.farm" ];
-  seed.storage.data = "5Gi";
+  seed.storage.data = { size = "5Gi"; mountPoint = "/var/lib/postgresql"; user = "postgres"; group = "postgres"; mode = "0750"; };
   seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
+
+  # One-time migration: PVC was at /seed/storage/data with data in postgresql/
+  # subdir. Now PVC is mounted at /var/lib/postgresql, so rename postgresql/ to
+  # 17/ (NixOS default dataDir includes version suffix).
+  system.activationScripts.migratePostgresql = {
+    deps = [ "specialfs" ];
+    text = ''
+      dir="/var/lib/postgresql"
+      if [ -d "$dir/postgresql" ] && [ ! -d "$dir/17" ]; then
+        echo "migrating postgresql/ to 17/"
+        mv "$dir/postgresql" "$dir/17"
+        chown -R postgres:postgres "$dir/17"
+      fi
+    '';
+  };
 
   # sops secrets via vTPM
   sops.defaultSopsFile = ../secrets/keycloak.yaml;
   sops.secrets.keycloak-db-password.mode = "0444";
 
-  # PostgreSQL — local, same VM
-  services.postgresql = {
-    enable = true;
-    dataDir = "/seed/storage/data/postgresql";
-    # Keycloak module creates the DB when createLocally = true
-  };
+  # PostgreSQL — local, same VM. Default dataDir is /var/lib/postgresql/<version>,
+  # backed by the postgresql PVC.
+  services.postgresql.enable = true;
 
   services.keycloak = {
     enable = true;
@@ -95,9 +107,4 @@ in {
     cp ${dbPasswordFile} /run/keycloak/credentials/${builtins.baseNameOf dbPasswordFile}
   '';
 
-  # PVC ownership — PostgreSQL runs as postgres user
-  systemd.tmpfiles.rules = [
-    "d /seed/storage/data 0755 root root -"
-    "d /seed/storage/data/postgresql 0750 postgres postgres -"
-  ];
 }

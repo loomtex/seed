@@ -17,7 +17,6 @@ let
     modules = [
       self.nixosModules.instance-base
       self.nixosModules.instance
-      self.nixosModules.instance-persist
       self.nixosModules.sops
       self.nixosModules.ssh-auth
       { networking.hostName = name; }

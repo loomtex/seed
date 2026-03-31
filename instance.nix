@@ -71,6 +71,21 @@ let
         default = "/seed/storage/${name}";
         description = "Mount point inside the instance.";
       };
+      user = lib.mkOption {
+        type = lib.types.str;
+        default = "root";
+        description = "Owner user for the mount point directory.";
+      };
+      group = lib.mkOption {
+        type = lib.types.str;
+        default = "root";
+        description = "Owner group for the mount point directory.";
+      };
+      mode = lib.mkOption {
+        type = lib.types.str;
+        default = "0755";
+        description = "Permissions for the mount point directory.";
+      };
     };
   });
 
@@ -278,7 +293,7 @@ in {
 
     # Create mount point directories for storage volumes
     systemd.tmpfiles.rules = lib.mapAttrsToList
-      (name: s: "d ${s.mountPoint} 0755 root root -")
+      (name: s: "d ${s.mountPoint} ${s.mode} ${s.user} ${s.group} -")
       cfg.storage;
 
     # Open firewall for exposed ports
