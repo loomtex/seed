@@ -506,7 +506,7 @@ in {
   seed.expose.https.enable = true;
   seed.expose.http.enable = true;
   seed.dns.names = [ "silo.loom.farm" ];
-  seed.storage.repos = "10Gi";
+  seed.storage.repos = { size = "10Gi"; user = "git"; group = "git"; };
   seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
   seed.shoot.enable = true;
 
@@ -531,9 +531,7 @@ in {
   };
   users.groups.git = {};
 
-  # Ensure correct user owns the persistent dirs
   systemd.tmpfiles.rules = [
-    "d ${reposDir} 0755 git git -"
     "d ${hostKeyDir} 0700 root root -"
     # Remove lost+found — ext4 creates it but cgit scan-path errors on it
     "R ${reposDir}/lost+found -"
