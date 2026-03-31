@@ -1,11 +1,12 @@
 // DNS reconciler — watches SeedDNSRecord CRDs and syncs records to PowerDNS.
 //
-// Two reconciliation modes:
-// 1. On CRD add/update/delete: debounced 2s, diffs against last-applied set
-// 2. Periodic full-sync every 120s as safety net for pdns restarts
+// Mark-sweep approach: every rrset we REPLACE gets a "seed:sdr" comment tag.
+// After applying desired records, we sweep pdns for any rrsets with our tag
+// that aren't in the current desired set — catching orphans from deleted CRDs,
+// controller restarts, or pdns data loss.
 //
-// Safety: only manages (name, type) pairs that have CRDs. ACME TXT records,
-// SOA, NS, and glue records (managed by pdns-sync-zones) are untouched.
+// Bootstrap records (SOA, NS, glue) use "seed:bootstrap" tag and are managed
+// by pdns-sync-zones — we never touch those.
 
 import * as k8s from "@kubernetes/client-node";
 import { log, stableStringify } from "../shared/kube.js";
@@ -39,13 +40,12 @@ interface RRSet {
   ttl: number;
   changetype: "REPLACE" | "DELETE";
   records: { content: string; disabled: boolean }[];
+  comments?: { content: string; account: string; modified_at: number }[];
 }
 
-/** Track what we last applied to pdns — for diffing deletions. */
-interface AppliedRecord {
-  name: string;
-  type: string;
-}
+/** Comment tag stamped on every rrset managed by the controller. */
+const COMMENT_TAG = "seed:sdr";
+const COMMENT_ACCOUNT = "seed-controller";
 
 /** Load the pdns API key from a file path. */
 export async function loadPdnsApiKey(keyFile: string): Promise<string> {
@@ -105,8 +105,6 @@ export function startDNSReconciler(
   pdnsZone: string,
 ): void {
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastApplied = new Set<string>(); // "name|type" keys
-  let lastAppliedZones = new Map<string, string>(); // "name|type" → zone
 
   /** Load all SeedDomains and build a map of domain name → phase. */
   async function loadDomainPhases(): Promise<Map<string, string>> {
@@ -150,7 +148,7 @@ export function startDNSReconciler(
       const records = result.items;
       // Group rrsets by zone
       const rrsetsByZone = new Map<string, RRSet[]>();
-      const currentKeys = new Set<string>();
+      const desiredByZone = new Map<string, Set<string>>(); // zone → set of "name|type"
       const statusUpdates: { record: SeedDNSRecord; status: SeedDNSRecordStatus }[] = [];
 
       // Resolve all records and build REPLACE rrsets
@@ -189,15 +187,17 @@ export function startDNSReconciler(
         const resolved = await resolveRecords(core, record);
 
         if (resolved && resolved.length > 0) {
-          currentKeys.add(key);
           const zone = zoneForRecord(record);
           if (!rrsetsByZone.has(zone)) rrsetsByZone.set(zone, []);
+          if (!desiredByZone.has(zone)) desiredByZone.set(zone, new Set());
+          desiredByZone.get(zone)!.add(key);
           rrsetsByZone.get(zone)!.push({
             name: record.spec.name,
             type: record.spec.type,
             ttl: record.spec.ttl,
             changetype: "REPLACE",
             records: resolved.map((r) => ({ content: r.content, disabled: false })),
+            comments: [{ content: COMMENT_TAG, account: COMMENT_ACCOUNT, modified_at: Math.floor(Date.now() / 1000) }],
           });
           statusUpdates.push({
             record,
@@ -223,27 +223,8 @@ export function startDNSReconciler(
         }
       }
 
-      // Compute DELETE rrsets for records removed since last sync
-      for (const key of lastApplied) {
-        if (!currentKeys.has(key)) {
-          const [name, type] = key.split("|");
-          // Determine zone for deletion — check lastAppliedZones
-          const zone = lastAppliedZones.get(key) || pdnsZone;
-          if (!rrsetsByZone.has(zone)) rrsetsByZone.set(zone, []);
-          rrsetsByZone.get(zone)!.push({
-            name,
-            type,
-            ttl: 0,
-            changetype: "DELETE",
-            records: [],
-          });
-          log("dns", `deleting ${type} ${name}`);
-        }
-      }
-
-      // Apply to pdns — one PATCH per zone
+      // Apply to pdns — one PATCH per zone (REPLACE phase)
       let totalReplaced = 0;
-      let totalDeleted = 0;
       for (const [zone, rrsets] of rrsetsByZone) {
         if (rrsets.length === 0) continue;
         const url = `${pdnsApiUrl}/api/v1/servers/localhost/zones/${zone}`;
@@ -263,22 +244,52 @@ export function startDNSReconciler(
         }
 
         totalReplaced += rrsets.filter((r) => r.changetype === "REPLACE").length;
-        totalDeleted += rrsets.filter((r) => r.changetype === "DELETE").length;
       }
 
-      if (totalReplaced > 0 || totalDeleted > 0) {
-        log("dns", `synced ${totalReplaced} record(s), deleted ${totalDeleted} across ${rrsetsByZone.size} zone(s)`);
+      if (totalReplaced > 0) {
+        log("dns", `synced ${totalReplaced} record(s) across ${rrsetsByZone.size} zone(s)`);
       }
 
-      lastApplied = currentKeys;
-      // Track which zone each key was applied to (for deletion routing)
-      lastAppliedZones.clear();
-      for (const [zone, rrsets] of rrsetsByZone) {
-        for (const rrset of rrsets) {
-          if (rrset.changetype === "REPLACE") {
-            lastAppliedZones.set(`${rrset.name}|${rrset.type}`, zone);
+      // Sweep: query pdns for all rrsets with our comment tag, DELETE any
+      // that aren't in the current desired set. This catches orphans from
+      // deleted CRDs, previous controller generations, and pdns restarts.
+      const allZones = new Set([pdnsZone, ...rrsetsByZone.keys()]);
+      let totalSwept = 0;
+      for (const zone of allZones) {
+        const desired = desiredByZone.get(zone) ?? new Set<string>();
+        try {
+          const zoneResp = await fetch(
+            `${pdnsApiUrl}/api/v1/servers/localhost/zones/${zone}?rrsets=true`,
+            { headers: { "X-API-Key": pdnsApiKey } },
+          );
+          if (!zoneResp.ok) continue;
+          const zoneData = await zoneResp.json() as { rrsets: { name: string; type: string; comments?: { content: string }[] }[] };
+
+          const toDelete: RRSet[] = [];
+          for (const rrset of zoneData.rrsets) {
+            const hasOurTag = rrset.comments?.some((c) => c.content === COMMENT_TAG);
+            if (!hasOurTag) continue;
+            const key = `${rrset.name}|${rrset.type}`;
+            if (!desired.has(key)) {
+              toDelete.push({ name: rrset.name, type: rrset.type, ttl: 0, changetype: "DELETE", records: [] });
+              log("dns", `sweeping orphan ${rrset.type} ${rrset.name} from ${zone}`);
+            }
           }
+
+          if (toDelete.length > 0) {
+            await fetch(`${pdnsApiUrl}/api/v1/servers/localhost/zones/${zone}`, {
+              method: "PATCH",
+              headers: { "X-API-Key": pdnsApiKey, "Content-Type": "application/json" },
+              body: JSON.stringify({ rrsets: toDelete }),
+            });
+            totalSwept += toDelete.length;
+          }
+        } catch (err) {
+          log("dns", `sweep error for zone ${zone}: ${err}`);
         }
+      }
+      if (totalSwept > 0) {
+        log("dns", `swept ${totalSwept} orphaned record(s)`);
       }
 
       // Update CRD statuses — skip no-op updates to avoid informer feedback loop.

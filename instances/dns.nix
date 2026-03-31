@@ -53,7 +53,8 @@ let
     API_KEY=$(cat ${config.sops.secrets.pdns-api-key.path})
     API="http://127.0.0.1:8081/api/v1/servers/localhost"
     DESIRED=${zoneData}
-    LAST_APPLIED="/seed/storage/data/pdns-last-applied.json"
+    TAG="seed:bootstrap"
+    NOW=$(date +%s)
 
     # Wait for pdns API (up to 30s)
     for i in $(seq 1 30); do
@@ -68,27 +69,30 @@ let
         "$API/zones"
     fi
 
-    # Build REPLACE patch for all desired rrsets
-    REPLACE=$(jq '{rrsets: [.rrsets[] | . + {changetype: "REPLACE", records: [.records[] | . + {disabled: false}]}]}' "$DESIRED")
-
-    # Compute DELETE patch for rrsets removed since last apply
-    DELETE='{"rrsets":[]}'
-    if [ -f "$LAST_APPLIED" ]; then
-      DELETE=$(jq -n \
-        --slurpfile old "$LAST_APPLIED" \
-        --slurpfile new "$DESIRED" \
-        '{rrsets: [($old[0].rrsets // [] | map({name, type})) - ($new[0].rrsets // [] | map({name, type})) | .[] | . + {changetype: "DELETE"}]}')
-    fi
-
-    # Merge REPLACE + DELETE into a single PATCH
-    PATCH=$(jq -n --argjson r "$REPLACE" --argjson d "$DELETE" \
-      '{rrsets: ($r.rrsets + $d.rrsets)}')
+    # Mark: build REPLACE patch with comment tag on each rrset
+    REPLACE=$(jq --arg tag "$TAG" --argjson now "$NOW" \
+      '{rrsets: [.rrsets[] | . + {changetype: "REPLACE", records: [.records[] | . + {disabled: false}], comments: [{content: $tag, account: "pdns-sync", modified_at: $now}]}]}' \
+      "$DESIRED")
 
     curl -sf -X PATCH -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-      -d "$PATCH" "$API/zones/${zone}"
+      -d "$REPLACE" "$API/zones/${zone}"
 
-    # Save desired as last-applied for next boot's diff
-    cp "$DESIRED" "$LAST_APPLIED"
+    # Sweep: delete any rrsets tagged seed:bootstrap that aren't in desired
+    DESIRED_KEYS=$(jq -r '.rrsets[] | "\(.name)|\(.type)"' "$DESIRED")
+    ZONE_DATA=$(curl -sf -H "X-API-Key: $API_KEY" "$API/zones/${zone}?rrsets=true")
+    ORPHANS=$(echo "$ZONE_DATA" | jq --arg tag "$TAG" --arg desired "$DESIRED_KEYS" '
+      ($desired | split("\n") | map(select(. != ""))) as $keys |
+      {rrsets: [.rrsets[] | select(.comments // [] | any(.content == $tag)) |
+        {key: "\(.name)|\(.type)", name, type} |
+        select(.key as $k | $keys | index($k) | not) |
+        {name, type, changetype: "DELETE", records: []}]}')
+
+    ORPHAN_COUNT=$(echo "$ORPHANS" | jq '.rrsets | length')
+    if [ "$ORPHAN_COUNT" -gt 0 ]; then
+      echo "Sweeping $ORPHAN_COUNT orphaned bootstrap record(s)"
+      curl -sf -X PATCH -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+        -d "$ORPHANS" "$API/zones/${zone}"
+    fi
   '';
 in
 {
