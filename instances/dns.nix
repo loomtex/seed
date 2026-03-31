@@ -100,28 +100,6 @@ in
   seed.expose.api = { port = 8081; };
   seed.storage.data = "1Gi";
 
-  # One-time migration: move pdns.db from PVC root to persist-backed path.
-  # Previously: /seed/storage/data/pdns.db (manual placement)
-  # Now: /seed/storage/data/var/lib/pdns/pdns.db (impermanence-style)
-  # Runs before seedPersist bind mounts so the file is in place when pdns starts.
-  system.activationScripts.migratePdnsDb = {
-    deps = [ "specialfs" ];
-    text = ''
-      old="/seed/storage/data/pdns.db"
-      new="/seed/storage/data/var/lib/pdns"
-      if [ -f "$old" ] && [ ! -f "$new/pdns.db" ]; then
-        echo "migrating pdns.db to persist-backed path"
-        mkdir -p "$new"
-        mv "$old" "$new/pdns.db"
-        # Move WAL/SHM files too if they exist
-        [ -f "$old-wal" ] && mv "$old-wal" "$new/pdns.db-wal"
-        [ -f "$old-shm" ] && mv "$old-shm" "$new/pdns.db-shm"
-        chown -R pdns:pdns "$new"
-      fi
-    '';
-  };
-  system.activationScripts.seedPersist.deps = [ "migratePdnsDb" ];
-
   # Persist pdns state across pod restarts via PVC bind mounts.
   # pdns writes to its default paths; the persist module bind-mounts
   # them from the PVC so the data survives pod restarts.
