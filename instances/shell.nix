@@ -53,12 +53,10 @@ let
   # SEED_REPOS env var format: "seed=s-gaydazldmnsg,shoot-demo=s-mfstazlgmy2g"
   # SEED_KEY_TYPE/SEED_KEY_BLOB: SSH key identity (always set)
   # Instance targeting: bare "web" (auto-resolve) or "seed/web" (explicit repo)
-  shellCmd = pkgs.writeShellScriptBin "seed-shell" ''
-    set -euo pipefail
-
-    CURL="${pkgs.curl}/bin/curl"
-    JQ="${pkgs.jq}/bin/jq"
-    SLEEP="${pkgs.coreutils}/bin/sleep"
+  shellCmd = pkgs.writeShellApplication {
+    name = "seed-shell";
+    runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
+    text = ''
     API="${controllerApi}/api"
     REPOS_RAW="''${SEED_REPOS:-}"
     KEY_BLOB="''${SEED_KEY_BLOB:-}"
@@ -121,8 +119,8 @@ let
       for i in "''${!REPO_NAMES[@]}"; do
         local ns="''${REPO_NS[$i]}"
         local result
-        result=$($CURL -sf "$API/ns/$ns/status" 2>/dev/null) || continue
-        if echo "$result" | $JQ -e --arg inst "$arg" '.instances[$inst]' >/dev/null 2>&1; then
+        result=$(curl -sf "$API/ns/$ns/status" 2>/dev/null) || continue
+        if echo "$result" | jq -e --arg inst "$arg" '.instances[$inst]' >/dev/null 2>&1; then
           matches+=("$i")
           match_ns+=("$ns")
           match_repo+=("''${REPO_NAMES[$i]}")
@@ -192,18 +190,18 @@ let
           PLANT_JSON="$PLANT_JSON,\"signature\":\"$ARG3\""
         fi
         PLANT_JSON="$PLANT_JSON}"
-        RESULT=$($CURL -sf -X POST "$API/plant" \
+        RESULT=$(curl -sf -X POST "$API/plant" \
           -H "Content-Type: application/json" \
           -d "$PLANT_JSON") || {
           echo "error: plant failed" >&2
           exit 1
         }
-        ERROR=$(echo "$RESULT" | $JQ -r '.error // empty')
+        ERROR=$(echo "$RESULT" | jq -r '.error // empty')
         if [ -n "$ERROR" ]; then
           echo "error: $ERROR" >&2
           exit 1
         fi
-        echo "$RESULT" | $JQ -r '"planted \(.flakeUri)\n  name: \(.name)\n  namespace: \(.namespace)" + (if .identity != "" then "\n  identity: \(.identity)" else "" end)'
+        echo "$RESULT" | jq -r '"planted \(.flakeUri)\n  name: \(.name)\n  namespace: \(.namespace)" + (if .identity != "" then "\n  identity: \(.identity)" else "" end)'
         ;;
 
       replant)
@@ -223,18 +221,18 @@ let
           echo "error: key identity not available" >&2
           exit 1
         fi
-        RESULT=$($CURL -sf -X POST "$API/replant" \
+        RESULT=$(curl -sf -X POST "$API/replant" \
           -H "Content-Type: application/json" \
           -d "{\"identity\":\"$ARG\",\"newFlakeUri\":\"$ARG2\",\"keyBlob\":\"$KEY_BLOB\"}") || {
           echo "error: replant failed" >&2
           exit 1
         }
-        ERROR=$(echo "$RESULT" | $JQ -r '.error // empty')
+        ERROR=$(echo "$RESULT" | jq -r '.error // empty')
         if [ -n "$ERROR" ]; then
           echo "error: $ERROR" >&2
           exit 1
         fi
-        echo "$RESULT" | $JQ -r '"replanted → \(.flakeUri)\n  name: \(.name)\n  namespace: \(.namespace)\n  identity: \(.identity)"'
+        echo "$RESULT" | jq -r '"replanted → \(.flakeUri)\n  name: \(.name)\n  namespace: \(.namespace)\n  identity: \(.identity)"'
         ;;
 
       status)
@@ -248,13 +246,13 @@ let
           if [ -n "$ARG" ]; then
             # Status for a specific repo
             NS=$(resolve_repo "$ARG") || exit 1
-            RESULT=$($CURL -sf "$API/ns/$NS/status") || {
+            RESULT=$(curl -sf "$API/ns/$NS/status") || {
               echo "error: failed to fetch status for $ARG" >&2
-              [ "$WATCH" -gt 0 ] && { $SLEEP "$WATCH"; continue; }
+              [ "$WATCH" -gt 0 ] && { sleep "$WATCH"; continue; }
               exit 1
             }
             if [ "$JSON_OUT" = true ]; then
-              echo "$RESULT" | $JQ .
+              echo "$RESULT" | jq .
             else
               # Look up identity for this repo
               IDENTITY=""
@@ -264,7 +262,7 @@ let
                   break
                 fi
               done
-              echo "$RESULT" | $JQ -r --arg repo "$ARG" --arg id "$IDENTITY" '
+              echo "$RESULT" | jq -r --arg repo "$ARG" --arg id "$IDENTITY" '
                 .namespace as $ns |
                 "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
                   (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end),
@@ -295,16 +293,16 @@ let
               REPO="''${REPO_NAMES[$i]}"
               NS="''${REPO_NS[$i]}"
               id="''${REPO_IDENTITY[$i]:-}"
-              [ -n "$id" ] && ID_JSON=$(echo "$ID_JSON" | $JQ --arg repo "$REPO" --arg id "$id" '. + {($repo): $id}')
-              RESULT=$($CURL -sf "$API/ns/$NS/status" 2>/dev/null) || continue
-              ALL_JSON=$(echo "$ALL_JSON" | $JQ --arg repo "$REPO" --argjson result "$RESULT" \
+              [ -n "$id" ] && ID_JSON=$(echo "$ID_JSON" | jq --arg repo "$REPO" --arg id "$id" '. + {($repo): $id}')
+              RESULT=$(curl -sf "$API/ns/$NS/status" 2>/dev/null) || continue
+              ALL_JSON=$(echo "$ALL_JSON" | jq --arg repo "$REPO" --argjson result "$RESULT" \
                 '. + [{ repo: $repo, data: $result }]')
             done
 
             if [ "$JSON_OUT" = true ]; then
-              echo "$ALL_JSON" | $JQ .
+              echo "$ALL_JSON" | jq .
             else
-              echo "$ALL_JSON" | $JQ -r --argjson ids "$ID_JSON" '.[] |
+              echo "$ALL_JSON" | jq -r --argjson ids "$ID_JSON" '.[] |
                 .data.namespace as $ns |
                 .repo as $repo |
                 "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
@@ -331,7 +329,7 @@ let
           fi
 
           [ "$WATCH" -eq 0 ] && break
-          $SLEEP "$WATCH"
+          sleep "$WATCH"
         done
         ;;
 
@@ -355,14 +353,14 @@ let
 
         if [ "$FOLLOW" = true ]; then
           # Streaming mode — read SSE events line by line
-          $CURL -sfN "$LOG_URL" | while IFS= read -r line; do
+          curl -sfN "$LOG_URL" | while IFS= read -r line; do
             case "$line" in
               data:\ *)
                 DATA="''${line#data: }"
                 if [ "$JSON_OUT" = true ]; then
                   echo "$DATA"
                 else
-                  echo "$DATA" | $JQ -r '.line |
+                  echo "$DATA" | jq -r '.line |
                     if test(":") then
                       "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
                     else . end'
@@ -371,19 +369,19 @@ let
             esac
           done
         else
-          RESULT=$($CURL -sf "$LOG_URL") || {
+          RESULT=$(curl -sf "$LOG_URL") || {
             echo "error: failed to fetch logs for $RESOLVED_INSTANCE" >&2
             exit 1
           }
           if [ "$JSON_OUT" = true ]; then
-            echo "$RESULT" | $JQ .
+            echo "$RESULT" | jq .
           else
-            echo "$RESULT" | $JQ -r '.lines[] |
+            echo "$RESULT" | jq -r '.lines[] |
               # Colorize unit prefix in cyan
               if test(":") then
                 "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
               else . end'
-            NOTE=$(echo "$RESULT" | $JQ -r '.note // empty')
+            NOTE=$(echo "$RESULT" | jq -r '.note // empty')
             if [ -n "$NOTE" ]; then
               printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
             fi
@@ -398,11 +396,11 @@ let
           exit 1
         fi
         resolve_instance "$ARG"
-        RESULT=$($CURL -sf -X POST "$API/ns/$RESOLVED_NS/restart/$RESOLVED_INSTANCE") || {
+        RESULT=$(curl -sf -X POST "$API/ns/$RESOLVED_NS/restart/$RESOLVED_INSTANCE") || {
           echo "error: failed to restart $RESOLVED_INSTANCE" >&2
           exit 1
         }
-        echo "$RESULT" | $JQ -r '"restarted \(.instance) (pod \(.pod))"'
+        echo "$RESULT" | jq -r '"restarted \(.instance) (pod \(.pod))"'
         ;;
 
       keys)
@@ -412,19 +410,19 @@ let
           exit 1
         fi
         resolve_instance "$ARG"
-        RESULT=$($CURL -sf "$API/ns/$RESOLVED_NS/keys/$RESOLVED_INSTANCE") || {
+        RESULT=$(curl -sf "$API/ns/$RESOLVED_NS/keys/$RESOLVED_INSTANCE") || {
           echo "error: failed to fetch keys for $RESOLVED_INSTANCE" >&2
           exit 1
         }
-        ERROR=$(echo "$RESULT" | $JQ -r '.error // empty')
+        ERROR=$(echo "$RESULT" | jq -r '.error // empty')
         if [ -n "$ERROR" ]; then
           echo "error: $ERROR" >&2
           exit 1
         fi
         if [ "$JSON_OUT" = true ]; then
-          echo "$RESULT" | $JQ .
+          echo "$RESULT" | jq .
         else
-          echo "$RESULT" | $JQ -r '"age recipient for \(.instance):\n  \(.publicKey)"'
+          echo "$RESULT" | jq -r '"age recipient for \(.instance):\n  \(.publicKey)"'
         fi
         ;;
 
@@ -464,6 +462,7 @@ let
         ;;
     esac
   '';
+  };
 
 in
 {
