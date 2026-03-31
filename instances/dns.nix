@@ -165,8 +165,7 @@ in
       ExecStart = pkgs.writeShellScript "pdns-init-db" ''
         DB=/seed/storage/data/pdns.db
         if ${pkgs.sqlite}/bin/sqlite3 "$DB" "SELECT 1 FROM records LIMIT 1" 2>/dev/null; then
-          echo "Schema exists, clearing records for clean sync"
-          ${pkgs.sqlite}/bin/sqlite3 "$DB" "DELETE FROM records;"
+          echo "Schema exists, preserving records"
           exit 0
         fi
         echo "Initializing schema..."
