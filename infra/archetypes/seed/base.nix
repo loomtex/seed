@@ -64,6 +64,11 @@
     allowReboot = false;
   };
 
+  # Disable IPv6 privacy extensions on the public NIC — 'all' and 'default'
+  # sysctls don't affect interfaces that exist before sysctl runs. Per-interface
+  # override is required for BGP source address to be the stable SLAAC EUI-64.
+  boot.kernel.sysctl."net.ipv6.conf.enp1s0f0.use_tempaddr" = 0;
+
   networking = {
     interfaces.enp1s0f0.useDHCP = true;
     firewall = {
