@@ -1,7 +1,7 @@
 # Base configuration shared by all seed k3s nodes.
 # Host-specific settings (hostname, sopsFile, timeZone, hardware, controller)
 # are provided by the archetype functions in flake.nix.
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   imports = [
