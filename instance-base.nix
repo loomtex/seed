@@ -10,12 +10,15 @@ let
   # the platform EST endpoint using vTPM attestation.
   #
   # Flow:
-  #   1. Generate ephemeral ECDSA P-256 key
+  #   1. Generate TPM-bound ECDSA P-256 key (private key never leaves the TPM)
   #   2. Create CSR with SPIFFE URI SAN
   #   3. Request age-encrypted challenge from controller (POST /est/challenge)
   #   4. Decrypt challenge using age-plugin-tpm (proves vTPM possession)
   #   5. Submit CSR + decrypted nonce (POST /est/enroll)
-  #   6. Write signed cert + CA to /seed/tls/
+  #   6. Write signed cert + CA + key handle to /seed/tls/
+  #
+  # The key.pem is a TSS2 PRIVATE KEY (TPM handle), not raw key material.
+  # Services use the tpm2-openssl provider for TLS operations.
   seedCertEnroll = pkgs.writeShellScript "seed-cert-enroll" ''
     set -euo pipefail
 
@@ -29,19 +32,25 @@ let
     TLS_DIR="/seed/tls"
     TPM_IDENTITY="/seed/tpm/age-identity"
 
+    export OPENSSL_MODULES="${pkgs.tpm2-openssl}/lib/ossl-modules"
+
     mkdir -p "$TLS_DIR"
 
-    # 1. Generate ephemeral ECDSA P-256 key
-    ${pkgs.openssl}/bin/openssl ecparam -genkey -name prime256v1 -noout \
-      -out "$TLS_DIR/key.pem" 2>/dev/null
+    # 1. Generate TPM-bound ECDSA P-256 key
+    # The output is a TSS2 PRIVATE KEY PEM — a TPM key handle, not raw material.
+    ${pkgs.openssl}/bin/openssl genpkey \
+      -provider tpm2 -provider default \
+      -algorithm EC -pkeyopt group:P-256 \
+      -out "$TLS_DIR/key.pem"
 
     # 2. Create CSR with SPIFFE URI SAN
     SPIFFE_URI="spiffe://seeds.loom.farm/$NAMESPACE/$INSTANCE"
     ${pkgs.openssl}/bin/openssl req -new \
+      -provider tpm2 -provider default -propquery '?provider=tpm2' \
       -key "$TLS_DIR/key.pem" \
       -subj "/O=seeds.loom.farm/OU=$NAMESPACE/CN=$INSTANCE" \
       -addext "subjectAltName=URI:$SPIFFE_URI" \
-      -out "$TLS_DIR/csr.pem" 2>/dev/null
+      -out "$TLS_DIR/csr.pem"
 
     CSR_PEM=$(cat "$TLS_DIR/csr.pem")
 
@@ -78,9 +87,8 @@ let
       "$EST_URL/est/cacerts" \
       -o "$TLS_DIR/ca.pem"
 
-    # Set permissions — key is sensitive, cert/ca are public
-    chmod 600 "$TLS_DIR/key.pem"
-    chmod 644 "$TLS_DIR/cert.pem" "$TLS_DIR/ca.pem"
+    # Key handle is not secret (useless without the TPM), but keep tidy
+    chmod 644 "$TLS_DIR/key.pem" "$TLS_DIR/cert.pem" "$TLS_DIR/ca.pem"
 
     # Remove CSR (no longer needed)
     rm -f "$TLS_DIR/csr.pem"
@@ -95,8 +103,9 @@ let
         major=''${dev%%:*}
         minor=''${dev##*:}
         mknod "/dev/$name" c "$major" "$minor"
-        chmod 0660 "/dev/$name"
       fi
+      chgrp tpm "/dev/$name" 2>/dev/null || true
+      chmod 0660 "/dev/$name"
     done
 
     # Also create /dev/tpmrm* (resource manager interface)
@@ -108,8 +117,9 @@ let
         major=''${dev%%:*}
         minor=''${dev##*:}
         mknod "/dev/$name" c "$major" "$minor"
-        chmod 0660 "/dev/$name"
       fi
+      chgrp tpm "/dev/$name" 2>/dev/null || true
+      chmod 0660 "/dev/$name"
     done
   '';
 in {
@@ -139,6 +149,9 @@ in {
   # k8s service DNS (CoreDNS) — enables service name resolution + external DNS
   networking.nameservers = lib.mkDefault [ "10.43.0.10" ];
 
+  # tpm group — services that need TPM access (TLS with TPM-bound keys) join this group
+  users.groups.tpm = {};
+
   # Minimal package set — just enough for systemd services to function,
   # plus TPM/secrets tooling for sops-nix integration
   environment.systemPackages = lib.mkDefault (with pkgs; [
@@ -148,6 +161,7 @@ in {
     age
     age-plugin-tpm
     tpm2-tools
+    tpm2-openssl
     sops
     openssl
     curl

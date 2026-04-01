@@ -117,6 +117,9 @@ in {
         mode = "0750";
       };
 
+      # postgres user needs TPM access for TLS operations (key is TPM-bound)
+      users.users.postgres.extraGroups = [ "tpm" ];
+
       services.postgresql = {
         enable = true;
         enableTCPIP = true;
@@ -124,11 +127,13 @@ in {
           listen_addresses = cfg.listenAddresses;
           port = cfg.port;
 
-          # TLS — use SPIFFE identity cert (copied to postgres-readable path)
+          # TLS — TPM-bound key via tpm2-openssl provider.
+          # key.pem is a TSS2 PRIVATE KEY (TPM handle, not raw material).
+          # PostgreSQL uses the tpm2 provider for all private key ops.
           ssl = true;
-          ssl_cert_file = "/run/seed-pg-tls/cert.pem";
-          ssl_key_file = "/run/seed-pg-tls/key.pem";
-          ssl_ca_file = "/run/seed-pg-tls/ca.pem";
+          ssl_cert_file = "/seed/tls/cert.pem";
+          ssl_key_file = "/seed/tls/key.pem";
+          ssl_ca_file = "/seed/tls/ca.pem";
         };
 
         # pg_ident.conf — map client cert DN → database role
@@ -138,34 +143,16 @@ in {
         authentication = lib.mkAfter (lib.concatStringsSep "\n" hbaLines);
       };
 
-      # Separate service to copy TLS certs to a postgres-readable location.
-      # Runs outside postgresql's ProtectSystem=strict sandbox.
-      systemd.services.seed-pg-tls = {
-        description = "Copy SPIFFE certs for PostgreSQL";
-        after = [ "seed-cert-enroll.service" ];
-        requires = [ "seed-cert-enroll.service" ];
-        before = [ "postgresql.service" ];
-        wantedBy = [ "postgresql.service" ];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = pkgs.writeShellScript "seed-pg-tls" ''
-            set -euo pipefail
-            mkdir -p /run/seed-pg-tls
-            cp /seed/tls/cert.pem /run/seed-pg-tls/cert.pem
-            cp /seed/tls/key.pem /run/seed-pg-tls/key.pem
-            cp /seed/tls/ca.pem /run/seed-pg-tls/ca.pem
-            chown postgres:postgres /run/seed-pg-tls/*
-            chmod 600 /run/seed-pg-tls/key.pem
-            chmod 644 /run/seed-pg-tls/cert.pem /run/seed-pg-tls/ca.pem
-          '';
-        };
+      # Load tpm2-openssl provider so PostgreSQL can use the TPM-bound key.
+      # Also grant access to /dev/tpmrm0 and /seed/tls/ through the sandbox.
+      systemd.services.postgresql.environment.OPENSSL_MODULES =
+        "${pkgs.tpm2-openssl}/lib/ossl-modules";
+      systemd.services.postgresql.after = [ "seed-cert-enroll.service" ];
+      systemd.services.postgresql.requires = [ "seed-cert-enroll.service" ];
+      systemd.services.postgresql.serviceConfig = {
+        ReadOnlyPaths = [ "/seed/tls" ];
+        DeviceAllow = [ "/dev/tpmrm0 rw" ];
       };
-
-      # Give postgresql read access to the cert directory
-      systemd.services.postgresql.after = [ "seed-pg-tls.service" ];
-      systemd.services.postgresql.requires = [ "seed-pg-tls.service" ];
-      systemd.services.postgresql.serviceConfig.ReadOnlyPaths = [ "/run/seed-pg-tls" ];
 
       # Create databases and roles declared in the config
       systemd.services.seed-pg-init = {
