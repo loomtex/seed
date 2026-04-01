@@ -28,7 +28,68 @@ const COMPONENT = "domain";
 
 const PLATFORM_NAMESERVERS = ["ns1.loom.farm", "ns2.loom.farm"];
 
-/** Create a zone in PowerDNS via its HTTP API. */
+/** SOA and NS rrsets that every zone must have. */
+function requiredRrsets(fqdn: string): object[] {
+  return [
+    {
+      name: fqdn,
+      type: "SOA",
+      ttl: 300,
+      changetype: "REPLACE",
+      records: [{
+        content: `ns1.loom.farm. hostmaster.loom.farm. ${soaSerial()} 10800 3600 604800 300`,
+        disabled: false,
+      }],
+    },
+    {
+      name: fqdn,
+      type: "NS",
+      ttl: 300,
+      changetype: "REPLACE",
+      records: PLATFORM_NAMESERVERS.map((ns) => ({
+        content: ns.endsWith(".") ? ns : `${ns}.`,
+        disabled: false,
+      })),
+    },
+  ];
+}
+
+/** Ensure a zone has SOA and NS records, patching them in if missing. */
+async function ensureZoneHealthy(
+  pdnsApiUrl: string,
+  pdnsApiKey: string,
+  fqdn: string,
+): Promise<boolean> {
+  const url = `${pdnsApiUrl}/api/v1/servers/localhost/zones/${fqdn}`;
+  const resp = await fetch(url, {
+    headers: { "X-API-Key": pdnsApiKey },
+  });
+  if (!resp.ok) return false;
+
+  const zone = await resp.json() as { rrsets?: { type: string }[] };
+  const types = new Set((zone.rrsets ?? []).map((r) => r.type));
+  if (types.has("SOA") && types.has("NS")) return true;
+
+  log(COMPONENT, `zone ${fqdn} missing SOA/NS — patching`);
+  const patchResp = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      "X-API-Key": pdnsApiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ rrsets: requiredRrsets(fqdn) }),
+  });
+
+  if (patchResp.ok) {
+    log(COMPONENT, `repaired SOA/NS for ${fqdn}`);
+    return true;
+  }
+  const body = await patchResp.text();
+  log(COMPONENT, `failed to repair ${fqdn}: ${patchResp.status} ${body}`);
+  return false;
+}
+
+/** Create a zone in PowerDNS via its HTTP API, or repair it if SOA/NS are missing. */
 async function createPdnsZone(
   pdnsApiUrl: string,
   pdnsApiKey: string,
@@ -42,8 +103,8 @@ async function createPdnsZone(
     headers: { "X-API-Key": pdnsApiKey },
   });
   if (checkResp.ok) {
-    log(COMPONENT, `zone ${fqdn} already exists`);
-    return true;
+    // Zone exists — ensure it has SOA and NS records
+    return ensureZoneHealthy(pdnsApiUrl, pdnsApiKey, fqdn);
   }
 
   // Create the zone
@@ -57,17 +118,7 @@ async function createPdnsZone(
       name: fqdn,
       kind: "Native",
       nameservers: PLATFORM_NAMESERVERS.map((ns) => (ns.endsWith(".") ? ns : `${ns}.`)),
-      rrsets: [
-        {
-          name: fqdn,
-          type: "SOA",
-          ttl: 300,
-          records: [{
-            content: `ns1.loom.farm. hostmaster.loom.farm. ${soaSerial()} 10800 3600 604800 300`,
-            disabled: false,
-          }],
-        },
-      ],
+      rrsets: requiredRrsets(fqdn),
     }),
   });
 
@@ -213,7 +264,13 @@ async function reconcileDomain(
       }
 
       case "ZoneReady": {
-        // Terminal state — refresh expiry if we have registrar access
+        // Verify zone health (SOA/NS present) — self-heal if missing
+        const healthy = await ensureZoneHealthy(pdnsApiUrl, pdnsApiKey,
+          name.endsWith(".") ? name : `${name}.`);
+        if (!healthy) {
+          return { ...status, phase: "Error", zoneReady: false, message: "zone missing SOA/NS and repair failed" };
+        }
+        // Refresh expiry if we have registrar access
         if (namesilo && domain.spec.register) {
           const info = await getDomainInfo(namesilo, name);
           if (info) {
