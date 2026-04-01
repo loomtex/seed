@@ -250,6 +250,14 @@ let
   # Namespace for seed system components
   seedSystemNS = "seed-system";
 
+  # Standard labels for system components
+  systemLabels = component: {
+    "app.kubernetes.io/name" = "seed-${component}";
+    "app.kubernetes.io/part-of" = "seed";
+    "seed.loom.farm/managed-by" = "seed";
+    "seed.loom.farm/component" = component;
+  };
+
   # ServiceAccount for controller
   controllerSA = pkgs.writeText "seed-controller-sa.yaml" (builtins.toJSON {
     apiVersion = "v1";
@@ -383,13 +391,13 @@ let
     metadata = {
       name = "seed-controller";
       namespace = seedSystemNS;
-      labels."app.kubernetes.io/name" = "seed-controller";
+      labels = systemLabels "controller";
     };
     spec = {
       replicas = 1;
       selector.matchLabels."app.kubernetes.io/name" = "seed-controller";
       template = {
-        metadata.labels."app.kubernetes.io/name" = "seed-controller";
+        metadata.labels = systemLabels "controller";
         spec = {
           serviceAccountName = "seed-controller";
           # Pin to this node — controller needs hostPath secrets (sops-nix)
@@ -508,12 +516,12 @@ let
     metadata = {
       name = "seed-host-agent";
       namespace = seedSystemNS;
-      labels."app.kubernetes.io/name" = "seed-host-agent";
+      labels = systemLabels "host-agent";
     };
     spec = {
       selector.matchLabels."app.kubernetes.io/name" = "seed-host-agent";
       template = {
-        metadata.labels."app.kubernetes.io/name" = "seed-host-agent";
+        metadata.labels = systemLabels "host-agent";
         spec = {
           serviceAccountName = "seed-controller";
           # Default runtime — host agent needs host access, not Kata
@@ -555,12 +563,12 @@ let
     metadata = {
       name = "seed-pool-manager";
       namespace = seedSystemNS;
-      labels."app.kubernetes.io/name" = "seed-pool-manager";
+      labels = systemLabels "pool-manager";
     };
     spec = {
       selector.matchLabels."app.kubernetes.io/name" = "seed-pool-manager";
       template = {
-        metadata.labels."app.kubernetes.io/name" = "seed-pool-manager";
+        metadata.labels = systemLabels "pool-manager";
         spec = {
           serviceAccountName = "seed-controller";
           hostPID = false;
