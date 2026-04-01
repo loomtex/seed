@@ -208,11 +208,18 @@ in {
     wants = [ "network-online.target" ];
     requires = [ "seed-tpm-init.service" ];
     path = [ pkgs.age-plugin-tpm ];
+    unitConfig = {
+      # Retry up to 5 times within 5 minutes on boot failures
+      StartLimitIntervalSec = 300;
+      StartLimitBurst = 5;
+    };
     serviceConfig = {
       Type = "oneshot";
       EnvironmentFile = "/run/seed/env";
       ExecStart = seedCertEnroll;
       RemainAfterExit = true;
+      Restart = "on-failure";
+      RestartSec = "30s";
     };
   };
 
