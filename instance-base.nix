@@ -121,16 +121,24 @@ in {
   sops.age.plugins = lib.mkDefault [ pkgs.age-plugin-tpm ];
 
   # Trust the platform CA if mounted by the controller.
-  # The seed-ca ConfigMap is optional — if cert-manager isn't deployed,
-  # /etc/seed/ca/ca.crt won't exist and this is a no-op.
+  # Nix-built binaries (curl, Go programs, etc.) use hardcoded CA paths from
+  # pkgs.cacert, not /etc/ssl/certs/. We build a combined CA bundle during
+  # activation and set SSL_CERT_FILE globally so all programs use it.
   system.activationScripts.seedTrust = {
     deps = [ "etc" ];
     text = ''
+      mkdir -p /etc/seed/trust
       if [ -f /etc/seed/ca/ca.crt ]; then
-        cat /etc/seed/ca/ca.crt >> /etc/ssl/certs/ca-certificates.crt
+        cat ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/seed/ca/ca.crt > /etc/seed/trust/ca-bundle.crt
+      else
+        cp ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/seed/trust/ca-bundle.crt
       fi
     '';
   };
+
+  # Point all TLS libraries at the combined CA bundle
+  environment.variables.SSL_CERT_FILE = "/etc/seed/trust/ca-bundle.crt";
+  environment.variables.NIX_SSL_CERT_FILE = "/etc/seed/trust/ca-bundle.crt";
 
   # Capture k8s-injected SEED_* environment variables for use by services.
   # Kata VMs: systemd strips the inherited environment on startup, so
