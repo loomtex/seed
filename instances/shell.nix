@@ -265,9 +265,10 @@ let
               echo "$RESULT" | jq -r --arg repo "$ARG" --arg id "$IDENTITY" '
                 .namespace as $ns |
                 (.reconcile.commit // "") as $commit |
-                "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
-                  (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end) +
-                  (if $commit != "" then "  \u001b[2m\($commit)\u001b[0m" else "" end),
+                "\u001b[1;4m\($repo)\u001b[0m" +
+                  (if $commit != "" then " \u001b[2m(\($commit))\u001b[0m" else "" end) +
+                  "  \u001b[2m\($ns)\u001b[0m" +
+                  (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end),
                 (.instances | to_entries[] |
                   "  \u001b[1m\(.key)\u001b[0m " +
                   (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
@@ -308,9 +309,10 @@ let
                 .data.namespace as $ns |
                 .repo as $repo |
                 (.data.reconcile.commit // "") as $commit |
-                "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
-                  (if $ids[$repo] then "  \u001b[2m\($ids[$repo])\u001b[0m" else "" end) +
-                  (if $commit != "" then "  \u001b[2m\($commit)\u001b[0m" else "" end),
+                "\u001b[1;4m\($repo)\u001b[0m" +
+                  (if $commit != "" then " \u001b[2m(\($commit))\u001b[0m" else "" end) +
+                  "  \u001b[2m\($ns)\u001b[0m" +
+                  (if $ids[$repo] then "  \u001b[2m\($ids[$repo])\u001b[0m" else "" end),
                 (.data.instances | to_entries[] |
                   "  \u001b[1m\(.key)\u001b[0m " +
                   (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
