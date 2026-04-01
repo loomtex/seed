@@ -275,6 +275,15 @@ func (m model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.logScroll++
 		}
 
+	case "pgup", "ctrl+b":
+		page := m.height - 4
+		m.logScroll = max(0, m.logScroll-page)
+
+	case "pgdown", "ctrl+f":
+		page := m.height - 4
+		maxScroll := max(0, len(m.logLines)-page)
+		m.logScroll = min(maxScroll, m.logScroll+page)
+
 	case "g":
 		m.logScroll = 0
 
@@ -486,7 +495,7 @@ func (m model) viewLogs() string {
 	if len(m.logLines) > 0 {
 		pct = (m.logScroll * 100) / max(1, len(m.logLines)-viewHeight)
 	}
-	help := fmt.Sprintf("j/k scroll  g/G top/bottom  R reload  esc back  q quit  [%d%%]", min(pct, 100))
+	help := fmt.Sprintf("j/k scroll  pgup/pgdn page  g/G top/bottom  R reload  esc back  q quit  [%d%%]", min(pct, 100))
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
