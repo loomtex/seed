@@ -153,7 +153,7 @@ let
     if [ -z "''${SSH_ORIGINAL_COMMAND:-}" ] && [ -t 0 ] && [ -n "$REPOS_RAW" ]; then
       export SEED_API_URL="${controllerApi}"
       export SEED_REPOS="$REPOS_RAW"
-      exec ${seedTui}/bin/seed-tui
+      exec ${seedTui}/bin/tui
     fi
 
     # Parse command from SSH_ORIGINAL_COMMAND into words.
