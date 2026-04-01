@@ -419,14 +419,57 @@ async function waitForHostTasks(
 }
 
 /**
+ * Ensure the seed-ca ConfigMap exists in a namespace with the platform CA cert.
+ * Creates or updates the ConfigMap so instances can trust the platform CA.
+ */
+async function ensureSeedCAConfigMap(
+  core: k8s.CoreV1Api,
+  namespace: string,
+  caCert: string,
+): Promise<void> {
+  const configMap: k8s.V1ConfigMap = {
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: {
+      name: "seed-ca",
+      namespace,
+      labels: { [LABELS.MANAGED_BY]: MANAGED_BY_VALUE },
+    },
+    data: { "ca.crt": caCert },
+  };
+
+  try {
+    const existing = await core.readNamespacedConfigMap({ name: "seed-ca", namespace });
+    if (existing.data?.["ca.crt"] !== caCert) {
+      configMap.metadata!.resourceVersion = existing.metadata?.resourceVersion;
+      await core.replaceNamespacedConfigMap({ name: "seed-ca", namespace, body: configMap });
+      log("controller", `updated seed-ca ConfigMap`, namespace);
+    }
+  } catch {
+    await core.createNamespacedConfigMap({ namespace, body: configMap });
+    log("controller", `created seed-ca ConfigMap`, namespace);
+  }
+}
+
+/**
  * Apply the desired state to the cluster.
  * Creates missing resources, updates existing ones.
  */
 async function applyDesiredState(
   clients: ReturnType<typeof makeClients>,
   desired: DesiredState,
+  platformCACert?: string,
 ): Promise<void> {
   const { namespace } = desired;
+
+  // Replicate platform CA certificate as ConfigMap in instance namespace
+  if (platformCACert) {
+    try {
+      await ensureSeedCAConfigMap(clients.core, namespace, platformCACert);
+    } catch (err) {
+      log("controller", `seed-ca ConfigMap error: ${err}`, namespace);
+    }
+  }
 
   // Apply SeedHostTasks first (swtpm must be running before pods start)
   for (const [name, instance] of desired.instances) {
@@ -1605,6 +1648,24 @@ async function main(): Promise<void> {
   }
   log("controller", "k8s API ready");
 
+  // Load platform CA certificate from cert-manager for seed trust
+  let platformCACert = "";
+  try {
+    const secret = await clients.core.readNamespacedSecret({
+      name: "seed-root-ca",
+      namespace: "cert-manager",
+    });
+    const caCertB64 = secret.data?.["tls.crt"];
+    if (caCertB64) {
+      platformCACert = Buffer.from(caCertB64, "base64").toString("utf-8");
+      log("controller", "loaded platform CA certificate from cert-manager/seed-root-ca");
+    } else {
+      log("controller", "warning: seed-root-ca secret exists but has no tls.crt");
+    }
+  } catch (err) {
+    log("controller", `platform CA not available (cert-manager may not be deployed): ${err}`);
+  }
+
   // Ensure namespaces with labels/annotations
   for (const [flakePath, fs] of flakeStates) {
     try {
@@ -1829,7 +1890,7 @@ async function main(): Promise<void> {
       );
 
       // Apply desired state (SeedHostTasks already applied, skipped inside)
-      await applyDesiredState(clients, desired);
+      await applyDesiredState(clients, desired, platformCACert);
 
       // Reap resources not in desired state
       await reapOldResources(clients, namespace, desired);

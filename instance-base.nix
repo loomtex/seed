@@ -120,6 +120,18 @@ in {
   sops.age.keyFile = lib.mkDefault "/seed/tpm/age-identity";
   sops.age.plugins = lib.mkDefault [ pkgs.age-plugin-tpm ];
 
+  # Trust the platform CA if mounted by the controller.
+  # The seed-ca ConfigMap is optional — if cert-manager isn't deployed,
+  # /etc/seed/ca/ca.crt won't exist and this is a no-op.
+  system.activationScripts.seedTrust = {
+    deps = [ "etc" ];
+    text = ''
+      if [ -f /etc/seed/ca/ca.crt ]; then
+        cat /etc/seed/ca/ca.crt >> /etc/ssl/certs/ca-certificates.crt
+      fi
+    '';
+  };
+
   # Capture k8s-injected SEED_* environment variables for use by services.
   # Kata VMs: systemd strips the inherited environment on startup, so
   # PassEnvironment doesn't work. This activation script reads PID 1's

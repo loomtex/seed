@@ -46,6 +46,20 @@ export function generateDeployment(
     });
   }
 
+  // Platform CA trust — mount seed-ca ConfigMap (created by controller if cert-manager is available)
+  volumes.push({
+    name: "seed-ca",
+    configMap: {
+      name: "seed-ca",
+      optional: true,
+    },
+  });
+  mounts.push({
+    name: "seed-ca",
+    mountPath: "/etc/seed/ca",
+    readOnly: true,
+  });
+
   // TPM state volume (CephFS-backed hostPath)
   if (tpmSocketPath) {
     volumes.push({
