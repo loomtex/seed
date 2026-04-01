@@ -160,6 +160,7 @@ in {
         after = [ "postgresql.service" ];
         requires = [ "postgresql.service" ];
         wantedBy = [ "multi-user.target" ];
+        path = [ config.services.postgresql.package ];
         serviceConfig = {
           Type = "oneshot";
           User = "postgres";
