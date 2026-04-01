@@ -286,7 +286,7 @@ let
     rules = [
       {
         apiGroups = [ "" ];
-        resources = [ "namespaces" "pods" "persistentvolumeclaims" "services" "configmaps" "endpoints" "events" ];
+        resources = [ "namespaces" "pods" "persistentvolumeclaims" "services" "configmaps" "endpoints" "events" "nodes" ];
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
       {
