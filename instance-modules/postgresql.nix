@@ -140,16 +140,18 @@ in {
 
       # PostgreSQL needs to read the TLS key. The key is 0600 root-owned
       # from the enrollment script. Copy to a postgres-readable location
-      # before postgresql starts.
-      systemd.services.postgresql.preStart = lib.mkBefore ''
-        mkdir -p /run/postgresql/tls
-        cp /seed/tls/cert.pem /run/postgresql/tls/cert.pem
-        cp /seed/tls/key.pem /run/postgresql/tls/key.pem
-        cp /seed/tls/ca.pem /run/postgresql/tls/ca.pem
-        chown postgres:postgres /run/postgresql/tls/*
-        chmod 600 /run/postgresql/tls/key.pem
-        chmod 644 /run/postgresql/tls/cert.pem /run/postgresql/tls/ca.pem
-      '';
+      # before postgresql starts. Uses + prefix to run as root.
+      systemd.services.postgresql.serviceConfig.ExecStartPre = lib.mkBefore [
+        ("+" + pkgs.writeShellScript "pg-copy-tls" ''
+          mkdir -p /run/postgresql/tls
+          cp /seed/tls/cert.pem /run/postgresql/tls/cert.pem
+          cp /seed/tls/key.pem /run/postgresql/tls/key.pem
+          cp /seed/tls/ca.pem /run/postgresql/tls/ca.pem
+          chown postgres:postgres /run/postgresql/tls/*
+          chmod 600 /run/postgresql/tls/key.pem
+          chmod 644 /run/postgresql/tls/cert.pem /run/postgresql/tls/ca.pem
+        '')
+      ];
 
       # Ensure postgresql starts after cert enrollment
       systemd.services.postgresql.after = [ "seed-cert-enroll.service" ];
