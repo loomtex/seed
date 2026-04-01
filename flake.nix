@@ -196,6 +196,9 @@
       # SSH any-key identity auth (used by seed-shell and silo)
       ssh-auth = ./ssh-auth.nix;
 
+      # Wrapped instance modules — seed.services.*
+      postgresql = ./instance-modules/postgresql.nix;
+
       # Controller: reconciles instance definitions into Kata pods
       controller = ./controller.nix;
     };

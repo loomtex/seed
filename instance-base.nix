@@ -39,7 +39,7 @@ let
     SPIFFE_URI="spiffe://seeds.loom.farm/$NAMESPACE/$INSTANCE"
     ${pkgs.openssl}/bin/openssl req -new \
       -key "$TLS_DIR/key.pem" \
-      -subj "/O=seeds.loom.farm" \
+      -subj "/O=seeds.loom.farm/OU=$NAMESPACE/CN=$INSTANCE" \
       -addext "subjectAltName=URI:$SPIFFE_URI" \
       -out "$TLS_DIR/csr.pem" 2>/dev/null
 

@@ -17,6 +17,7 @@ let
     modules = [
       self.nixosModules.instance-base
       self.nixosModules.instance
+      self.nixosModules.postgresql
       self.nixosModules.sops
       self.nixosModules.ssh-auth
       { networking.hostName = name; }
