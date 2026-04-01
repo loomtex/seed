@@ -175,6 +175,22 @@ async function configureBGP(
   // native public IPv6. This prevents FRR from auto-selecting a wrong
   // source address (e.g. a SLAAC address from the announced block).
   if (ipv6Block) {
+    // Delete old cluster-wide IPv6 peer first — FRR mode rejects
+    // duplicate peerAddress, so old peer must be gone before creating
+    // per-node peers with the same peerAddress.
+    try {
+      await clients.custom.deleteNamespacedCustomObject({
+        group: CRD_GROUP,
+        version: CRD_VERSION_V2,
+        namespace: METALLB_NAMESPACE,
+        plural: "bgppeers",
+        name: "seed-bgp-ipv6",
+      });
+      log("metallb", "removed old cluster-wide seed-bgp-ipv6 peer");
+    } catch {
+      // Doesn't exist, fine
+    }
+
     const nodeIPs = await getNodePublicIPv6(clients);
     const peerNames: string[] = [];
 
@@ -212,20 +228,6 @@ async function configureBGP(
     }
 
     log("metallb", `configured ${peerNames.length} per-node IPv6 BGP peers`);
-
-    // Clean up old cluster-wide IPv6 peer
-    try {
-      await clients.custom.deleteNamespacedCustomObject({
-        group: CRD_GROUP,
-        version: CRD_VERSION_V2,
-        namespace: METALLB_NAMESPACE,
-        plural: "bgppeers",
-        name: "seed-bgp-ipv6",
-      });
-      log("metallb", "removed old cluster-wide seed-bgp-ipv6 peer");
-    } catch {
-      // Doesn't exist, fine
-    }
   }
 
   // BGP advertisement for the pool
