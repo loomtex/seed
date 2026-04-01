@@ -98,8 +98,11 @@ let
       "$EST_URL/est/cacerts" \
       -o "$TLS_DIR/ca.pem"
 
-    # Key handle is not secret (useless without the TPM), but keep tidy
-    chmod 644 "$TLS_DIR/key.pem" "$TLS_DIR/cert.pem" "$TLS_DIR/ca.pem"
+    # key.pem is a TPM handle (not secret), but PostgreSQL checks permissions.
+    # 0640 root:tpm satisfies pg's check while allowing tpm group members to read.
+    chgrp tpm "$TLS_DIR/key.pem"
+    chmod 0640 "$TLS_DIR/key.pem"
+    chmod 0644 "$TLS_DIR/cert.pem" "$TLS_DIR/ca.pem"
 
     # Remove CSR (no longer needed)
     rm -f "$TLS_DIR/csr.pem"
