@@ -622,5 +622,9 @@ INITEOF
         description = "Seed multi-instance — web frontend + API backend";
       };
     };
+
+    devShells.${system}.tui = pkgs.mkShell {
+      buildInputs = with pkgs; [ go gopls ];
+    };
   };
 }

@@ -18,6 +18,14 @@
 let
   controllerApi = "http://seed-controller.seed-system.svc.cluster.local:9876";
 
+  # TUI — interactive terminal dashboard (Go + bubbletea)
+  seedTui = pkgs.buildGoModule {
+    pname = "seed-tui";
+    version = "0.1.0";
+    src = ./shell-tui;
+    vendorHash = "sha256-YSjJ8NOL97hXZLnfGYIjoKmARv+gWOsv+5qkl9konnA=";
+  };
+
   # Auth-keys hook: look up the connecting key in the controller's key index
   # and output an extra environment= directive with the repo list.
   # Called by seed.sshAuth with $1=KEY_TYPE $2=KEY_BLOB.
@@ -140,6 +148,13 @@ let
       RESOLVED_INSTANCE="$arg"
       RESOLVED_NS="''${match_ns[0]}"
     }
+
+    # Interactive TUI: if no command given and TTY is allocated, launch TUI
+    if [ -z "''${SSH_ORIGINAL_COMMAND:-}" ] && [ -t 0 ] && [ -n "$REPOS_RAW" ]; then
+      export SEED_API_URL="${controllerApi}"
+      export SEED_REPOS="$REPOS_RAW"
+      exec ${seedTui}/bin/seed-tui
+    fi
 
     # Parse command from SSH_ORIGINAL_COMMAND into words.
     # Default to status if repos are available, help otherwise.
