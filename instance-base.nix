@@ -36,6 +36,16 @@ let
 
     mkdir -p "$TLS_DIR"
 
+    # Ensure TPM device exists (Kata VMs use tmpfs on /dev, nodes created by activation)
+    if [ ! -e /dev/tpmrm0 ]; then
+      echo "WARNING: /dev/tpmrm0 not found, running tpm-dev-create"
+      ${tpmDevCreate}
+    fi
+    if [ ! -e /dev/tpmrm0 ]; then
+      echo "ERROR: /dev/tpmrm0 still not found after device creation"
+      exit 1
+    fi
+
     # 1. Generate TPM-bound ECDSA P-256 key
     # The output is a TSS2 PRIVATE KEY PEM — a TPM key handle, not raw material.
     ${pkgs.openssl}/bin/openssl genpkey \
@@ -65,7 +75,8 @@ let
     ENCRYPTED=$(echo "$CHALLENGE_RESP" | ${pkgs.jq}/bin/jq -r '.encrypted')
 
     # 4. Decrypt challenge using age-plugin-tpm (proves vTPM possession)
-    NONCE=$(echo "$ENCRYPTED" | ${pkgs.age}/bin/age -d -i "$TPM_IDENTITY")
+    # Timeout after 30s — age-plugin-tpm hangs if /dev/tpmrm0 is missing/broken.
+    NONCE=$(echo "$ENCRYPTED" | timeout 30 ${pkgs.age}/bin/age -d -i "$TPM_IDENTITY")
 
     # 5. Submit CSR + decrypted nonce to EST enroll endpoint
     ENROLL_BODY=$(${pkgs.jq}/bin/jq -n \
