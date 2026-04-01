@@ -114,6 +114,25 @@ export async function configureMetalLB(
   log("metallb", "pool configuration complete");
 }
 
+/** Get each node's public IPv6 address from the k8s Node objects. */
+async function getNodePublicIPv6(clients: KubeClients): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const nodes = await clients.core.listNode();
+  for (const node of nodes.items) {
+    const name = node.metadata?.name;
+    if (!name) continue;
+    for (const addr of node.status?.addresses ?? []) {
+      // ExternalIP that is a global IPv6 (not ULA fd00::/8, not link-local fe80::/10)
+      if (addr.type === "ExternalIP" && addr.address.includes(":") &&
+          !addr.address.startsWith("fd") && !addr.address.startsWith("fe80")) {
+        result.set(name, addr.address);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
 /** Configure BGP peering and advertisements. */
 async function configureBGP(
   clients: KubeClients,
@@ -123,7 +142,7 @@ async function configureBGP(
 ): Promise<void> {
   log("metallb", `configuring BGP: myASN=${bgp.myASN} peerASN=${bgp.peerASN}`);
 
-  // IPv4 BGP peer
+  // IPv4 BGP peer (cluster-wide — link-local peer, no source address issues)
   if (ipv4Address) {
     const peer4: Record<string, unknown> = {
       apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
@@ -152,33 +171,61 @@ async function configureBGP(
     );
   }
 
-  // IPv6 BGP peer
+  // IPv6 BGP peers — per-node with sourceAddress pinned to the node's
+  // native public IPv6. This prevents FRR from auto-selecting a wrong
+  // source address (e.g. a SLAAC address from the announced block).
   if (ipv6Block) {
-    const peer6: Record<string, unknown> = {
-      apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
-      kind: "BGPPeer",
-      metadata: {
-        name: "seed-bgp-ipv6",
-        namespace: METALLB_NAMESPACE,
-      },
-      spec: {
-        myASN: bgp.myASN,
-        peerASN: bgp.peerASN,
-        peerAddress: bgp.peerAddressIPv6,
-        ebgpMultiHop: true,
-        ...(bgp.password ? { password: bgp.password } : {}),
-      },
-    };
+    const nodeIPs = await getNodePublicIPv6(clients);
+    const peerNames: string[] = [];
 
-    await applyCustomResource(
-      clients.custom,
-      CRD_GROUP,
-      CRD_VERSION_V2,
-      METALLB_NAMESPACE,
-      "bgppeers",
-      "seed-bgp-ipv6",
-      peer6,
-    );
+    for (const [nodeName, ipv6] of nodeIPs) {
+      const peerName = `seed-bgp-ipv6-${nodeName}`;
+      peerNames.push(peerName);
+
+      const peer6: Record<string, unknown> = {
+        apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
+        kind: "BGPPeer",
+        metadata: {
+          name: peerName,
+          namespace: METALLB_NAMESPACE,
+        },
+        spec: {
+          myASN: bgp.myASN,
+          peerASN: bgp.peerASN,
+          peerAddress: bgp.peerAddressIPv6,
+          sourceAddress: ipv6,
+          ebgpMultiHop: true,
+          nodeSelectors: [{ matchLabels: { "kubernetes.io/hostname": nodeName } }],
+          ...(bgp.password ? { password: bgp.password } : {}),
+        },
+      };
+
+      await applyCustomResource(
+        clients.custom,
+        CRD_GROUP,
+        CRD_VERSION_V2,
+        METALLB_NAMESPACE,
+        "bgppeers",
+        peerName,
+        peer6,
+      );
+    }
+
+    log("metallb", `configured ${peerNames.length} per-node IPv6 BGP peers`);
+
+    // Clean up old cluster-wide IPv6 peer
+    try {
+      await clients.custom.deleteNamespacedCustomObject({
+        group: CRD_GROUP,
+        version: CRD_VERSION_V2,
+        namespace: METALLB_NAMESPACE,
+        plural: "bgppeers",
+        name: "seed-bgp-ipv6",
+      });
+      log("metallb", "removed old cluster-wide seed-bgp-ipv6 peer");
+    } catch {
+      // Doesn't exist, fine
+    }
   }
 
   // BGP advertisement for the pool
