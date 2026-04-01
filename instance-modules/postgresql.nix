@@ -144,9 +144,27 @@ in {
       };
 
       # Load tpm2-openssl provider so PostgreSQL can use the TPM-bound key.
-      # Also grant access to /dev/tpmrm0 and /seed/tls/ through the sandbox.
-      systemd.services.postgresql.environment.OPENSSL_MODULES =
-        "${pkgs.tpm2-openssl}/lib/ossl-modules";
+      # OpenSSL needs both OPENSSL_MODULES (where to find tpm2.so) and
+      # OPENSSL_CONF (config that activates the provider on key load).
+      systemd.services.postgresql.environment = {
+        OPENSSL_MODULES = "${pkgs.tpm2-openssl}/lib/ossl-modules";
+        OPENSSL_CONF = pkgs.writeText "openssl-tpm2.cnf" ''
+          openssl_conf = openssl_init
+
+          [openssl_init]
+          providers = provider_sect
+
+          [provider_sect]
+          default = default_sect
+          tpm2 = tpm2_sect
+
+          [default_sect]
+          activate = 1
+
+          [tpm2_sect]
+          activate = 1
+        '';
+      };
       systemd.services.postgresql.after = [ "seed-cert-enroll.service" ];
       systemd.services.postgresql.requires = [ "seed-cert-enroll.service" ];
       systemd.services.postgresql.serviceConfig = {
