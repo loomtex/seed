@@ -106,6 +106,17 @@ let
 
 in {
   options.seed = {
+    namespace = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      internal = true;
+      description = ''
+        The k8s namespace this instance runs in. Platform-assigned, derived
+        from the flake's .seed-identity (IPNS CID). Set by mkInstance only —
+        instances cannot override this (prevents namespace spoofing).
+      '';
+    };
+
     size = lib.mkOption {
       type = lib.types.enum [ "xs" "s" "m" "l" "xl" ];
       default = "xs";

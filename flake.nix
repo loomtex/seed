@@ -241,14 +241,15 @@
     };
 
     # Dogfooding: seed's own instances
-    seeds = {
-      web = mkSeed { name = "web"; module = ./instances/web.nix; };
-      dns = mkSeed { name = "dns"; module = ./instances/dns.nix; };
-      silo = mkSeed { name = "silo"; module = ./instances/silo.nix; };
-      shell = mkSeed { name = "shell"; module = ./instances/shell.nix; };
-      gateway = mkSeed { name = "gateway"; module = ./instances/gateway.nix; };
-      social = mkSeed { name = "social"; module = ./instances/social.nix; };
-      keycloak = mkSeed { name = "keycloak"; module = ./instances/keycloak.nix; };
+    # Namespace grandparented from URI-based derivation (github:loomtex/seed)
+    seeds = let ns = { namespace = "s-gaydazldmnsg"; }; in {
+      web = mkSeed (ns // { name = "web"; module = ./instances/web.nix; });
+      dns = mkSeed (ns // { name = "dns"; module = ./instances/dns.nix; });
+      silo = mkSeed (ns // { name = "silo"; module = ./instances/silo.nix; });
+      shell = mkSeed (ns // { name = "shell"; module = ./instances/shell.nix; });
+      gateway = mkSeed (ns // { name = "gateway"; module = ./instances/gateway.nix; });
+      social = mkSeed (ns // { name = "social"; module = ./instances/social.nix; });
+      keycloak = mkSeed (ns // { name = "keycloak"; module = ./instances/keycloak.nix; });
     };
 
     # Controller + host agent TypeScript packages
