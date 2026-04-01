@@ -279,9 +279,9 @@ let
                 ),
                 (if .reconcile then
                   if .reconcile.phase == "failed" then
-                    "\n  \u001b[31mBuild \(.reconcile.commit // "?") failed:\u001b[0m \(.reconcile.error)"
+                    "\n  \u001b[31mBuild \(.reconcile.buildCommit // "?") failed:\u001b[0m \(.reconcile.error)"
                   elif .reconcile.phase == "building" or .reconcile.phase == "evaluating" or .reconcile.phase == "applying" then
-                    "\n  \u001b[33m⧗ \(.reconcile.phase) \(.reconcile.commit // "")\u001b[0m" +
+                    "\n  \u001b[33m⧗ \(.reconcile.phase) \(.reconcile.buildCommit // "")\u001b[0m" +
                     ([.reconcile.instances | to_entries[] | select(.value.phase == "building") | .key] |
                       if length > 0 then " — building: \(join(", "))" else "" end)
                   else empty end
@@ -323,9 +323,9 @@ let
                 ),
                 (if .data.reconcile then
                   if .data.reconcile.phase == "failed" then
-                    "\n  \u001b[31mBuild \(.data.reconcile.commit // "?") failed:\u001b[0m \(.data.reconcile.error)"
+                    "\n  \u001b[31mBuild \(.data.reconcile.buildCommit // "?") failed:\u001b[0m \(.data.reconcile.error)"
                   elif .data.reconcile.phase == "building" or .data.reconcile.phase == "evaluating" or .data.reconcile.phase == "applying" then
-                    "\n  \u001b[33m⧗ \(.data.reconcile.phase) \(.data.reconcile.commit // "")\u001b[0m" +
+                    "\n  \u001b[33m⧗ \(.data.reconcile.phase) \(.data.reconcile.buildCommit // "")\u001b[0m" +
                     ([.data.reconcile.instances | to_entries[] | select(.value.phase == "building") | .key] |
                       if length > 0 then " — building: \(join(", "))" else "" end)
                   else empty end

@@ -19,7 +19,7 @@ import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
-import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, updateReconcileStatus, type KeyIndex, type NamespaceEntry, type ReconcileStatus } from "./api.js";
+import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, getReconcileStatus, updateReconcileStatus, type KeyIndex, type NamespaceEntry, type ReconcileStatus } from "./api.js";
 import { readSeedIdentity, isValidIpnsCid, verifyPlantSignature } from "../shared/identity.js";
 import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
 import { startDomainController } from "./domains.js";
@@ -1671,14 +1671,17 @@ async function main(): Promise<void> {
     fs.reconciling = true;
     log("controller", `reconciliation starting...${useRefresh ? " (--refresh)" : ""}`, flakePath);
 
-    // Initialize reconcile status
+    // Initialize reconcile status — preserve commit from last successful deploy
     const rev = await getFlakeRevision(flakePath);
+    const shortRev = rev ? rev.slice(0, 7) : "";
+    const prev = getReconcileStatus(namespace);
     const rStatus: ReconcileStatus = {
       phase: "evaluating",
-      generation: "",
-      commit: rev ? rev.slice(0, 7) : "",
+      generation: prev?.generation || "",
+      commit: prev?.commit || "",
+      buildCommit: shortRev,
       startedAt: new Date().toISOString(),
-      finishedAt: "",
+      finishedAt: prev?.finishedAt || "",
       error: "",
       instances: {},
     };
@@ -1841,9 +1844,11 @@ async function main(): Promise<void> {
 
       log("controller", `reconciliation complete (generation=${generation})`, flakePath);
 
-      // Mark reconcile status complete
+      // Mark reconcile status complete — promote buildCommit to commit
       rStatus.phase = "complete";
       rStatus.generation = generation.slice(0, 12);
+      rStatus.commit = rStatus.buildCommit;
+      rStatus.buildCommit = "";
       rStatus.finishedAt = new Date().toISOString();
       rStatus.error = "";
       updateReconcileStatus(namespace, rStatus);
