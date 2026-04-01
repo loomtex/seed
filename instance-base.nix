@@ -121,24 +121,22 @@ in {
   sops.age.plugins = lib.mkDefault [ pkgs.age-plugin-tpm ];
 
   # Trust the platform CA if mounted by the controller.
-  # Nix-built binaries (curl, Go programs, etc.) use hardcoded CA paths from
-  # pkgs.cacert, not /etc/ssl/certs/. We build a combined CA bundle during
-  # activation and set SSL_CERT_FILE globally so all programs use it.
+  # NixOS creates /etc/ssl/certs/ca-certificates.crt as a symlink to the nix
+  # store CA bundle. We replace it with a combined bundle (mozilla roots +
+  # platform CA) so ALL programs trust it — including those in sanitized
+  # environments (sshd AuthorizedKeysCommand, git hooks, etc.) where
+  # SSL_CERT_FILE isn't available.
   system.activationScripts.seedTrust = {
     deps = [ "etc" ];
     text = ''
-      mkdir -p /etc/seed/trust
       if [ -f /etc/seed/ca/ca.crt ]; then
-        cat ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/seed/ca/ca.crt > /etc/seed/trust/ca-bundle.crt
-      else
-        cp ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/seed/trust/ca-bundle.crt
+        rm -f /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt
+        cat ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/seed/ca/ca.crt > /etc/ssl/certs/ca-certificates.crt
+        ln -sf /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-bundle.crt
+        ln -sf /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
       fi
     '';
   };
-
-  # Point all TLS libraries at the combined CA bundle
-  environment.variables.SSL_CERT_FILE = "/etc/seed/trust/ca-bundle.crt";
-  environment.variables.NIX_SSL_CERT_FILE = "/etc/seed/trust/ca-bundle.crt";
 
   # Capture k8s-injected SEED_* environment variables for use by services.
   # Kata VMs: systemd strips the inherited environment on startup, so
