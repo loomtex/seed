@@ -109,21 +109,33 @@ async function nixBuild(
   return stdout.trim();
 }
 
+/** Send an HTTP(S) HEAD request and return response headers. */
+async function httpHead(url: string): Promise<Record<string, string | string[] | undefined>> {
+  const mod = url.startsWith("https") ? await import("node:https") : await import("node:http");
+  return new Promise((resolve, reject) => {
+    const req = mod.request(url, { method: "HEAD", timeout: 10_000 }, (res) => {
+      res.resume(); // drain
+      resolve(res.headers);
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.end();
+  });
+}
+
 /** Get the git revision of a flake (fast, no build).
  *  For tarball flakes (silo), sends a HEAD request — silo returns a Link header
  *  with the commit SHA in the immutable archive URL. For git flakes, uses nix
  *  flake metadata. */
 async function getFlakeRevision(flakePath: string): Promise<string | null> {
-  // Tarball flakes: tarball+https://host/repo/snapshot/branch.tar.gz
+  // Tarball flakes: tarball+https://host/repo/archive/branch.tar.gz
   // Silo returns: Link: <https://host/repo/archive/SHA.tar.gz?...>; rel="immutable"
   const tarballMatch = flakePath.match(/^tarball\+(https?:\/\/.+)$/);
   if (tarballMatch) {
     try {
-      const { stdout } = await execFileAsync(
-        "curl", ["-sfI", tarballMatch[1]],
-        { timeout: 10_000 },
-      );
-      const linkMatch = stdout.match(/Link:.*\/archive\/([0-9a-f]{7,40})\.tar\.gz/i);
+      const headers = await httpHead(tarballMatch[1]);
+      const link = typeof headers.link === "string" ? headers.link : headers.link?.[0] || "";
+      const linkMatch = link.match(/\/archive\/([0-9a-f]{7,40})\.tar\.gz/);
       if (linkMatch) return linkMatch[1];
     } catch { /* fall through to nix metadata */ }
   }
