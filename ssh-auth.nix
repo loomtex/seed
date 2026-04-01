@@ -73,7 +73,7 @@ let
     ''}
 
     # Always emit a line — any key is accepted.
-    echo "restrict,command=\"${cfg.forcedCommand}\",environment=\"${cfg.envPrefix}_KEY_TYPE=$KEY_TYPE\",environment=\"${cfg.envPrefix}_KEY_BLOB=$KEY_BLOB\"''${EXTRA_ENV:+,$EXTRA_ENV} $KEY_TYPE $KEY_BLOB ${cfg.nssName}-user"
+    echo "restrict,pty,command=\"${cfg.forcedCommand}\",environment=\"${cfg.envPrefix}_KEY_TYPE=$KEY_TYPE\",environment=\"${cfg.envPrefix}_KEY_BLOB=$KEY_BLOB\"''${EXTRA_ENV:+,$EXTRA_ENV} $KEY_TYPE $KEY_BLOB ${cfg.nssName}-user"
   '';
 in
 {
