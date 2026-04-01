@@ -334,6 +334,11 @@ let
         resources = [ "seeddomains" "seeddomains/status" ];
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
+      {
+        apiGroups = [ "cert-manager.io" ];
+        resources = [ "certificaterequests" ];
+        verbs = [ "get" "create" "delete" ];
+      }
     ];
   });
 
@@ -429,7 +434,7 @@ let
               { name = "SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               # PATH: nix + git + coreutils (for nix eval/build)
-              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz ]; }
+              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz pkgs.age ]; }
               { name = "SEED_SILO_HOST"; value = cfg.siloHost; }
             ] ++ lib.optional (cfg.ipv4Address != "") {
               name = "SEED_IPV4_ADDRESS"; value = cfg.ipv4Address;

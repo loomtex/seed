@@ -15,6 +15,7 @@ export function generateDeployment(
   tpmSocketPath?: string,
   poolManagerUrl?: string,
   acmeUrl?: string,
+  estUrl?: string,
   instanceDomain?: string,
 ): k8s.V1Deployment {
   const podAnnotations: Record<string, string> = {
@@ -114,6 +115,14 @@ export function generateDeployment(
                   name: "SEED_NODE_IP",
                   valueFrom: { fieldRef: { fieldPath: "status.hostIP" } },
                 },
+                {
+                  name: "SEED_NAMESPACE",
+                  value: namespace,
+                },
+                {
+                  name: "SEED_INSTANCE",
+                  value: name,
+                },
                 ...(meta.shoot?.enable && poolManagerUrl ? [{
                   name: "SEED_SHOOT_URL",
                   value: poolManagerUrl,
@@ -128,6 +137,10 @@ export function generateDeployment(
                     value: instanceDomain ? `${name}.${namespace}.${instanceDomain}` : `${name}.${namespace}.seed.loom.farm`,
                   },
                 ] : []),
+                ...(estUrl ? [{
+                  name: "SEED_EST_URL",
+                  value: estUrl,
+                }] : []),
               ],
               ...(probePort ? {
                 readinessProbe: {

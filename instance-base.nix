@@ -6,6 +6,86 @@
 { lib, pkgs, config, ... }:
 
 let
+  # EST certificate enrollment script — obtains a SPIFFE identity cert from
+  # the platform EST endpoint using vTPM attestation.
+  #
+  # Flow:
+  #   1. Generate ephemeral ECDSA P-256 key
+  #   2. Create CSR with SPIFFE URI SAN
+  #   3. Request age-encrypted challenge from controller (POST /est/challenge)
+  #   4. Decrypt challenge using age-plugin-tpm (proves vTPM possession)
+  #   5. Submit CSR + decrypted nonce (POST /est/enroll)
+  #   6. Write signed cert + CA to /seed/tls/
+  seedCertEnroll = pkgs.writeShellScript "seed-cert-enroll" ''
+    set -euo pipefail
+
+    EST_URL="''${SEED_EST_URL:-}"
+    if [ -z "$EST_URL" ]; then
+      echo "SEED_EST_URL not set, skipping certificate enrollment"
+      exit 0
+    fi
+    NAMESPACE="''${SEED_NAMESPACE:?SEED_NAMESPACE must be set}"
+    INSTANCE="''${SEED_INSTANCE:?SEED_INSTANCE must be set}"
+    TLS_DIR="/seed/tls"
+    TPM_IDENTITY="/seed/tpm/age-identity"
+
+    mkdir -p "$TLS_DIR"
+
+    # 1. Generate ephemeral ECDSA P-256 key
+    ${pkgs.openssl}/bin/openssl ecparam -genkey -name prime256v1 -noout \
+      -out "$TLS_DIR/key.pem" 2>/dev/null
+
+    # 2. Create CSR with SPIFFE URI SAN
+    SPIFFE_URI="spiffe://seeds.loom.farm/$NAMESPACE/$INSTANCE"
+    ${pkgs.openssl}/bin/openssl req -new \
+      -key "$TLS_DIR/key.pem" \
+      -subj "/O=seeds.loom.farm" \
+      -addext "subjectAltName=URI:$SPIFFE_URI" \
+      -out "$TLS_DIR/csr.pem" 2>/dev/null
+
+    CSR_PEM=$(cat "$TLS_DIR/csr.pem")
+
+    # 3. Request challenge from EST endpoint
+    CHALLENGE_RESP=$(${pkgs.curl}/bin/curl -sf \
+      --cacert /etc/ssl/certs/ca-certificates.crt \
+      -X POST "$EST_URL/est/challenge" \
+      -H "Content-Type: application/json" \
+      -d "{\"namespace\":\"$NAMESPACE\",\"instance\":\"$INSTANCE\"}")
+
+    CHALLENGE_ID=$(echo "$CHALLENGE_RESP" | ${pkgs.jq}/bin/jq -r '.challengeId')
+    ENCRYPTED=$(echo "$CHALLENGE_RESP" | ${pkgs.jq}/bin/jq -r '.encrypted')
+
+    # 4. Decrypt challenge using age-plugin-tpm (proves vTPM possession)
+    NONCE=$(echo "$ENCRYPTED" | ${pkgs.age}/bin/age -d -i "$TPM_IDENTITY")
+
+    # 5. Submit CSR + decrypted nonce to EST enroll endpoint
+    ENROLL_BODY=$(${pkgs.jq}/bin/jq -n \
+      --arg cid "$CHALLENGE_ID" \
+      --arg nonce "$NONCE" \
+      --arg csr "$CSR_PEM" \
+      '{challengeId: $cid, nonce: $nonce, csr: $csr}')
+
+    ${pkgs.curl}/bin/curl -sf \
+      --cacert /etc/ssl/certs/ca-certificates.crt \
+      -X POST "$EST_URL/est/enroll" \
+      -H "Content-Type: application/json" \
+      -d "$ENROLL_BODY" \
+      -o "$TLS_DIR/cert.pem"
+
+    # 6. Fetch CA cert
+    ${pkgs.curl}/bin/curl -sf \
+      --cacert /etc/ssl/certs/ca-certificates.crt \
+      "$EST_URL/est/cacerts" \
+      -o "$TLS_DIR/ca.pem"
+
+    # Set permissions — key is sensitive, cert/ca are public
+    chmod 600 "$TLS_DIR/key.pem"
+    chmod 644 "$TLS_DIR/cert.pem" "$TLS_DIR/ca.pem"
+
+    # Remove CSR (no longer needed)
+    rm -f "$TLS_DIR/csr.pem"
+  '';
+
   tpmDevCreate = pkgs.writeShellScript "tpm-dev-create" ''
     for tpm in /sys/class/tpm/tpm*; do
       [ -e "$tpm" ] || continue
@@ -69,6 +149,9 @@ in {
     age-plugin-tpm
     tpm2-tools
     sops
+    openssl
+    curl
+    jq
   ]);
 
   # No polkit — headless instances don't need privilege negotiation
@@ -112,6 +195,50 @@ in {
       ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /seed/tpm";
       ExecStart = "${pkgs.age-plugin-tpm}/bin/age-plugin-tpm --generate -o /seed/tpm/age-identity";
       RemainAfterExit = true;
+    };
+  };
+
+  # TLS identity enrollment — obtains a SPIFFE identity certificate from the
+  # platform EST endpoint. Requires seed-tpm-init (age identity for attestation)
+  # and SEED_EST_URL (injected by the controller into all instance pods).
+  systemd.services.seed-cert-enroll = {
+    description = "Obtain SPIFFE identity certificate via EST";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "seed-tpm-init.service" "network-online.target" ];
+    wants = [ "network-online.target" ];
+    requires = [ "seed-tpm-init.service" ];
+    path = [ pkgs.age-plugin-tpm ];
+    serviceConfig = {
+      Type = "oneshot";
+      EnvironmentFile = "/run/seed/env";
+      ExecStart = seedCertEnroll;
+      RemainAfterExit = true;
+    };
+  };
+
+  # Renewal timer — re-enroll at half the cert lifetime (12h for 24h certs).
+  # On failure, retries every 5 minutes.
+  systemd.timers.seed-cert-renew = {
+    description = "Renew SPIFFE identity certificate";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnActiveSec = "12h";
+      OnUnitActiveSec = "12h";
+      AccuracySec = "5m";
+    };
+  };
+
+  systemd.services.seed-cert-renew = {
+    description = "Renew SPIFFE identity certificate via EST";
+    after = [ "seed-cert-enroll.service" ];
+    requires = [ "seed-cert-enroll.service" ];
+    path = [ pkgs.age-plugin-tpm ];
+    serviceConfig = {
+      Type = "oneshot";
+      EnvironmentFile = "/run/seed/env";
+      ExecStart = seedCertEnroll;
+      Restart = "on-failure";
+      RestartSec = "5m";
     };
   };
 

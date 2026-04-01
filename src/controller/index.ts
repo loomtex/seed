@@ -24,6 +24,7 @@ import { readSeedIdentity, isValidIpnsCid, verifyPlantSignature } from "../share
 import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
 import { startDomainController } from "./domains.js";
 import { initAcme, updateAcmeNamespaces, updateAcmeValidZones } from "./acme.js";
+import { initEst, updateEstNamespaces } from "./est.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -266,6 +267,9 @@ export function renderDesiredState(
       }
     }
 
+    const webhookPort = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
+    const estUrl = `https://seed-controller.seed-system.svc.cluster.local:${webhookPort}`;
+
     const deployment = generateDeployment(
       name,
       imageRef,
@@ -275,6 +279,7 @@ export function renderDesiredState(
       tpmSocketPath,
       poolManagerUrl || undefined,
       acmeUrl,
+      estUrl,
       instanceDomain,
     );
 
@@ -1414,10 +1419,11 @@ async function handlePlant(
 
     // Update valid namespaces for API routing
     updateValidNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
-    // Update ACME namespaces if enabled
+    // Update ACME/EST namespaces if enabled
     if (config.acmeEnabled) {
       updateAcmeNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
     }
+    updateEstNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
 
     // Ensure namespace exists
     try {
@@ -1557,6 +1563,7 @@ async function handleReplant(
   if (config.acmeEnabled) {
     updateAcmeNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
   }
+  updateEstNamespaces(new Set([...flakeStates.values()].map((fs) => fs.namespace)));
 
   // Trigger reconciliation with new URI
   triggerReconcile(expandedUri);
@@ -1664,6 +1671,27 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     log("controller", `platform CA not available (cert-manager may not be deployed): ${err}`);
+  }
+
+  // Initialize EST endpoint (certificate enrollment via TPM attestation)
+  if (platformCACert) {
+    try {
+      // Write platform CA to a temp file for EST to serve
+      const caCertPath = "/tmp/seed-ca.pem";
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(caCertPath, platformCACert);
+
+      await initEst({
+        trustDomain: "seeds.loom.farm",
+        validNamespaces: new Set([...flakeStates.values()].map((fs) => fs.namespace)),
+        caCertFile: caCertPath,
+        issuerName: "seed-ca",
+        certDuration: "24h",
+      });
+      log("controller", "EST endpoint enabled");
+    } catch (err) {
+      log("controller", `EST initialization failed: ${err}`);
+    }
   }
 
   // Ensure namespaces with labels/annotations

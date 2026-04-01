@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { log } from "../shared/kube.js";
 import { handleApiRequest } from "./api.js";
 import { handleAcmeRequest } from "./acme.js";
+import { handleEstRequest } from "./est.js";
 
 export type RefreshCallback = (flakePath: string) => void;
 
@@ -78,6 +79,9 @@ export async function startWebhookServer(
 
     // ACME endpoint (no HMAC — namespace identity enforced by network policy)
     if (await handleAcmeRequest(req, res)) return;
+
+    // EST endpoint (TPM-attested certificate enrollment)
+    if (await handleEstRequest(req, res)) return;
 
     if (req.method !== "POST" || req.url !== "/refresh") {
       res.writeHead(404, { "Content-Length": "0" });
