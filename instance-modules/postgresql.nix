@@ -126,9 +126,9 @@ in {
 
           # TLS — use SPIFFE identity cert (copied to postgres-readable path)
           ssl = true;
-          ssl_cert_file = "/run/postgresql/tls/cert.pem";
-          ssl_key_file = "/run/postgresql/tls/key.pem";
-          ssl_ca_file = "/run/postgresql/tls/ca.pem";
+          ssl_cert_file = "/run/seed-pg-tls/cert.pem";
+          ssl_key_file = "/run/seed-pg-tls/key.pem";
+          ssl_ca_file = "/run/seed-pg-tls/ca.pem";
         };
 
         # pg_ident.conf — map client cert DN → database role
@@ -138,26 +138,34 @@ in {
         authentication = lib.mkAfter (lib.concatStringsSep "\n" hbaLines);
       };
 
-      # PostgreSQL needs to read the TLS key. The key is 0600 root-owned
-      # from the enrollment script. Copy into /run/postgresql/tls/ which
-      # is accessible under ProtectSystem=strict (RuntimeDirectory=postgresql).
-      # ExecStartPre (without mkBefore) runs after RuntimeDirectory creates
-      # /run/postgresql/, so the tls subdirectory survives.
-      systemd.services.postgresql.serviceConfig.ExecStartPre = [
-        ("+" + pkgs.writeShellScript "pg-copy-tls" ''
-          mkdir -p /run/postgresql/tls
-          cp /seed/tls/cert.pem /run/postgresql/tls/cert.pem
-          cp /seed/tls/key.pem /run/postgresql/tls/key.pem
-          cp /seed/tls/ca.pem /run/postgresql/tls/ca.pem
-          chown postgres:postgres /run/postgresql/tls/*
-          chmod 600 /run/postgresql/tls/key.pem
-          chmod 644 /run/postgresql/tls/cert.pem /run/postgresql/tls/ca.pem
-        '')
-      ];
+      # Separate service to copy TLS certs to a postgres-readable location.
+      # Runs outside postgresql's ProtectSystem=strict sandbox.
+      systemd.services.seed-pg-tls = {
+        description = "Copy SPIFFE certs for PostgreSQL";
+        after = [ "seed-cert-enroll.service" ];
+        requires = [ "seed-cert-enroll.service" ];
+        before = [ "postgresql.service" ];
+        wantedBy = [ "postgresql.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = pkgs.writeShellScript "seed-pg-tls" ''
+            set -euo pipefail
+            mkdir -p /run/seed-pg-tls
+            cp /seed/tls/cert.pem /run/seed-pg-tls/cert.pem
+            cp /seed/tls/key.pem /run/seed-pg-tls/key.pem
+            cp /seed/tls/ca.pem /run/seed-pg-tls/ca.pem
+            chown postgres:postgres /run/seed-pg-tls/*
+            chmod 600 /run/seed-pg-tls/key.pem
+            chmod 644 /run/seed-pg-tls/cert.pem /run/seed-pg-tls/ca.pem
+          '';
+        };
+      };
 
-      # Ensure postgresql starts after cert enrollment
-      systemd.services.postgresql.after = [ "seed-cert-enroll.service" ];
-      systemd.services.postgresql.requires = [ "seed-cert-enroll.service" ];
+      # Give postgresql read access to the cert directory
+      systemd.services.postgresql.after = [ "seed-pg-tls.service" ];
+      systemd.services.postgresql.requires = [ "seed-pg-tls.service" ];
+      systemd.services.postgresql.serviceConfig.ReadOnlyPaths = [ "/run/seed-pg-tls" ];
 
       # Create databases and roles declared in the config
       systemd.services.seed-pg-init = {
