@@ -114,25 +114,6 @@ export async function configureMetalLB(
   log("metallb", "pool configuration complete");
 }
 
-/** Get each node's public IPv6 address from the k8s Node objects. */
-async function getNodePublicIPv6(clients: KubeClients): Promise<Map<string, string>> {
-  const result = new Map<string, string>();
-  const nodes = await clients.core.listNode();
-  for (const node of nodes.items) {
-    const name = node.metadata?.name;
-    if (!name) continue;
-    for (const addr of node.status?.addresses ?? []) {
-      // ExternalIP that is a global IPv6 (not ULA fd00::/8, not link-local fe80::/10)
-      if (addr.type === "ExternalIP" && addr.address.includes(":") &&
-          !addr.address.startsWith("fd") && !addr.address.startsWith("fe80")) {
-        result.set(name, addr.address);
-        break;
-      }
-    }
-  }
-  return result;
-}
-
 /** Configure BGP peering and advertisements. */
 async function configureBGP(
   clients: KubeClients,
@@ -142,7 +123,7 @@ async function configureBGP(
 ): Promise<void> {
   log("metallb", `configuring BGP: myASN=${bgp.myASN} peerASN=${bgp.peerASN}`);
 
-  // IPv4 BGP peer (cluster-wide — link-local peer, no source address issues)
+  // IPv4 BGP peer
   if (ipv4Address) {
     const peer4: Record<string, unknown> = {
       apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
@@ -171,63 +152,38 @@ async function configureBGP(
     );
   }
 
-  // IPv6 BGP peers — per-node with sourceAddress pinned to the node's
-  // native public IPv6. This prevents FRR from auto-selecting a wrong
-  // source address (e.g. a SLAAC address from the announced block).
+  // IPv6 BGP peer (cluster-wide — FRR mode doesn't support multiple
+  // BGPPeers with the same peerAddress, so per-node peers aren't possible).
+  // Don't set sourceAddress — it's cluster-wide so per-node IPs would break.
+  // Instead, ensure the reserved IPv6 block is NOT attached to any node via
+  // Vultr API (attaching causes SLAAC to add addresses from the block, which
+  // FRR may auto-select as source). BGP handles routing without attachment.
   if (ipv6Block) {
-    // Delete old cluster-wide IPv6 peer first — FRR mode rejects
-    // duplicate peerAddress, so old peer must be gone before creating
-    // per-node peers with the same peerAddress.
-    try {
-      await clients.custom.deleteNamespacedCustomObject({
-        group: CRD_GROUP,
-        version: CRD_VERSION_V2,
-        namespace: METALLB_NAMESPACE,
-        plural: "bgppeers",
+    const peer6: Record<string, unknown> = {
+      apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
+      kind: "BGPPeer",
+      metadata: {
         name: "seed-bgp-ipv6",
-      });
-      log("metallb", "removed old cluster-wide seed-bgp-ipv6 peer");
-    } catch {
-      // Doesn't exist, fine
-    }
+        namespace: METALLB_NAMESPACE,
+      },
+      spec: {
+        myASN: bgp.myASN,
+        peerASN: bgp.peerASN,
+        peerAddress: bgp.peerAddressIPv6,
+        ebgpMultiHop: true,
+        ...(bgp.password ? { password: bgp.password } : {}),
+      },
+    };
 
-    const nodeIPs = await getNodePublicIPv6(clients);
-    const peerNames: string[] = [];
-
-    for (const [nodeName, ipv6] of nodeIPs) {
-      const peerName = `seed-bgp-ipv6-${nodeName}`;
-      peerNames.push(peerName);
-
-      const peer6: Record<string, unknown> = {
-        apiVersion: `${CRD_GROUP}/${CRD_VERSION_V2}`,
-        kind: "BGPPeer",
-        metadata: {
-          name: peerName,
-          namespace: METALLB_NAMESPACE,
-        },
-        spec: {
-          myASN: bgp.myASN,
-          peerASN: bgp.peerASN,
-          peerAddress: bgp.peerAddressIPv6,
-          sourceAddress: ipv6,
-          ebgpMultiHop: true,
-          nodeSelectors: [{ matchLabels: { "kubernetes.io/hostname": nodeName } }],
-          ...(bgp.password ? { password: bgp.password } : {}),
-        },
-      };
-
-      await applyCustomResource(
-        clients.custom,
-        CRD_GROUP,
-        CRD_VERSION_V2,
-        METALLB_NAMESPACE,
-        "bgppeers",
-        peerName,
-        peer6,
-      );
-    }
-
-    log("metallb", `configured ${peerNames.length} per-node IPv6 BGP peers`);
+    await applyCustomResource(
+      clients.custom,
+      CRD_GROUP,
+      CRD_VERSION_V2,
+      METALLB_NAMESPACE,
+      "bgppeers",
+      "seed-bgp-ipv6",
+      peer6,
+    );
   }
 
   // BGP advertisement for the pool
