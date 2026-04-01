@@ -314,7 +314,7 @@ in {
     # our internal server doesn't use them (it proxies to LE server-side).
     security.acme = lib.mkIf cfg.acme {
       acceptTerms = true;
-      defaults.server = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
+      defaults.server = "https://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
       defaults.email = lib.mkDefault "acme@seed.loom.farm";
     };
 

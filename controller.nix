@@ -470,6 +470,7 @@ let
               { name = "nix-store"; mountPath = "/nix/store"; readOnly = true; }
               { name = "secrets"; mountPath = "/etc/seed/secrets"; readOnly = true; }
               { name = "tpm-state"; mountPath = "/var/lib/seed-controller/tpm"; readOnly = true; }
+              { name = "tls"; mountPath = "/etc/seed/tls"; readOnly = true; }
             ] ++ lib.optional (cfg.acme.accountKey != "") {
               name = "acme-account-key";
               mountPath = "/etc/seed/acme";
@@ -481,6 +482,7 @@ let
             { name = "nix-store"; hostPath.path = "/nix/store"; }
             { name = "secrets"; secret = { secretName = "seed-controller-secrets"; optional = true; }; }
             { name = "tpm-state"; hostPath = { path = "/var/lib/seed-controller/tpm"; type = "DirectoryOrCreate"; }; }
+            { name = "tls"; secret.secretName = "seed-controller-tls"; }
           ] ++ lib.optional (cfg.acme.accountKey != "") {
             name = "acme-account-key";
             secret.secretName = "seed-acme-account-key";
@@ -639,6 +641,36 @@ let
     };
   });
 
+  # TLS Certificate for the controller (issued by seed-ca via cert-manager)
+  controllerCert = pkgs.writeText "seed-controller-cert.yaml" (builtins.toJSON {
+    apiVersion = "cert-manager.io/v1";
+    kind = "Certificate";
+    metadata = {
+      name = "seed-controller-tls";
+      namespace = seedSystemNS;
+    };
+    spec = {
+      secretName = "seed-controller-tls";
+      duration = "2160h"; # 90 days
+      renewBefore = "720h"; # 30 days before expiry
+      privateKey = {
+        algorithm = "ECDSA";
+        size = 256;
+      };
+      dnsNames = [
+        "seed-controller"
+        "seed-controller.${seedSystemNS}"
+        "seed-controller.${seedSystemNS}.svc"
+        "seed-controller.${seedSystemNS}.svc.cluster.local"
+      ];
+      issuerRef = {
+        name = "seed-ca";
+        kind = "ClusterIssuer";
+        group = "cert-manager.io";
+      };
+    };
+  });
+
   # Namespace manifest
   seedSystemNamespace = pkgs.writeText "seed-system-namespace.yaml" (builtins.toJSON {
     apiVersion = "v1";
@@ -675,6 +707,7 @@ let
       { name = "04-controller-rolebinding.json"; path = controllerRoleBinding; }
       { name = "04-builder-role.json"; path = builderRole; }
       { name = "04-builder-rolebinding.json"; path = builderRoleBinding; }
+      { name = "05-controller-cert.json"; path = controllerCert; }
       { name = "05-controller-deployment.json"; path = controllerDeployment; }
       { name = "05-controller-service.json"; path = controllerService; }
     ]

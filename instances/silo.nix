@@ -166,7 +166,7 @@ let
       -H "Content-Type: application/json" \
       -H "X-Hub-Signature-256: $SIGNATURE" \
       -d "$BODY" \
-      "http://seed-controller.seed-system.svc.cluster.local:9876/refresh" \
+      "https://seed-controller.seed-system.svc.cluster.local:9876/refresh" \
       >/dev/null 2>&1 || true
   '';
 

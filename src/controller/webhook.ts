@@ -1,9 +1,10 @@
-// HTTP webhook handler with HMAC-SHA256 verification.
+// HTTPS webhook handler with HMAC-SHA256 verification.
 // Accepts POST /refresh to trigger cache-busting reconciliation.
 // Parses GitHub push payload to identify which flake changed.
-// Also serves internal management API routes (/api/*).
+// Also serves internal management API routes (/api/*) and ACME endpoint.
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { log } from "../shared/kube.js";
@@ -37,13 +38,20 @@ function matchFlake(repoFullName: string, flakeStates: Map<string, FlakeStateEnt
   return null;
 }
 
-/** Start the webhook HTTP server. */
-export function startWebhookServer(
+/** TLS certificate paths for HTTPS. */
+export interface TlsConfig {
+  certFile: string;
+  keyFile: string;
+}
+
+/** Start the webhook HTTPS server. */
+export async function startWebhookServer(
   port: number,
   secretFile: string,
   flakeStates: Map<string, FlakeStateEntry>,
   onRefresh: RefreshCallback,
-): void {
+  tls: TlsConfig,
+): Promise<void> {
   let hmacSecret = "";
 
   // Load secret on startup
@@ -58,7 +66,13 @@ export function startWebhookServer(
       });
   }
 
-  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  // Load TLS cert
+  const [cert, key] = await Promise.all([
+    readFile(tls.certFile),
+    readFile(tls.keyFile),
+  ]);
+
+  const handler = async (req: IncomingMessage, res: ServerResponse) => {
     // Try API routes first (no HMAC — internal cluster traffic only)
     if (await handleApiRequest(req, res)) return;
 
@@ -132,9 +146,11 @@ export function startWebhookServer(
       "Content-Length": String(Buffer.byteLength(responseBody)),
     });
     res.end(responseBody);
-  });
+  };
+
+  const server = createHttpsServer({ key, cert }, handler);
 
   server.listen(port, "0.0.0.0", () => {
-    log("webhook", `listening on 0.0.0.0:${port}`);
+    log("webhook", `listening on 0.0.0.0:${port} (https)`);
   });
 }

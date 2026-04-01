@@ -165,15 +165,6 @@
         '';
       });
 
-      # lego ACME client: remove HTTPS-only enforcement (added in v4.25.2)
-      # so instances can talk to the controller's HTTP ACME endpoint over
-      # cluster-internal networking. Traffic is within the k8s trust boundary.
-      lego = prev.lego.overrideAttrs (old: {
-        postPatch = (old.postPatch or "") + ''
-          substituteInPlace acme/api/internal/sender/sender.go \
-            --replace-fail 'client.Transport = newHTTPSOnly(client)' ""
-        '';
-      });
     };
 
     # NixOS modules

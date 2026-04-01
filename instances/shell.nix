@@ -16,7 +16,7 @@
 { config, pkgs, lib, ... }:
 
 let
-  controllerApi = "http://seed-controller.seed-system.svc.cluster.local:9876";
+  controllerApi = "https://seed-controller.seed-system.svc.cluster.local:9876";
 
   # TUI — interactive terminal dashboard (Go + bubbletea)
   seedTui = pkgs.buildGoModule {

@@ -213,7 +213,7 @@ For nginx, use NixOS's `security.acme` module (which uses lego under the hood):
 { config, ... }:
 
 let
-  acmeServer = "http://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
+  acmeServer = "https://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 in {
   seed.expose.http.enable = true;
   seed.expose.https.enable = true;

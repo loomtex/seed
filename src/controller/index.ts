@@ -1620,7 +1620,7 @@ async function main(): Promise<void> {
     try {
       const webhookPort = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
       await initAcme({
-        baseUrl: `http://seed-controller.seed-system.svc.cluster.local:${webhookPort}`,
+        baseUrl: `https://seed-controller.seed-system.svc.cluster.local:${webhookPort}`,
         leDirectoryUrl: "https://acme-v02.api.letsencrypt.org/directory",
         accountKeyFile: config.acmeAccountKeyFile,
         pdnsApiUrl: config.pdnsApiUrl,
@@ -1718,8 +1718,13 @@ async function main(): Promise<void> {
 
   if (config.webhookSecretFile || process.env["SEED_WEBHOOK_PORT"]) {
     const port = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
+    const tlsCertFile = process.env["SEED_TLS_CERT_FILE"] || "/etc/seed/tls/tls.crt";
+    const tlsKeyFile = process.env["SEED_TLS_KEY_FILE"] || "/etc/seed/tls/tls.key";
     // Webhook matches against all registered flake paths (bootstrap + SeedFlakes)
-    startWebhookServer(port, config.webhookSecretFile, flakeStates, triggerReconcile);
+    await startWebhookServer(port, config.webhookSecretFile, flakeStates, triggerReconcile, {
+      certFile: tlsCertFile,
+      keyFile: tlsKeyFile,
+    });
   }
 
   // Wire up plant and replant handlers for the API
@@ -1872,7 +1877,7 @@ async function main(): Promise<void> {
       // Render desired state
       const webhookPort = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
       const acmeUrl = config.acmeEnabled
-        ? `http://seed-controller.seed-system.svc.cluster.local:${webhookPort}/acme/directory`
+        ? `https://seed-controller.seed-system.svc.cluster.local:${webhookPort}/acme/directory`
         : undefined;
 
       const desired = renderDesiredState(

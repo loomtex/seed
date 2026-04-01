@@ -24,7 +24,7 @@ in
       root = siteDir;
       # Webhook reverse proxy — trailing / strips /_hook/ prefix
       locations."/_hook/" = {
-        proxyPass = "http://seed-controller.seed-system.svc.cluster.local:9876/";
+        proxyPass = "https://seed-controller.seed-system.svc.cluster.local:9876/";
       };
     };
   };
