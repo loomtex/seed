@@ -36,7 +36,7 @@ let
 
     # Fetch key index from controller
     REPOS=""
-    INDEX=$(${pkgs.curl}/bin/curl -sf "${controllerApi}/api/keys" 2>/dev/null) || true
+    INDEX=$(SSL_CERT_FILE=/etc/seed/trust/ca-bundle.crt ${pkgs.curl}/bin/curl -sf "${controllerApi}/api/keys" 2>/dev/null) || true
 
     if [ -n "$INDEX" ]; then
       # Look up this key — build name=namespace pairs.
@@ -65,6 +65,7 @@ let
     name = "seed-shell";
     runtimeInputs = [ pkgs.curl pkgs.jq pkgs.coreutils ];
     text = ''
+    export SSL_CERT_FILE="/etc/seed/trust/ca-bundle.crt"
     API="${controllerApi}/api"
     REPOS_RAW="''${SEED_REPOS:-}"
     KEY_BLOB="''${SEED_KEY_BLOB:-}"
