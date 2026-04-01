@@ -126,9 +126,9 @@ in {
 
           # TLS — use SPIFFE identity cert (copied to postgres-readable path)
           ssl = true;
-          ssl_cert_file = "/run/postgresql/tls/cert.pem";
-          ssl_key_file = "/run/postgresql/tls/key.pem";
-          ssl_ca_file = "/run/postgresql/tls/ca.pem";
+          ssl_cert_file = "/run/seed-pg-tls/cert.pem";
+          ssl_key_file = "/run/seed-pg-tls/key.pem";
+          ssl_ca_file = "/run/seed-pg-tls/ca.pem";
         };
 
         # pg_ident.conf — map client cert DN → database role
@@ -141,15 +141,17 @@ in {
       # PostgreSQL needs to read the TLS key. The key is 0600 root-owned
       # from the enrollment script. Copy to a postgres-readable location
       # before postgresql starts. Uses + prefix to run as root.
+      # Writes to /run/seed-pg-tls/ (not /run/postgresql/) because the
+      # NixOS module's RuntimeDirectory wipes /run/postgresql/ at start.
       systemd.services.postgresql.serviceConfig.ExecStartPre = lib.mkBefore [
         ("+" + pkgs.writeShellScript "pg-copy-tls" ''
-          mkdir -p /run/postgresql/tls
-          cp /seed/tls/cert.pem /run/postgresql/tls/cert.pem
-          cp /seed/tls/key.pem /run/postgresql/tls/key.pem
-          cp /seed/tls/ca.pem /run/postgresql/tls/ca.pem
-          chown postgres:postgres /run/postgresql/tls/*
-          chmod 600 /run/postgresql/tls/key.pem
-          chmod 644 /run/postgresql/tls/cert.pem /run/postgresql/tls/ca.pem
+          mkdir -p /run/seed-pg-tls
+          cp /seed/tls/cert.pem /run/seed-pg-tls/cert.pem
+          cp /seed/tls/key.pem /run/seed-pg-tls/key.pem
+          cp /seed/tls/ca.pem /run/seed-pg-tls/ca.pem
+          chown postgres:postgres /run/seed-pg-tls/*
+          chmod 600 /run/seed-pg-tls/key.pem
+          chmod 644 /run/seed-pg-tls/cert.pem /run/seed-pg-tls/ca.pem
         '')
       ];
 
