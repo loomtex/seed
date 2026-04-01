@@ -56,6 +56,7 @@ export interface SeedDnsConfig {
 
 export interface SeedMeta {
   name: string;
+  namespace?: string | null;
   system: string;
   size: string;
   resources: SeedResources;

@@ -1847,6 +1847,16 @@ async function main(): Promise<void> {
         }
       }
 
+      // Validate: reject instances whose metadata claims a different namespace
+      for (const [name, result] of buildResults) {
+        if (result.meta.namespace && result.meta.namespace !== namespace) {
+          throw new Error(
+            `instance ${name} declares namespace "${result.meta.namespace}" but platform assigned "${namespace}" — ` +
+            `this is a security violation (namespace spoofing attempt or misconfigured override)`
+          );
+        }
+      }
+
       // Mark all instances as built
       for (const name of buildResults.keys()) {
         rStatus.instances[name] = { phase: "done", error: "" };

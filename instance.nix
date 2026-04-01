@@ -224,6 +224,7 @@ in {
   in {
     # Denormalized metadata for the controller
     seed.meta = {
+      namespace = cfg.namespace;
       size = cfg.size;
       resources = tier;
       expose = lib.mapAttrs (_: e: {
