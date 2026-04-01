@@ -110,9 +110,24 @@ async function nixBuild(
 }
 
 /** Get the git revision of a flake (fast, no build).
- *  Uses --refresh for tarball flakes since nix caches tarballs aggressively
- *  and won't detect content changes at the same URL without it. */
+ *  For tarball flakes (silo), sends a HEAD request — silo returns a Link header
+ *  with the commit SHA in the immutable archive URL. For git flakes, uses nix
+ *  flake metadata. */
 async function getFlakeRevision(flakePath: string): Promise<string | null> {
+  // Tarball flakes: tarball+https://host/repo/snapshot/branch.tar.gz
+  // Silo returns: Link: <https://host/repo/archive/SHA.tar.gz?...>; rel="immutable"
+  const tarballMatch = flakePath.match(/^tarball\+(https?:\/\/.+)$/);
+  if (tarballMatch) {
+    try {
+      const { stdout } = await execFileAsync(
+        "curl", ["-sfI", tarballMatch[1]],
+        { timeout: 10_000 },
+      );
+      const linkMatch = stdout.match(/Link:.*\/archive\/([0-9a-f]{7,40})\.tar\.gz/i);
+      if (linkMatch) return linkMatch[1];
+    } catch { /* fall through to nix metadata */ }
+  }
+
   try {
     const args = ["flake", "metadata", flakePath, "--json"];
     if (flakePath.startsWith("tarball+")) args.push("--refresh");
