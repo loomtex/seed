@@ -2,8 +2,7 @@
 #
 # Serves loom.farm static content over HTTPS. TLS certificates are
 # obtained automatically from the platform ACME endpoint (controller
-# proxies DNS-01 to Let's Encrypt). nginx serves static files;
-# security.acme (lego) handles cert lifecycle with multi-SAN support.
+# proxies DNS-01 to Let's Encrypt). Caddy handles cert lifecycle natively.
 { pkgs, ... }:
 
 let
@@ -13,19 +12,22 @@ in
   seed.expose.http.enable = true;
   seed.expose.https.enable = true;
   seed.dns.names = [ "loom.farm" "www.loom.farm" ];
-  seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
+  seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
 
-  services.nginx = {
+  services.caddy = {
     enable = true;
-    virtualHosts."loom.farm" = {
-      serverAliases = [ "web.s-gaydazldmnsg.seed.loom.farm" ];
-      enableACME = true;
-      forceSSL = true;
-      root = siteDir;
-      # Webhook reverse proxy — trailing / strips /_hook/ prefix
-      locations."/_hook/" = {
-        proxyPass = "https://seed-controller.seed-system.svc.cluster.local:9876/";
-      };
-    };
+    dataDir = "/var/lib/caddy";
+    configFile = pkgs.writeText "Caddyfile" ''
+      {
+        acme_ca {$SEED_ACME_URL}
+      }
+
+      {$SEED_FQDN}, loom.farm, www.loom.farm {
+        root * ${siteDir}
+        file_server
+      }
+    '';
   };
+
+  systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
 }
