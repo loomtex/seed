@@ -1657,9 +1657,11 @@ async function main(): Promise<void> {
     log("controller", `reconciliation starting...${useRefresh ? " (--refresh)" : ""}`, flakePath);
 
     // Initialize reconcile status
+    const rev = await getFlakeRevision(flakePath);
     const rStatus: ReconcileStatus = {
       phase: "evaluating",
       generation: "",
+      commit: rev ? rev.slice(0, 7) : "",
       startedAt: new Date().toISOString(),
       finishedAt: "",
       error: "",

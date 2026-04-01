@@ -23,6 +23,7 @@ import { log } from "../shared/kube.js";
 export interface ReconcileStatus {
   phase: "idle" | "evaluating" | "building" | "applying" | "failed" | "complete";
   generation: string;         // current or last-applied generation hash (short)
+  commit: string;             // git rev of flake source (short hash, empty if unknown)
   startedAt: string;          // ISO timestamp
   finishedAt: string;         // ISO timestamp (empty if in progress)
   error: string;              // last error message (empty on success)

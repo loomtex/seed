@@ -264,8 +264,10 @@ let
               done
               echo "$RESULT" | jq -r --arg repo "$ARG" --arg id "$IDENTITY" '
                 .namespace as $ns |
+                (.reconcile.commit // "") as $commit |
                 "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
-                  (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end),
+                  (if $id != "" then "  \u001b[2m\($id)\u001b[0m" else "" end) +
+                  (if $commit != "" then "  \u001b[2m\($commit)\u001b[0m" else "" end),
                 (.instances | to_entries[] |
                   "  \u001b[1m\(.key)\u001b[0m " +
                   (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
@@ -276,9 +278,9 @@ let
                 ),
                 (if .reconcile then
                   if .reconcile.phase == "failed" then
-                    "\n  \u001b[31mLast build (\(.reconcile.generation // "unknown")[0:12]) failed:\u001b[0m \(.reconcile.error)"
+                    "\n  \u001b[31mBuild \(.reconcile.commit // "?") failed:\u001b[0m \(.reconcile.error)"
                   elif .reconcile.phase == "building" or .reconcile.phase == "evaluating" or .reconcile.phase == "applying" then
-                    "\n  \u001b[33m⧗ \(.reconcile.phase)\u001b[0m" +
+                    "\n  \u001b[33m⧗ \(.reconcile.phase) \(.reconcile.commit // "")\u001b[0m" +
                     ([.reconcile.instances | to_entries[] | select(.value.phase == "building") | .key] |
                       if length > 0 then " — building: \(join(", "))" else "" end)
                   else empty end
@@ -305,8 +307,10 @@ let
               echo "$ALL_JSON" | jq -r --argjson ids "$ID_JSON" '.[] |
                 .data.namespace as $ns |
                 .repo as $repo |
+                (.data.reconcile.commit // "") as $commit |
                 "\u001b[1;4m\($repo)\u001b[0m  \u001b[2m\($ns)\u001b[0m" +
-                  (if $ids[$repo] then "  \u001b[2m\($ids[$repo])\u001b[0m" else "" end),
+                  (if $ids[$repo] then "  \u001b[2m\($ids[$repo])\u001b[0m" else "" end) +
+                  (if $commit != "" then "  \u001b[2m\($commit)\u001b[0m" else "" end),
                 (.data.instances | to_entries[] |
                   "  \u001b[1m\(.key)\u001b[0m " +
                   (if .value.ready then "\u001b[32m●\u001b[0m " else "\u001b[31m●\u001b[0m " end) +
@@ -317,9 +321,9 @@ let
                 ),
                 (if .data.reconcile then
                   if .data.reconcile.phase == "failed" then
-                    "\n  \u001b[31mLast build (\(.data.reconcile.generation // "unknown")[0:12]) failed:\u001b[0m \(.data.reconcile.error)"
+                    "\n  \u001b[31mBuild \(.data.reconcile.commit // "?") failed:\u001b[0m \(.data.reconcile.error)"
                   elif .data.reconcile.phase == "building" or .data.reconcile.phase == "evaluating" or .data.reconcile.phase == "applying" then
-                    "\n  \u001b[33m⧗ \(.data.reconcile.phase)\u001b[0m" +
+                    "\n  \u001b[33m⧗ \(.data.reconcile.phase) \(.data.reconcile.commit // "")\u001b[0m" +
                     ([.data.reconcile.instances | to_entries[] | select(.value.phase == "building") | .key] |
                       if length > 0 then " — building: \(join(", "))" else "" end)
                   else empty end
