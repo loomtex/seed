@@ -183,7 +183,7 @@ seed.expose.http = 8080;                                 # bare port shorthand
 
 Protocols: `tcp`, `udp`, `dns` (both TCP+UDP), `http` (ACME-enabled), `grpc` (ACME-enabled).
 
-When the protocol is `http` or `grpc`, the platform injects `SEED_ACME_URL` — an ACME directory endpoint that proxies to Let's Encrypt. Your instance's web server (e.g. Caddy) uses its built-in ACME client to request certificates through this endpoint.
+When the protocol is `http` or `grpc`, `seed.acme` is auto-enabled — this configures both `security.acme` (for nginx and other NixOS services) and `services.caddy.acmeCA` (for Caddy) to use the platform's ACME endpoint. TLS just works.
 
 ### `seed.storage`
 
@@ -236,7 +236,7 @@ For **nginx**, just use `enableACME` and `forceSSL` — the ACME server and emai
 }
 ```
 
-For **Caddy**, point its ACME client at `SEED_ACME_URL` (Caddy has its own ACME implementation, independent of `security.acme`):
+For **Caddy**, the platform also sets `services.caddy.acmeCA` automatically, so Caddy's built-in ACME client works without extra config. Use `{$SEED_FQDN}` for the hostname (Caddy env var syntax — loaded from `/run/seed/env`):
 
 ```nix
 { pkgs, ... }:
@@ -249,10 +249,6 @@ For **Caddy**, point its ACME client at `SEED_ACME_URL` (Caddy has its own ACME 
     enable = true;
     dataDir = "/var/lib/caddy";
     configFile = pkgs.writeText "Caddyfile" ''
-      {
-        acme_ca {$SEED_ACME_URL}
-      }
-
       {$SEED_FQDN} {
         root * /seed/storage/data/www
         file_server
@@ -334,7 +330,7 @@ systemd.services.myapp.serviceConfig.EnvironmentFile = "/run/seed/env";
 | `SEED_SHOOT_URL` | `seed.shoot.enable = true` | Pool manager endpoint for ephemeral VM forking |
 | `SEED_EST_URL` | always (if platform CA available) | Certificate enrollment endpoint |
 
-`SEED_ACME_URL` and `SEED_FQDN` are auto-enabled when any `seed.expose` entry uses the `http` or `grpc` protocol. Most instances only need these two — point your web server's ACME client at `SEED_ACME_URL` and serve on `SEED_FQDN`.
+`SEED_ACME_URL` and `SEED_FQDN` are auto-enabled when any `seed.expose` entry uses the `http` or `grpc` protocol. Most instances don't need to reference `SEED_ACME_URL` directly — `security.acme` and `services.caddy.acmeCA` are pre-configured. `SEED_FQDN` is useful in Caddyfiles for the hostname (`{$SEED_FQDN}`).
 
 ## Secrets
 
@@ -508,7 +504,6 @@ services.caddy = {
   enable = true;
   dataDir = "/var/lib/caddy";
   configFile = pkgs.writeText "Caddyfile" ''
-    { acme_ca {$SEED_ACME_URL} }
     {$SEED_FQDN}, id.loom.farm { reverse_proxy localhost:8080 }
   '';
 };
@@ -609,10 +604,6 @@ in {
     enable = true;
     dataDir = "/var/lib/caddy";
     configFile = pkgs.writeText "Caddyfile" ''
-      {
-        acme_ca {$SEED_ACME_URL}
-      }
-
       {$SEED_FQDN}, example.com, www.example.com {
         reverse_proxy localhost:3000
       }
@@ -755,10 +746,6 @@ A web frontend and API backend sharing a namespace. Each instance is a separate 
     enable = true;
     dataDir = "/var/lib/caddy";
     configFile = pkgs.writeText "Caddyfile" ''
-      {
-        acme_ca {$SEED_ACME_URL}
-      }
-
       {$SEED_FQDN} {
         handle /api/* {
           reverse_proxy api:3000

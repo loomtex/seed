@@ -17,17 +17,14 @@ in {
   seed.dns.names = [ "example.com" "www.example.com" ];
 
   # Caddy handles TLS automatically via the platform ACME endpoint.
-  # {$SEED_ACME_URL} and {$SEED_FQDN} are Caddy env var syntax, not nix.
-  # SEED_FQDN is the auto-generated name (<instance>.<namespace>.seed.loom.farm).
-  # Add your custom domains as additional site addresses.
+  # services.caddy.acmeCA is set by the platform — no manual config needed.
+  # {$SEED_FQDN} is Caddy env var syntax (not nix) — the auto-generated name
+  # (<instance>.<namespace>.seed.loom.farm). Add custom domains as additional
+  # site addresses.
   services.caddy = {
     enable = true;
     dataDir = "/var/lib/caddy";
     configFile = pkgs.writeText "Caddyfile" ''
-      {
-        acme_ca {$SEED_ACME_URL}
-      }
-
       {$SEED_FQDN}, example.com, www.example.com {
         reverse_proxy localhost:3000
       }

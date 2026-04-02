@@ -321,14 +321,19 @@ in {
         (lib.mapAttrsToList (_: e: e.port))
       ];
 
-    # When ACME is enabled, configure security.acme to use the platform's
-    # embedded ACME endpoint. NixOS requires acceptTerms + email even though
-    # our internal server doesn't use them (it proxies to LE server-side).
+    # When ACME is enabled, configure security.acme and Caddy to use the
+    # platform's embedded ACME endpoint. NixOS requires acceptTerms + email
+    # even though our internal server doesn't use them (it proxies to LE).
     security.acme = lib.mkIf cfg.acme {
       acceptTerms = true;
       defaults.server = "https://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
       defaults.email = lib.mkDefault "acme@seed.loom.farm";
     };
+
+    # Caddy has its own ACME client (doesn't use security.acme). Point it
+    # at the platform endpoint so TLS works without manual Caddyfile config.
+    services.caddy.acmeCA = lib.mkIf cfg.acme
+      "https://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
 
     # Service discovery: environment variables
     environment.sessionVariables = lib.mapAttrs'
