@@ -110,7 +110,6 @@ in {
 
       # Storage for data directory
       seed.storage.pgdata = {
-        size = lib.mkDefault "10Gi";
         mountPoint = "/var/lib/postgresql";
         user = "postgres";
         group = "postgres";
