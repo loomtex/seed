@@ -251,6 +251,7 @@
       social = mkSeed (ns // { name = "social"; module = ./instances/social.nix; });
       keycloak = mkSeed (ns // { name = "keycloak"; module = ./instances/keycloak.nix; });
       postgres = mkSeed (ns // { name = "postgres"; module = ./instances/postgres.nix; });
+      sandbox = mkSeed (ns // { name = "sandbox"; module = ./instances/sandbox.nix; });
     };
 
     # Controller + host agent TypeScript packages
