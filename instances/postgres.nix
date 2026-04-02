@@ -16,7 +16,7 @@
       clients.sandbox = { role = "social_rw"; };
     };
     databases.zitadel = {
-      clients.zitadel = { role = "zitadel"; createRole = true; };
+      clients.zitadel = { role = "zitadel"; };
     };
   };
 }
