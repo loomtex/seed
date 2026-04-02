@@ -50,6 +50,7 @@ in {
     serviceConfig = {
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.socat}/bin/socat"
+        "-d" "-d"
         "TCP-LISTEN:5432,fork,reuseaddr"
         "OPENSSL:postgres.s-gaydazldmnsg.seed.loom.farm:5432,cert=/seed/tls/cert.pem,key=/seed/tls/key.pem,cafile=/seed/tls/ca.pem,verify=1"
       ];
