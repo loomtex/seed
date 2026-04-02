@@ -198,6 +198,7 @@
 
       # Wrapped instance modules — seed.services.*
       postgresql = ./instance-modules/postgresql.nix;
+      keycloak = ./instance-modules/keycloak.nix;
 
       # Controller: reconciles instance definitions into Kata pods
       controller = ./controller.nix;
