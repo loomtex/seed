@@ -108,6 +108,15 @@ nix run github:loomtex/seed#seed-identity -- .seed-identity-key.pub
 nix run github:loomtex/seed#seed-sign -- <invite-code> .seed-identity-key
 ```
 
+Hardware keys (e.g. Yubikey) work too — generate an `ed25519-sk` key, then use the individual tools:
+
+```bash
+ssh-keygen -t ed25519-sk -f .seed-identity-key
+nix run github:loomtex/seed#seed-identity -- .seed-identity-key.pub > .seed-identity
+SIG=$(nix run github:loomtex/seed#seed-sign -- <invite-code> .seed-identity-key)
+ssh seed.loom.farm plant silo:my-app <invite-code> "$SIG"
+```
+
 Check status after planting:
 
 ```bash
