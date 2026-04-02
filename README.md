@@ -189,7 +189,7 @@ Storage survives pod restarts and redeployments. PVCs are never garbage-collecte
 Custom DNS names for this instance. Each entry gets an AAAA record pointing at the instance's IPv6 ingress address. Names must belong to a domain declared in `combine.domains` in your flake (see [Custom domains](#custom-domains)).
 
 ```nix
-seed.dns.names = [ "myapp.example.com" "www.myapp.example.com" ];
+seed.dns.names = [ "example.com" "www.example.com" ];
 ```
 
 ### `seed.rollout`
@@ -265,7 +265,7 @@ Register your own domain by declaring it in `combine.domains` in your flake:
 {
   outputs = { seed, ... }: {
     combine.domains = {
-      "myapp.example.com" = {
+      "example.com" = {
         register = true;   # platform registers via NameSilo and sets NS records
         default = true;    # used as default domain for unqualified DNS names
       };
@@ -285,7 +285,7 @@ Then point instance DNS names at your domain with `seed.dns.names`:
 # web.nix
 {
   seed.expose.https.enable = true;
-  seed.dns.names = [ "myapp.example.com" "www.myapp.example.com" ];
+  seed.dns.names = [ "example.com" "www.example.com" ];
   # ...
 }
 ```
@@ -295,7 +295,7 @@ The platform handles the full lifecycle:
 1. **Registration**: If `register = true`, the controller registers the domain via NameSilo, sets nameservers to `ns1.loom.farm` / `ns2.loom.farm`, and creates the zone in PowerDNS
 2. **Zone setup**: SOA and NS records are created automatically
 3. **Instance records**: AAAA records are created for each `seed.dns.names` entry, pointing at the instance's IPv6 ingress address
-4. **Wildcards**: Zone apex names (e.g. `myapp.example.com`) automatically get a wildcard record (`*.myapp.example.com`) too
+4. **Wildcards**: Zone apex names (e.g. `example.com`) automatically get a wildcard record (`*.example.com`) too
 
 If you already own the domain and manage it at another registrar, set `register = false` and point your NS records at `ns1.loom.farm` / `ns2.loom.farm` manually. Once delegation propagates, the controller creates the zone and manages records.
 
