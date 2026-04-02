@@ -240,9 +240,21 @@ Certificates are real Let's Encrypt certs, browser-trusted. With nginx, persist 
 
 ## DNS
 
-Every instance is reachable at `<instance>.<namespace>.seed.loom.farm`. The namespace is derived deterministically from your flake URI — you don't choose it, but it's stable.
+Every instance is reachable at `<instance>.<namespace>.seed.loom.farm`. The namespace is derived deterministically from your flake identity — you don't choose it, but it's stable.
 
 DNS records are created automatically when the instance deploys. No configuration needed.
+
+### Custom domains
+
+Point your own domain at your instance with `seed.dns.names`:
+
+```nix
+seed.dns.names = [ "myapp.loom.farm" ];
+```
+
+The platform creates AAAA records pointing at the instance's IPv6 ingress address. Zone apex names (e.g. `example.com`) automatically get wildcard records (`*.example.com`) too.
+
+For domains outside `loom.farm`, delegate DNS to the platform's nameservers. The controller manages records via PowerDNS — any domain configured as a zone is supported.
 
 ## Secrets
 
@@ -357,6 +369,76 @@ Each shoot runs in its own hardware-isolated microVM. No network interface — c
 - No vTPM — pass secrets via shared storage if needed
 - Nix store is read-only (can run binaries, can't build)
 - Same physical node as parent
+
+## Instance modules
+
+Seed includes reusable modules for common platform services. These handle the complexity of connecting to shared infrastructure — mTLS proxy setup, TPM-bound certificates, database initialization — so instance authors don't have to.
+
+### PostgreSQL (`seed.services.postgresql`)
+
+Shared PostgreSQL with SPIFFE mTLS client certificate authentication. Clients present their instance's TPM-bound certificate; `pg_ident.conf` maps certificate DNs to database roles.
+
+```nix
+# On the PostgreSQL instance:
+seed.services.postgresql = {
+  enable = true;
+  databases.myapp = {
+    clients.api = { role = "myapp_rw"; };                        # same namespace
+    clients.worker = { role = "myapp_ro"; namespace = "s-xyz"; }; # cross-namespace
+  };
+};
+```
+
+The module handles:
+- TLS server certificate via TPM-bound SPIFFE identity
+- `pg_hba.conf` with cert auth per declared database
+- `pg_ident.conf` mapping certificate DN → PostgreSQL role
+- Automatic database and role creation via `seed-pg-init`
+
+### Zitadel (`seed.services.zitadel`)
+
+OIDC identity provider for user authentication across seed instances. Runs Zitadel v4 behind an mTLS proxy to the shared PostgreSQL.
+
+```nix
+# On the Zitadel instance:
+seed.services.zitadel = {
+  enable = true;
+  hostname = "id.loom.farm";
+  database.host = "postgres.s-gaydazldmnsg.svc.cluster.local";
+};
+```
+
+The module handles:
+- socat + openssl mTLS proxy for PostgreSQL (Go can't use TPM-bound keys natively)
+- Master encryption key generation and persistence
+- Schema initialization via `init zitadel` + `start-from-setup` (no admin DB access needed)
+- Runs as dedicated `zitadel` system user
+
+Instance authors pair it with Caddy for TLS ingress:
+
+```nix
+services.caddy = {
+  enable = true;
+  dataDir = "/var/lib/caddy";
+  configFile = pkgs.writeText "Caddyfile" ''
+    { acme_ca {$SEED_ACME_URL} }
+    {$SEED_FQDN}, id.loom.farm { reverse_proxy localhost:8080 }
+  '';
+};
+systemd.services.caddy.serviceConfig.EnvironmentFile = "/run/seed/env";
+```
+
+### mTLS proxy pattern
+
+Both PostgreSQL and Zitadel modules use the same pattern for connecting to services that require client certificate authentication with TPM-bound keys:
+
+```
+Instance app → plaintext → socat (localhost:port)
+  → openssl s_client -starttls postgres -cert /seed/tls/cert.pem -key /seed/tls/key.pem
+  → mTLS → remote service
+```
+
+The TPM-bound key (`/seed/tls/key.pem`) is a TSS2 PRIVATE KEY — the actual key material never leaves the TPM. OpenSSL's `tpm2` provider handles all private key operations on-chip. This is transparent to the application connecting to localhost.
 
 ## Instance authoring notes
 
