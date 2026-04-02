@@ -12,6 +12,7 @@ You write a nix flake that exports `seeds.<name>` for each instance. The platfor
 
 - **DNS**: `<instance>.<namespace>.seed.loom.farm` — resolves immediately
 - **TLS**: Automatic Let's Encrypt certificates via the platform's embedded ACME server
+- **Identity**: TPM-backed SPIFFE certificates for mTLS between instances — each VM has a hardware-bound private key that never leaves the TPM
 - **Storage**: Persistent volumes that survive restarts and redeployments
 - **Secrets**: A virtual TPM device for encrypted secrets via [sops-nix](https://github.com/Mic92/sops-nix)
 - **Git hosting**: Push to [Silo](https://silo.loom.farm) — no GitHub account needed
