@@ -51,7 +51,7 @@ in {
       ExecStart = lib.concatStringsSep " " [
         "${pkgs.socat}/bin/socat"
         "TCP-LISTEN:5432,fork,reuseaddr"
-        "OPENSSL:postgres:5432,cert=/seed/tls/cert.pem,key=/seed/tls/key.pem,cafile=/seed/tls/ca.pem,verify=1"
+        "OPENSSL:postgres.s-gaydazldmnsg.seed.loom.farm:5432,cert=/seed/tls/cert.pem,key=/seed/tls/key.pem,cafile=/seed/tls/ca.pem,verify=1"
       ];
       Restart = "always";
       RestartSec = "5s";
