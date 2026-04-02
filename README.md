@@ -198,13 +198,30 @@ Deployment strategy. `"recreate"` (default) stops the old instance before starti
 
 ## TLS
 
-Instances with `http` or `grpc` protocol in `seed.expose` get access to the platform's ACME facade — an RFC 8555 endpoint that proxies DNS-01 validation to Let's Encrypt. Your instance's web server requests certificates through it.
+When any `seed.expose` entry uses the `http` or `grpc` protocol, `seed.acme` is automatically enabled. This configures NixOS's `security.acme` to use the platform's embedded ACME server (which proxies DNS-01 validation to Let's Encrypt) — no manual ACME configuration needed.
 
-Your instance receives two environment variables:
-- `SEED_ACME_URL` — the platform's ACME directory endpoint
-- `SEED_FQDN` — your instance's hostname (e.g. `web.s-gaydazldmnsg.seed.loom.farm`)
+You can also set `seed.acme = true` explicitly for protocols that don't auto-enable it.
 
-Point your web server's ACME client at `SEED_ACME_URL`. Caddy is the easiest option — it handles ACME natively:
+For **nginx**, just use `enableACME` and `forceSSL` — the ACME server and email are pre-configured:
+
+```nix
+{
+  seed.expose.http.enable = true;
+  seed.expose.https.enable = true;
+  seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
+
+  services.nginx = {
+    enable = true;
+    virtualHosts."my-app.example.com" = {
+      enableACME = true;
+      forceSSL = true;
+      root = "/seed/storage/data/www";
+    };
+  };
+}
+```
+
+For **Caddy**, point its ACME client at `SEED_ACME_URL` (Caddy has its own ACME implementation, independent of `security.acme`):
 
 ```nix
 { pkgs, ... }:
@@ -232,38 +249,7 @@ Point your web server's ACME client at `SEED_ACME_URL`. Caddy is the easiest opt
 }
 ```
 
-Caddy automatically obtains and renews TLS certificates from the platform ACME endpoint. The `{$SEED_ACME_URL}` and `{$SEED_FQDN}` variables are expanded from the environment at startup.
-
-For nginx, use NixOS's `security.acme` module (which uses lego under the hood):
-
-```nix
-{ config, ... }:
-
-let
-  acmeServer = "https://seed-controller.seed-system.svc.cluster.local:9876/acme/directory";
-in {
-  seed.expose.http.enable = true;
-  seed.expose.https.enable = true;
-  seed.storage.acme = { size = "100Mi"; mountPoint = "/var/lib/acme"; };
-
-  security.acme = {
-    acceptTerms = true;
-    defaults.server = acmeServer;
-    defaults.email = "you@example.com";
-  };
-
-  services.nginx = {
-    enable = true;
-    virtualHosts."my-app.example.com" = {
-      enableACME = true;
-      forceSSL = true;
-      root = "/seed/storage/data/www";
-    };
-  };
-}
-```
-
-Certificates are real Let's Encrypt certs, browser-trusted. With nginx, persist `/var/lib/acme` via `seed.storage` to avoid hitting rate limits on redeployment. Caddy manages its own cert storage internally.
+Certificates are real Let's Encrypt certs, browser-trusted. Persist `/var/lib/acme` (nginx) or `/var/lib/caddy` (Caddy) via `seed.storage` to avoid hitting rate limits on redeployment.
 
 ## DNS
 
