@@ -74,7 +74,20 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@machine
 
 This is how the platform identifies you. Your SSH key proves ownership of the repo — there are no passwords or API tokens.
 
-### 3. Push and plant
+### 3. Create an identity
+
+Each flake has a stable identity — an IPNS CID derived from an Ed25519 keypair. Your namespace is computed deterministically from this CID, and the private key proves ownership during `plant`.
+
+```bash
+# Generate the identity keypair
+ssh-keygen -t ed25519 -f .seed-identity-key -C "seed-identity" -N ""
+```
+
+The `.seed-identity` file contains the IPNS CID derived from the public key (a `k51qzi5uqu5d...` string). The platform derives the CID from your public key during `plant` — you can also compute it yourself using the `ipnsCidFromSshPubkey` function in `src/shared/identity.ts`.
+
+Commit `.seed-identity` to your repo (it's the public CID, safe to share). Add `.seed-identity-key` to `.gitignore` — it's the private key used to sign plant operations.
+
+### 4. Push and plant
 
 Push your flake to a git remote. You can use Seed's built-in git hosting (Silo) or GitHub:
 
@@ -88,14 +101,20 @@ git remote add origin git@github.com:you/my-app.git
 git push -u origin master
 ```
 
-Then register your repo with an invite code:
+Then register your repo with an invite code. If your flake has a `.seed-identity`, you must sign the invite code with your identity key:
 
 ```bash
-# Silo-hosted repo
-ssh seed.loom.farm plant silo:my-app <invite-code>
+# Sign the invite code
+SIGNATURE=$(ssh-keygen -Y sign -n seed -f .seed-identity-key <<< "<invite-code>" | base64 -w0)
 
-# GitHub-hosted repo
-ssh seed.loom.farm plant github:you/my-app <invite-code>
+# Plant with signature
+ssh seed.loom.farm plant silo:my-app <invite-code> "$SIGNATURE"
+```
+
+If your flake has no `.seed-identity` (legacy mode), plant without a signature:
+
+```bash
+ssh seed.loom.farm plant silo:my-app <invite-code>
 ```
 
 The controller evaluates your flake, builds the NixOS closure, and boots the instance. Check status:
@@ -107,7 +126,7 @@ ssh seed.loom.farm logs web
 
 After the initial `plant`, every `git push` triggers automatic redeployment via webhook.
 
-### 4. Verify locally
+### 5. Verify locally
 
 Before pushing, validate your instance config:
 
@@ -164,6 +183,14 @@ seed.storage.cache = { size = "500Mi"; mountPoint = "/tmp/cache"; }; # custom mo
 ```
 
 Storage survives pod restarts and redeployments. PVCs are never garbage-collected.
+
+### `seed.dns.names`
+
+Custom DNS names for this instance. Each entry gets an AAAA record pointing at the instance's IPv6 ingress address. Names must belong to a domain declared in `combine.domains` in your flake (see [Custom domains](#custom-domains)).
+
+```nix
+seed.dns.names = [ "myapp.example.com" "www.myapp.example.com" ];
+```
 
 ### `seed.rollout`
 
@@ -240,21 +267,73 @@ Certificates are real Let's Encrypt certs, browser-trusted. With nginx, persist 
 
 ## DNS
 
-Every instance is reachable at `<instance>.<namespace>.seed.loom.farm`. The namespace is derived deterministically from your flake identity — you don't choose it, but it's stable.
+Every instance automatically gets a DNS name at `<instance>.<namespace>.seed.loom.farm`. The namespace is derived deterministically from your flake identity (see [Create an identity](#3-create-an-identity)) — you don't choose it, but it's stable. AAAA records are created and updated automatically as instances deploy and get their IPv6 ingress addresses from MetalLB.
 
-DNS records are created automatically when the instance deploys. No configuration needed.
+No configuration needed — if your instance has any `seed.expose` entries, it gets a DNS name.
 
 ### Custom domains
 
-Point your own domain at your instance with `seed.dns.names`:
+Register your own domain by declaring it in `combine.domains` in your flake:
 
 ```nix
-seed.dns.names = [ "myapp.loom.farm" ];
+{
+  outputs = { seed, ... }: {
+    combine.domains = {
+      "myapp.example.com" = {
+        register = true;   # platform registers via NameSilo and sets NS records
+        default = true;    # used as default domain for unqualified DNS names
+      };
+    };
+
+    seeds.web = seed.lib.mkSeed {
+      name = "web";
+      module = ./web.nix;
+    };
+  };
+}
 ```
 
-The platform creates AAAA records pointing at the instance's IPv6 ingress address. Zone apex names (e.g. `example.com`) automatically get wildcard records (`*.example.com`) too.
+Then point instance DNS names at your domain with `seed.dns.names`:
 
-For domains outside `loom.farm`, delegate DNS to the platform's nameservers. The controller manages records via PowerDNS — any domain configured as a zone is supported.
+```nix
+# web.nix
+{
+  seed.expose.https.enable = true;
+  seed.dns.names = [ "myapp.example.com" "www.myapp.example.com" ];
+  # ...
+}
+```
+
+The platform handles the full lifecycle:
+
+1. **Registration**: If `register = true`, the controller registers the domain via NameSilo, sets nameservers to `ns1.loom.farm` / `ns2.loom.farm`, and creates the zone in PowerDNS
+2. **Zone setup**: SOA and NS records are created automatically
+3. **Instance records**: AAAA records are created for each `seed.dns.names` entry, pointing at the instance's IPv6 ingress address
+4. **Wildcards**: Zone apex names (e.g. `myapp.example.com`) automatically get a wildcard record (`*.myapp.example.com`) too
+
+If you already own the domain and manage it at another registrar, set `register = false` and point your NS records at `ns1.loom.farm` / `ns2.loom.farm` manually. Once delegation propagates, the controller creates the zone and manages records.
+
+DNS records sync within seconds of deployment. Records track the instance's LoadBalancer IP — if the address changes, records update automatically.
+
+## Environment variables
+
+The platform injects environment variables into every instance pod. Inside the Kata VM, these are captured at activation time to `/run/seed/env`. Use `EnvironmentFile` in systemd services to access them:
+
+```nix
+systemd.services.myapp.serviceConfig.EnvironmentFile = "/run/seed/env";
+```
+
+| Variable | Injected when | Value |
+|----------|---------------|-------|
+| `SEED_FQDN` | `seed.acme = true` | `<instance>.<namespace>.seed.loom.farm` — the instance's auto-generated hostname |
+| `SEED_ACME_URL` | `seed.acme = true` | Platform ACME directory endpoint (RFC 8555) for TLS certificates |
+| `SEED_NAMESPACE` | always | k8s namespace (e.g. `s-gaydazldmnsg`) |
+| `SEED_INSTANCE` | always | Instance name (e.g. `web`) |
+| `SEED_NODE_IP` | always | Host node's IP address |
+| `SEED_SHOOT_URL` | `seed.shoot.enable = true` | Pool manager endpoint for ephemeral VM forking |
+| `SEED_EST_URL` | always (if platform CA available) | Certificate enrollment endpoint |
+
+`SEED_ACME_URL` and `SEED_FQDN` are auto-enabled when any `seed.expose` entry uses the `http` or `grpc` protocol. Most instances only need these two — point your web server's ACME client at `SEED_ACME_URL` and serve on `SEED_FQDN`.
 
 ## Secrets
 
@@ -485,9 +564,22 @@ Each example is available as a template (`nix flake init -t github:loomtex/seed#
 }
 ```
 
-### Caddy reverse proxy with TLS (`instance-caddy`)
+### Caddy reverse proxy with TLS and custom domain (`instance-caddy`)
 
-Caddy proxies HTTPS to a Node.js backend. The platform ACME endpoint provides Let's Encrypt certificates automatically. Note the `{$VAR}` syntax — this is Caddy's env var expansion, not nix interpolation.
+Caddy proxies HTTPS to a Node.js backend. The platform ACME endpoint provides Let's Encrypt certificates automatically. The flake registers a custom domain and the instance claims DNS names on it. Note the `{$VAR}` syntax — this is Caddy's env var expansion, not nix interpolation.
+
+```nix
+# flake.nix
+{
+  inputs.seed.url = "github:loomtex/seed";
+  inputs.nixpkgs.follows = "seed/nixpkgs";
+
+  outputs = { seed, ... }: {
+    combine.domains."example.com" = { register = true; default = true; };
+    seeds.web = seed.lib.mkSeed { name = "web"; module = ./web.nix; };
+  };
+}
+```
 
 ```nix
 # web.nix
@@ -503,6 +595,7 @@ let
 in {
   seed.expose.https.enable = true;
   seed.storage.caddy = { size = "100Mi"; mountPoint = "/var/lib/caddy"; };
+  seed.dns.names = [ "example.com" "www.example.com" ];
 
   services.caddy = {
     enable = true;
@@ -512,7 +605,7 @@ in {
         acme_ca {$SEED_ACME_URL}
       }
 
-      {$SEED_FQDN} {
+      {$SEED_FQDN}, example.com, www.example.com {
         reverse_proxy localhost:3000
       }
     '';
@@ -709,29 +802,25 @@ Optimized for agents. Everything needed to deploy an instance from scratch.
 ### Deploy sequence
 
 ```
-1. nix flake init -t github:loomtex/seed#instance-caddy  (or #instance, #instance-api, #multi)
-2. Edit web.nix (NixOS config with seed.* options)
-3. Create .authorized_keys in repo root (your SSH public key)
-4. nix eval .#seeds.web.meta --json              # validate
-5. git init && git add -A && git commit -m "initial"
-6. git remote add origin silo.loom.farm:my-app.git
-7. git push -u origin master                      # creates repo on silo
-8. ssh seed.loom.farm plant silo:my-app <invite>  # register with platform
-9. ssh seed.loom.farm status                       # verify
-10. ssh seed.loom.farm logs web                    # check logs
+1.  nix flake init -t github:loomtex/seed#instance-caddy
+2.  Edit web.nix (NixOS config with seed.* options)
+3.  Create .authorized_keys (your SSH public key)
+4.  ssh-keygen -t ed25519 -f .seed-identity-key   # identity keypair
+5.  Write .seed-identity (IPNS CID from public key)
+6.  nix eval .#seeds.web.meta --json              # validate
+7.  git init && git add -A && git commit -m "initial"
+8.  git remote add origin silo.loom.farm:my-app.git
+9.  git push -u origin master                      # creates repo on silo
+10. SIGNATURE=$(ssh-keygen -Y sign -n seed -f .seed-identity-key <<< "<code>" | base64 -w0)
+11. ssh seed.loom.farm plant silo:my-app <code> "$SIGNATURE"
+12. ssh seed.loom.farm status                      # verify
 ```
 
 Subsequent deploys: `git push` triggers automatic reconciliation via webhook.
 
-### Environment variables injected into instances
+### Environment variables
 
-| Variable | When | Value |
-|----------|------|-------|
-| `SEED_FQDN` | always | `<instance>.<namespace>.seed.loom.farm` |
-| `SEED_ACME_URL` | `seed.acme = true` | ACME directory URL for TLS certs |
-| `SEED_SHOOT_URL` | `seed.shoot.enable = true` | Pool manager endpoint for ephemeral VMs |
-
-Access via `EnvironmentFile = "/run/seed/env"` in systemd services (not `$ENV` — systemd strips inherited env in Kata VMs).
+See [Environment variables](#environment-variables) for the full table. Access via `EnvironmentFile = "/run/seed/env"` — systemd strips inherited env in Kata VMs.
 
 ### Well-known paths
 
@@ -757,7 +846,7 @@ Most errors are caught at stage 1.
 ### Seed shell commands
 
 ```
-plant <flake-uri> <code>       register a repo (silo:name, github:user/repo)
+plant <uri> <code> [<sig>]     register a repo (silo:name, github:user/repo)
 status [repo]                  instance status + namespace + DNS names
 logs <[repo/]instance>         logs (flags: -f, --lines N, --json)
 restart <[repo/]instance>      restart an instance
@@ -780,6 +869,7 @@ seed.size = "xs";                    # xs|s|m|l|xl — VM sizing tier
 seed.expose.<name>.enable = true;   # well-known: port/protocol from service table
 seed.expose.<name> = { port; protocol; }; # custom: specify explicitly
 seed.expose.<name> = port;          # bare port shorthand
+seed.dns.names = [ "example.com" ]; # custom DNS names (must match combine.domains)
 seed.storage.<name> = "1Gi";        # or { size; mountPoint; }
 seed.rollout = "recreate";          # or "rolling"
 seed.acme = true;                   # auto-detected from expose protocols

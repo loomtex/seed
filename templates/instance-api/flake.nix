@@ -4,6 +4,7 @@
   inputs = {
     seed.url = "github:loomtex/seed";
     nixpkgs.follows = "seed/nixpkgs";
+    sops-nix.follows = "seed/sops-nix";
   };
 
   outputs = { seed, ... }: {
