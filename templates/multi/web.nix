@@ -12,10 +12,6 @@
     enable = true;
     dataDir = "/var/lib/caddy";
     configFile = pkgs.writeText "Caddyfile" ''
-      {
-        acme_ca {$SEED_ACME_URL}
-      }
-
       {$SEED_FQDN} {
         handle /api/* {
           reverse_proxy api:3000
