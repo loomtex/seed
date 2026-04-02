@@ -19,7 +19,9 @@
     };
   };
 
-  # josh's SSH key — allow root login for quick access
+  # Unlock root account (mutableUsers=false locks it by default)
+  users.users.root.hashedPassword = "";
+
   users.users.root.openssh.authorizedKeys.keys = [
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH4wKwiX1fnwB/U4Mc7JT4ddMExopexk0DUSd7Du12Sp ada@signi"
   ];
