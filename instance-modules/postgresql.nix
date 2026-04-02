@@ -201,6 +201,7 @@ in {
               '']
               ++ (map (role: ''
                 psql -tAc 'GRANT ALL PRIVILEGES ON DATABASE "${dbName}" TO "${role}"'
+                psql -d "${dbName}" -tAc 'GRANT ALL ON SCHEMA public TO "${role}"'
               '') roles)
           ) cfg.databases);
         in ''
