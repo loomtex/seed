@@ -199,6 +199,7 @@
       # Wrapped instance modules — seed.services.*
       postgresql = ./instance-modules/postgresql.nix;
       keycloak = ./instance-modules/keycloak.nix;
+      zitadel = ./instance-modules/zitadel.nix;
 
       # Controller: reconciles instance definitions into Kata pods
       controller = ./controller.nix;
@@ -250,7 +251,7 @@
       shell = mkSeed (ns // { name = "shell"; module = ./instances/shell.nix; });
       gateway = mkSeed (ns // { name = "gateway"; module = ./instances/gateway.nix; });
       social = mkSeed (ns // { name = "social"; module = ./instances/social.nix; });
-      keycloak = mkSeed (ns // { name = "keycloak"; module = ./instances/keycloak.nix; });
+      zitadel = mkSeed (ns // { name = "zitadel"; module = ./instances/zitadel.nix; });
       postgres = mkSeed (ns // { name = "postgres"; module = ./instances/postgres.nix; });
       sandbox = mkSeed (ns // { name = "sandbox"; module = ./instances/sandbox.nix; });
     };
