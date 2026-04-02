@@ -9,6 +9,8 @@
 { config, lib, pkgs, ... }:
 
 let
+  dbPasswordFile = pkgs.writeText "kc-db-pw" "cert-auth-via-proxy";
+
   opensslTpm2Conf = pkgs.writeText "openssl-tpm2.cnf" ''
     openssl_conf = openssl_init
 
@@ -71,7 +73,7 @@ in {
       username = "keycloak";
       # Cert auth via proxy — PostgreSQL ignores the password, but the
       # NixOS module requires a passwordFile. Provide a dummy value.
-      passwordFile = toString (pkgs.writeText "kc-db-pw" "cert-auth-via-proxy");
+      passwordFile = toString dbPasswordFile;
     };
 
     settings = {
@@ -93,7 +95,7 @@ in {
   systemd.services.keycloak.environment.CREDENTIALS_DIRECTORY = "/run/keycloak/credentials";
   systemd.services.keycloak.preStart = lib.mkBefore ''
     mkdir -p /run/keycloak/credentials
-    echo "cert-auth-via-proxy" > /run/keycloak/credentials/db_password
+    cp ${dbPasswordFile} /run/keycloak/credentials/${builtins.baseNameOf (toString dbPasswordFile)}
   '';
 
   # Caddy reverse proxy — TLS via platform ACME
