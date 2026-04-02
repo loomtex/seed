@@ -385,11 +385,18 @@ Silo also has a web interface at `https://silo.loom.farm` for browsing repos, wi
 
 ## Seed shell
 
-All management happens over SSH at `seed.loom.farm`:
+All management happens over SSH at `seed.loom.farm`. Connect with no command to get an interactive TUI dashboard:
+
+```bash
+ssh seed.loom.farm                     # interactive TUI (requires TTY)
+```
+
+Or pass commands directly:
 
 ```bash
 ssh seed.loom.farm status              # instance status across all your repos
 ssh seed.loom.farm status my-repo      # status for a specific repo
+ssh seed.loom.farm status -w 5         # watch mode — refresh every 5s
 ssh seed.loom.farm logs web            # last 100 log lines
 ssh seed.loom.farm logs web -f         # stream logs
 ssh seed.loom.farm logs web --lines 500
@@ -830,8 +837,10 @@ Most errors are caught at stage 1.
 ### Seed shell commands
 
 ```
+(no command)                   interactive TUI dashboard (requires TTY)
 plant <uri> <code> [<sig>]     register a repo (silo:name, github:user/repo)
-status [repo]                  instance status + namespace + DNS names
+replant <identity> <new-uri>   change source URI (identity preserved)
+status [repo] [-w N]           instance status (watch mode: refresh every Ns)
 logs <[repo/]instance>         logs (flags: -f, --lines N, --json)
 restart <[repo/]instance>      restart an instance
 keys <[repo/]instance>         show age public key (for sops encryption)
