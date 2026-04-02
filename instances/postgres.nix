@@ -13,6 +13,7 @@
     enable = true;
     databases.social = {
       clients.social = { role = "social_rw"; };
+      clients.sandbox = { role = "social_rw"; };
     };
   };
 }
