@@ -171,7 +171,9 @@ in {
         ExternalSecure = true;
 
         Database.postgres = {
-          Host = "localhost";
+          # Use 127.0.0.1 not localhost — proxy listens IPv4 only,
+          # pgx resolves localhost to [::1] first which fails.
+          Host = "127.0.0.1";
           Port = cfg.database.proxyPort;
           Database = cfg.database.name;
           MaxOpenConns = 20;
@@ -182,6 +184,7 @@ in {
           };
           Admin = {
             Username = cfg.database.username;
+            Database = cfg.database.name;
             SSL.Mode = "disable";
           };
         };
