@@ -2,7 +2,7 @@
   description = "Seed multi-instance — web frontend + API backend";
 
   inputs = {
-    seed.url = "github:loomtex/seed";
+    seed.url = "git+ssh://silo.loom.farm/seed.git";
     nixpkgs.follows = "seed/nixpkgs";
   };
 

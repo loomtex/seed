@@ -25,10 +25,10 @@ There's no Docker, no image registry, no Helm, no YAML. NixOS is the abstraction
 ### 1. Write a flake
 
 ```bash
-nix flake init -t github:loomtex/seed#instance          # nginx static site
-nix flake init -t github:loomtex/seed#instance-caddy    # Caddy reverse proxy with TLS
-nix flake init -t github:loomtex/seed#instance-api      # API server with sops secrets
-nix flake init -t github:loomtex/seed#multi             # web frontend + API backend
+nix flake init -t git+ssh://silo.loom.farm/seed.git#instance          # nginx static site
+nix flake init -t git+ssh://silo.loom.farm/seed.git#instance-caddy    # Caddy reverse proxy with TLS
+nix flake init -t git+ssh://silo.loom.farm/seed.git#instance-api      # API server with sops secrets
+nix flake init -t git+ssh://silo.loom.farm/seed.git#multi             # web frontend + API backend
 ```
 
 The basic `instance` template creates two files:
@@ -36,7 +36,7 @@ The basic `instance` template creates two files:
 ```nix
 # flake.nix
 {
-  inputs.seed.url = "github:loomtex/seed";
+  inputs.seed.url = "git+ssh://silo.loom.farm/seed.git";
   inputs.nixpkgs.follows = "seed/nixpkgs";
 
   outputs = { seed, ... }: {
@@ -87,7 +87,7 @@ git remote add origin silo.loom.farm:my-app.git
 git push -u origin master
 
 # Plant — generates .seed-identity-key + .seed-identity, signs, and registers
-nix run github:loomtex/seed#seed-plant -- silo:my-app <invite-code>
+nix run git+ssh://silo.loom.farm/seed.git#seed-plant -- silo:my-app <invite-code>
 ```
 
 This generates an Ed25519 keypair at `.seed-identity-key`, derives the IPNS CID to `.seed-identity`, signs the invite code, and calls `ssh seed.loom.farm plant`. Commit `.seed-identity` to your repo (it's the public CID). Add `.seed-identity-key` to `.gitignore`.
@@ -95,25 +95,25 @@ This generates an Ed25519 keypair at `.seed-identity-key`, derives the IPNS CID 
 If you already have an identity key, pass it as a third argument:
 
 ```bash
-nix run github:loomtex/seed#seed-plant -- silo:my-app <invite-code> ~/.ssh/my-seed-key
+nix run git+ssh://silo.loom.farm/seed.git#seed-plant -- silo:my-app <invite-code> ~/.ssh/my-seed-key
 ```
 
 The individual tools are also available separately:
 
 ```bash
 # Derive IPNS CID from an SSH key (accepts public or private key)
-nix run github:loomtex/seed#seed-identity -- .seed-identity-key.pub
+nix run git+ssh://silo.loom.farm/seed.git#seed-identity -- .seed-identity-key.pub
 
 # Sign an invite code
-nix run github:loomtex/seed#seed-sign -- <invite-code> .seed-identity-key
+nix run git+ssh://silo.loom.farm/seed.git#seed-sign -- <invite-code> .seed-identity-key
 ```
 
 Hardware keys (e.g. Yubikey) work too — generate an `ed25519-sk` key, then use the individual tools:
 
 ```bash
 ssh-keygen -t ed25519-sk -f .seed-identity-key
-nix run github:loomtex/seed#seed-identity -- .seed-identity-key.pub > .seed-identity
-SIG=$(nix run github:loomtex/seed#seed-sign -- <invite-code> .seed-identity-key)
+nix run git+ssh://silo.loom.farm/seed.git#seed-identity -- .seed-identity-key.pub > .seed-identity
+SIG=$(nix run git+ssh://silo.loom.farm/seed.git#seed-sign -- <invite-code> .seed-identity-key)
 ssh seed.loom.farm plant silo:my-app <invite-code> "$SIG"
 ```
 
@@ -365,7 +365,7 @@ A flake can export any number of instances. They share a namespace.
 
 ```nix
 {
-  inputs.seed.url = "github:loomtex/seed";
+  inputs.seed.url = "git+ssh://silo.loom.farm/seed.git";
   inputs.nixpkgs.follows = "seed/nixpkgs";
 
   outputs = { seed, ... }: {
@@ -551,11 +551,11 @@ networking.firewall.allowedTCPPorts = [ 9090 ];
 
 ## Examples
 
-Each example is available as a template (`nix flake init -t github:loomtex/seed#<name>`). All use this `flake.nix` — change the module path and seed name as needed:
+Each example is available as a template (`nix flake init -t git+ssh://silo.loom.farm/seed.git#<name>`). All use this `flake.nix` — change the module path and seed name as needed:
 
 ```nix
 {
-  inputs.seed.url = "github:loomtex/seed";
+  inputs.seed.url = "git+ssh://silo.loom.farm/seed.git";
   inputs.nixpkgs.follows = "seed/nixpkgs";
 
   outputs = { seed, ... }: {
@@ -571,7 +571,7 @@ Caddy proxies HTTPS to a Node.js backend. The platform ACME endpoint provides Le
 ```nix
 # flake.nix
 {
-  inputs.seed.url = "github:loomtex/seed";
+  inputs.seed.url = "git+ssh://silo.loom.farm/seed.git";
   inputs.nixpkgs.follows = "seed/nixpkgs";
 
   outputs = { seed, ... }: {
@@ -725,7 +725,7 @@ A web frontend and API backend sharing a namespace. Each instance is a separate 
 ```nix
 # flake.nix
 {
-  inputs.seed.url = "github:loomtex/seed";
+  inputs.seed.url = "git+ssh://silo.loom.farm/seed.git";
   inputs.nixpkgs.follows = "seed/nixpkgs";
 
   outputs = { seed, ... }: {
@@ -802,14 +802,14 @@ Optimized for agents. Everything needed to deploy an instance from scratch.
 ### Deploy sequence
 
 ```
-1.  nix flake init -t github:loomtex/seed#instance-caddy
+1.  nix flake init -t git+ssh://silo.loom.farm/seed.git#instance-caddy
 2.  Edit web.nix (NixOS config with seed.* options)
 3.  Create .authorized_keys (your SSH public key)
 4.  nix eval .#seeds.web.meta --json              # validate
 5.  git init && git add -A && git commit -m "initial"
 6.  git remote add origin silo.loom.farm:my-app.git
 7.  git push -u origin master                      # creates repo on silo
-8.  nix run github:loomtex/seed#seed-plant -- silo:my-app <invite-code>
+8.  nix run git+ssh://silo.loom.farm/seed.git#seed-plant -- silo:my-app <invite-code>
 9.  git add .seed-identity && git commit -m "add identity" && git push
 10. ssh seed.loom.farm status                      # verify
 ```
