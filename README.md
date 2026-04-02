@@ -20,6 +20,16 @@ You write a nix flake that exports `seeds.<name>` for each instance. The platfor
 
 There's no Docker, no image registry, no Helm, no YAML. NixOS is the abstraction.
 
+## Why NixOS
+
+Seed uses NixOS as the instance abstraction instead of containers. Every instance is a real NixOS system evaluated from a nix flake.
+
+The full NixOS module ecosystem is available — `services.postgresql`, `security.acme`, `services.openssh`, `sops-nix` — with correct service dependencies, user management, and systemd lifecycle. Multi-service instances are just NixOS config.
+
+The tradeoff is boot time (systemd startup, not millisecond cold starts). Seed isn't a function runtime — it's infrastructure.
+
+Because NixOS is declarative, typed, reproducible, and introspectable, it is trivially wielded by modern LLMs. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human faces. Nix is perfectly positioned to never be typed by a human again. Seed leans into that.
+
 ## Getting started
 
 ### 1. Write a flake
@@ -880,16 +890,6 @@ seed.shoot.enable = false;          # ephemeral VM forking
 - Use `EnvironmentFile = "/run/seed/env"` for SEED_* env vars in systemd services
 - Persist `/var/lib/acme` via `seed.storage` to avoid LE rate limits on redeploy
 - `nix eval .#seeds.<name>.meta --json` is the fast feedback loop — use it before every push
-
-## Why NixOS
-
-Seed uses NixOS as the instance abstraction instead of containers. Every instance is a real NixOS system evaluated from a nix flake.
-
-The full NixOS module ecosystem is available — `services.postgresql`, `security.acme`, `services.openssh`, `sops-nix` — with correct service dependencies, user management, and systemd lifecycle. Multi-service instances are just NixOS config.
-
-The tradeoff is boot time (systemd startup, not millisecond cold starts). Seed isn't a function runtime — it's infrastructure.
-
-Because NixOS is declarative, typed, reproducible, and introspectable, it is trivially wielded by modern LLMs. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human faces. Nix is perfectly positioned to never be typed by a human again. Seed leans into that.
 
 ## License
 
