@@ -115,6 +115,9 @@ in {
     # Persistent storage for master key
     seed.storage.zitadel = { size = "10Mi"; mountPoint = "/seed/storage/zitadel"; };
 
+    # Ensure zitadel user owns its storage directory (PVCs are root-owned by default)
+    systemd.tmpfiles.rules = [ "d /seed/storage/zitadel 0750 zitadel zitadel -" ];
+
     # Generate master encryption key on first boot. Persisted on PVC so it
     # survives pod restarts. Zitadel uses this to encrypt OIDC secrets,
     # SMTP credentials, and other sensitive data in the database.
@@ -130,8 +133,9 @@ in {
       script = ''
         if [ ! -f ${masterkeyPath} ]; then
           ${pkgs.openssl}/bin/openssl rand -hex 16 > ${masterkeyPath}
-          chmod 400 ${masterkeyPath}
         fi
+        chown zitadel:zitadel ${masterkeyPath}
+        chmod 400 ${masterkeyPath}
       '';
     };
 
