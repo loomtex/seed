@@ -230,7 +230,7 @@ in {
         exec zitadel start-from-setup \
           --config ${settingsFile} \
           --steps ${stepsFile} \
-          --masterkey "$(head -1 ${masterkeyPath})" \
+          --masterkeyFile ${masterkeyPath} \
           --tlsMode external
       '';
     };
