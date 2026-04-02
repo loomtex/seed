@@ -85,7 +85,7 @@ in {
       http-port = 8080;
       # socat proxy is plaintext TCP — disable JDBC SSL negotiation
       # (mTLS happens in the proxy, not in the JDBC driver)
-      db-url-properties = "?sslmode=disable";
+      db-url-properties = lib.mkForce "?sslmode=disable";
     };
   };
 
