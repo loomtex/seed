@@ -214,18 +214,11 @@ in {
         RestartSec = "5s";
       };
 
-      # Bootstrap database user/grants/settings on first start (idempotent).
-      # v2.x uses `zitadel init` (no --masterkey), which runs the
-      # database/grant/settings sub-steps. start-from-setup handles
-      # schema migrations and first instance creation.
-      preStart = ''
-        zitadel init \
-          --config ${settingsFile}
-      '';
-
       # start-from-setup runs migrations + first instance setup + server.
       # Unlike start-from-init, it doesn't try to connect to the 'postgres'
       # database — it works directly with the target database.
+      # No separate init step needed: seed-pg-init pre-creates the DB and role,
+      # and start-from-setup handles schema migration on first run.
       script = ''
         exec zitadel start-from-setup \
           --config ${settingsFile} \
