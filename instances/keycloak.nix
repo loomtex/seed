@@ -83,6 +83,9 @@ in {
       http-enabled = true;
       http-host = "127.0.0.1";
       http-port = 8080;
+      # socat proxy is plaintext TCP — disable JDBC SSL negotiation
+      # (mTLS happens in the proxy, not in the JDBC driver)
+      db-url = "jdbc:postgresql://localhost:5432/keycloak?sslmode=disable";
     };
   };
 
