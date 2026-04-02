@@ -12,6 +12,13 @@ const shared = {
   },
 };
 
+// CLI tools don't need k8s client
+const cli = {
+  ...shared,
+  external: [],
+  banner: {},
+};
+
 await Promise.all([
   esbuild.build({
     ...shared,
@@ -32,6 +39,16 @@ await Promise.all([
     ...shared,
     entryPoints: ["src/acceptance/index.ts"],
     outfile: "dist/acceptance.mjs",
+  }),
+  esbuild.build({
+    ...cli,
+    entryPoints: ["src/cli/identity.ts"],
+    outfile: "dist/seed-identity.mjs",
+  }),
+  esbuild.build({
+    ...cli,
+    entryPoints: ["src/cli/sign.ts"],
+    outfile: "dist/seed-sign.mjs",
   }),
 ]);
 
