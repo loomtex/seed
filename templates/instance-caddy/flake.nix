@@ -2,7 +2,7 @@
   description = "Seed instance — Caddy reverse proxy with automatic TLS and custom domain";
 
   inputs = {
-    seed.url = "github:loomtex/seed";
+    seed.url = "git+ssh://silo.loom.farm/seed.git";
     nixpkgs.follows = "seed/nixpkgs";
   };
 

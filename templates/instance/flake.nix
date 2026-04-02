@@ -2,7 +2,7 @@
   description = "Seed instance — NixOS workload running in a Kata VM";
 
   inputs = {
-    seed.url = "github:loomtex/seed";
+    seed.url = "git+ssh://silo.loom.farm/seed.git";
     nixpkgs.follows = "seed/nixpkgs";
   };
 

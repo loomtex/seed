@@ -19,7 +19,7 @@ Or add to an existing flake:
 
 ```nix
 {
-  inputs.seed.url = "github:loomtex/seed";
+  inputs.seed.url = "git+ssh://silo.loom.farm/seed.git";
   inputs.nixpkgs.follows = "seed/nixpkgs";
 
   outputs = { seed, nixpkgs, ... }: {
