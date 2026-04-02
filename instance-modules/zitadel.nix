@@ -214,14 +214,13 @@ in {
         RestartSec = "5s";
       };
 
-      # Bootstrap schema on first start (idempotent — skips if already done).
-      # This replaces the provisioning step that start-from-init does via
-      # the 'postgres' admin database.
+      # Bootstrap database user/grants/settings on first start (idempotent).
+      # v2.x uses `zitadel init` (no --masterkey), which runs the
+      # database/grant/settings sub-steps. start-from-setup handles
+      # schema migrations and first instance creation.
       preStart = ''
-        zitadel init schema \
-          --config ${settingsFile} \
-          --masterkey "$(head -1 ${masterkeyPath})" \
-          --tlsMode external
+        zitadel init \
+          --config ${settingsFile}
       '';
 
       # start-from-setup runs migrations + first instance setup + server.
