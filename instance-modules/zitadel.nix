@@ -167,8 +167,10 @@ in {
       };
       script = ''
         if [ ! -f ${masterkeyPath} ]; then
-          ${pkgs.openssl}/bin/openssl rand -hex 16 > ${masterkeyPath}
+          printf '%s' "$(${pkgs.openssl}/bin/openssl rand -hex 16)" > ${masterkeyPath}
         fi
+        # Strip trailing newline if present (v4 --masterkeyFile reads exact bytes)
+        printf '%s' "$(cat ${masterkeyPath})" > ${masterkeyPath}
         chown zitadel:zitadel ${masterkeyPath}
         chmod 400 ${masterkeyPath}
       '';
