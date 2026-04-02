@@ -205,6 +205,9 @@ in {
           ) cfg.databases);
         in ''
           set -euo pipefail
+          echo "=== pg_ident.conf ==="
+          psql -tAc "SHOW ident_file" | xargs cat
+          echo "=== end pg_ident.conf ==="
           ${lib.concatStringsSep "\n" initLines}
         '';
       };
