@@ -175,12 +175,15 @@ When the protocol is `http` or `grpc`, the platform injects `SEED_ACME_URL` — 
 
 ### `seed.storage`
 
-Persistent volumes. Accepts a size string (mounted at `/seed/storage/<name>`) or an attrset with `size` and `mountPoint`.
+Persistent volumes. Accepts a size string (mounted at `/seed/storage/<name>`) or an attrset with `size`, `mountPoint`, `user`, `group`, and `mode`.
 
 ```nix
 seed.storage.data = "1Gi";                                       # /seed/storage/data
 seed.storage.cache = { size = "500Mi"; mountPoint = "/tmp/cache"; }; # custom mount
+seed.storage.db = { size = "10Gi"; user = "postgres"; group = "postgres"; }; # owned by postgres
 ```
+
+PVC filesystems are root-owned by default. Set `user` and `group` to chown the mount point for services that run as a non-root user — this replaces manual `systemd.tmpfiles.rules`.
 
 Storage survives pod restarts and redeployments. PVCs are never garbage-collected.
 
@@ -522,10 +525,10 @@ Instances run NixOS inside Kata VMs with `boot.isContainer = true`. This keeps c
 systemd.services.myapp.serviceConfig.RuntimeDirectory = "myapp";
 ```
 
-**Storage ownership**: PVC filesystems are root-owned. If your service runs as a non-root user, chown the mount point:
+**Storage ownership**: PVC filesystems are root-owned by default. Set `user` and `group` on the storage entry:
 
 ```nix
-systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 myapp myapp -" ];
+seed.storage.data = { size = "1Gi"; user = "myapp"; group = "myapp"; };
 ```
 
 **No kubectl exec**: Kata VMs don't support `kubectl exec`. Debug via service APIs, port-forward, or write diagnostics to storage.
@@ -863,7 +866,7 @@ seed.expose.<name>.enable = true;   # well-known: port/protocol from service tab
 seed.expose.<name> = { port; protocol; }; # custom: specify explicitly
 seed.expose.<name> = port;          # bare port shorthand
 seed.dns.names = [ "example.com" ]; # custom DNS names (must match combine.domains)
-seed.storage.<name> = "1Gi";        # or { size; mountPoint; }
+seed.storage.<name> = "1Gi";        # or { size; mountPoint; user; group; mode; }
 seed.rollout = "recreate";          # or "rolling"
 seed.acme = true;                   # auto-detected from expose protocols
 seed.shoot.enable = false;          # ephemeral VM forking
@@ -872,7 +875,7 @@ seed.shoot.enable = false;          # ephemeral VM forking
 ### Gotchas
 
 - `RuntimeDirectory` must be set explicitly for services needing `/run/<name>/`
-- PVC mounts are root-owned — use `systemd.tmpfiles.rules` to chown for non-root services
+- PVC mounts are root-owned — set `user`/`group` on `seed.storage` entries for non-root services
 - No `kubectl exec` in Kata VMs — debug via logs, port-forward, or storage
 - Use `EnvironmentFile = "/run/seed/env"` for SEED_* env vars in systemd services
 - Persist `/var/lib/acme` via `seed.storage` to avoid LE rate limits on redeploy
