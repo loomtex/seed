@@ -32,7 +32,7 @@ let
     in
       # pg_ident regex matches the Distinguished Name from the client cert.
       # DN format from PostgreSQL: CN=<instance>,OU=<namespace>,O=seeds.loom.farm
-      ''seed  "/^CN=${clientName},OU=${clientNs},O=seeds\\.loom\\.farm$/"  ${clientCfg.role}''
+      ''seed  "/^CN=${clientName},OU=${clientNs},O=seeds\.loom\.farm$/"  ${clientCfg.role}''
     ) dbCfg.clients
   ) cfg.databases);
 
