@@ -36,7 +36,7 @@ let
     export OPENSSL_MODULES=${pkgs.tpm2-openssl}/lib/ossl-modules
     exec ${pkgs.socat}/bin/socat -d -d \
       TCP-LISTEN:5432,fork,reuseaddr \
-      EXEC:'${pkgs.openssl}/bin/openssl s_client -starttls postgres -connect postgres.s-gaydazldmnsg.seed.loom.farm\:5432 -cert /seed/tls/cert.pem -key /seed/tls/key.pem -CAfile /seed/tls/ca.pem -quiet'
+      EXEC:'${pkgs.openssl}/bin/openssl s_client -starttls postgres -connect postgres.s-gaydazldmnsg.svc.cluster.local\:5432 -cert /seed/tls/cert.pem -key /seed/tls/key.pem -CAfile /seed/tls/ca.pem -quiet'
   '';
 in {
   seed.size = "l";
