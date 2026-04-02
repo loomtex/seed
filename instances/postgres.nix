@@ -7,6 +7,7 @@
 
 {
   seed.size = "s";
+  seed.storage.pgdata.size = "10Gi";
 
   seed.services.postgresql = {
     enable = true;
