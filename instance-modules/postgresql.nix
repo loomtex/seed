@@ -62,6 +62,14 @@ let
           (intra-namespace). Set explicitly for cross-namespace clients.
         '';
       };
+      createRole = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Grant CREATEROLE to this role. Required by apps like Zitadel
+          that manage their own internal roles.
+        '';
+      };
     };
   };
 
@@ -195,6 +203,12 @@ in {
                 psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${role}'" | grep -q 1 || \
                   psql -tAc "CREATE ROLE \"${role}\" WITH LOGIN"
               '') roles)
+              # Grant CREATEROLE to roles that need it (e.g. Zitadel manages internal roles)
+              ++ (lib.concatLists (lib.mapAttrsToList (_: clientCfg:
+                lib.optional clientCfg.createRole ''
+                  psql -tAc 'ALTER ROLE "${clientCfg.role}" CREATEROLE'
+                ''
+              ) dbCfg.clients))
               ++ [''
                 psql -tAc "SELECT 1 FROM pg_database WHERE datname='${dbName}'" | grep -q 1 || \
                   psql -tAc 'CREATE DATABASE "${dbName}"'

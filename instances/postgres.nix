@@ -16,7 +16,7 @@
       clients.sandbox = { role = "social_rw"; };
     };
     databases.zitadel = {
-      clients.zitadel = { role = "zitadel"; };
+      clients.zitadel = { role = "zitadel"; createRole = true; };
     };
     # Zitadel's init phase connects to the postgres database to check/create
     # the target DB. Allow the zitadel role through cert auth.
