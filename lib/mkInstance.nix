@@ -24,6 +24,7 @@ let
       self.nixosModules.instance
       self.nixosModules.postgresql
       self.nixosModules.keycloak
+      self.nixosModules.zitadel
       self.nixosModules.sops
       self.nixosModules.ssh-auth
       { networking.hostName = name; }

@@ -15,8 +15,8 @@
       clients.social = { role = "social_rw"; };
       clients.sandbox = { role = "social_rw"; };
     };
-    databases.keycloak = {
-      clients.keycloak = { role = "keycloak"; };
+    databases.zitadel = {
+      clients.zitadel = { role = "zitadel"; };
     };
   };
 }
