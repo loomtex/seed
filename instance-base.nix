@@ -53,13 +53,17 @@ let
       -algorithm EC -pkeyopt group:P-256 \
       -out "$TLS_DIR/key.pem"
 
-    # 2. Create CSR with SPIFFE URI SAN
+    # 2. Create CSR with SPIFFE URI SAN + DNS SANs for hostname verification
     SPIFFE_URI="spiffe://seeds.loom.farm/$NAMESPACE/$INSTANCE"
+    SAN="URI:$SPIFFE_URI"
+    SAN="$SAN,DNS:$INSTANCE"
+    SAN="$SAN,DNS:$INSTANCE.$NAMESPACE.svc.cluster.local"
+    SAN="$SAN,DNS:$INSTANCE.$NAMESPACE.seed.loom.farm"
     ${pkgs.openssl}/bin/openssl req -new \
       -provider tpm2 -provider default -propquery '?provider=tpm2' \
       -key "$TLS_DIR/key.pem" \
       -subj "/O=seeds.loom.farm/OU=$NAMESPACE/CN=$INSTANCE" \
-      -addext "subjectAltName=URI:$SPIFFE_URI" \
+      -addext "subjectAltName=$SAN" \
       -out "$TLS_DIR/csr.pem"
 
     CSR_PEM=$(cat "$TLS_DIR/csr.pem")
