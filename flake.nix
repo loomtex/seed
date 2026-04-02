@@ -240,9 +240,75 @@
       modules = [ ./infra/installer/installer.nix ];
     };
 
-    apps.${system}.vm = {
-      type = "app";
-      program = "${self.nixosConfigurations.vm.config.system.build.vm}/bin/run-nixos-vm";
+    apps.${system} = {
+      vm = {
+        type = "app";
+        program = "${self.nixosConfigurations.vm.config.system.build.vm}/bin/run-nixos-vm";
+      };
+
+      # Derive IPNS CID from an Ed25519 SSH key for .seed-identity
+      seed-identity = {
+        type = "app";
+        program = toString (pkgs.writeShellScript "seed-identity" ''
+          exec ${pkgs.nodejs_22}/bin/node ${self.packages.${system}.controller}/app/seed-identity.mjs "$@"
+        '');
+      };
+
+      # Sign a plant invite code with a seed identity key
+      seed-sign = {
+        type = "app";
+        program = toString (pkgs.writeShellScript "seed-sign" ''
+          export PATH="${pkgs.openssh}/bin:$PATH"
+          exec ${pkgs.nodejs_22}/bin/node ${self.packages.${system}.controller}/app/seed-sign.mjs "$@"
+        '');
+      };
+
+      # One-liner: generate identity + sign + plant
+      seed-plant = {
+        type = "app";
+        program = toString (pkgs.writeShellScript "seed-plant" ''
+          set -euo pipefail
+          export PATH="${pkgs.lib.makeBinPath [ pkgs.openssh pkgs.nodejs_22 ]}:$PATH"
+          CTRL="${self.packages.${system}.controller}/app"
+
+          usage() {
+            echo "usage: seed-plant <flake-uri> <invite-code> [<identity-key>]" >&2
+            echo "" >&2
+            echo "Register a flake with the Seed platform." >&2
+            echo "" >&2
+            echo "If no identity key exists, generates one at .seed-identity-key" >&2
+            echo "and writes the IPNS CID to .seed-identity." >&2
+            echo "" >&2
+            echo "Examples:" >&2
+            echo "  seed-plant silo:my-app a3f8c2e1" >&2
+            echo "  seed-plant github:me/app a3f8c2e1 ~/.ssh/seed-key" >&2
+            exit 1
+          }
+
+          [ -z "''${1:-}" ] || [ -z "''${2:-}" ] && usage
+          FLAKE_URI="$1"
+          INVITE_CODE="$2"
+          KEY_FILE="''${3:-.seed-identity-key}"
+
+          # Generate identity keypair if it doesn't exist
+          if [ ! -f "$KEY_FILE" ]; then
+            echo "generating identity keypair at $KEY_FILE" >&2
+            ssh-keygen -t ed25519 -f "$KEY_FILE" -C "seed-identity" -N "" -q
+          fi
+
+          # Derive CID and write .seed-identity
+          CID=$(node "$CTRL/seed-identity.mjs" "$KEY_FILE")
+          echo "$CID" > .seed-identity
+          echo "identity: $CID" >&2
+
+          # Sign the invite code
+          SIG=$(node "$CTRL/seed-sign.mjs" "$INVITE_CODE" "$KEY_FILE")
+
+          # Plant
+          echo "planting $FLAKE_URI..." >&2
+          ssh seed.loom.farm plant "$FLAKE_URI" "$INVITE_CODE" "$SIG"
+        '');
+      };
     };
 
     # Dogfooding: seed's own instances
@@ -270,7 +336,7 @@
           filter = path: type:
             let base = builtins.baseNameOf path; in
             (type == "directory" && builtins.elem base [ "src" ]) ||
-            (type == "directory" && builtins.elem base [ "shared" "controller" "host-agent" "pool-manager" "acceptance" ]) ||
+            (type == "directory" && builtins.elem base [ "shared" "controller" "host-agent" "pool-manager" "acceptance" "cli" ]) ||
             builtins.match ".*\\.ts$" path != null ||
             builtins.match ".*\\.mjs$" path != null ||
             builtins.elem base [ "package.json" "package-lock.json" "tsconfig.json" "build.mjs" ];
@@ -288,6 +354,8 @@
           cp dist/host-agent.mjs $out/app/
           cp dist/pool-manager.mjs $out/app/
           cp dist/acceptance.mjs $out/app/
+          cp dist/seed-identity.mjs $out/app/
+          cp dist/seed-sign.mjs $out/app/
           # Copy k8s client (external in esbuild)
           cp -r node_modules $out/app/
           runHook postInstall

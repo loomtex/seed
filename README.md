@@ -74,50 +74,40 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@machine
 
 This is how the platform identifies you. Your SSH key proves ownership of the repo — there are no passwords or API tokens.
 
-### 3. Create an identity
+### 3. Plant
 
 Each flake has a stable identity — an IPNS CID derived from an Ed25519 keypair. Your namespace is computed deterministically from this CID, and the private key proves ownership during `plant`.
 
-```bash
-# Generate the identity keypair
-ssh-keygen -t ed25519 -f .seed-identity-key -C "seed-identity" -N ""
-```
-
-The `.seed-identity` file contains the IPNS CID derived from the public key (a `k51qzi5uqu5d...` string). The platform derives the CID from your public key during `plant` — you can also compute it yourself using the `ipnsCidFromSshPubkey` function in `src/shared/identity.ts`.
-
-Commit `.seed-identity` to your repo (it's the public CID, safe to share). Add `.seed-identity-key` to `.gitignore` — it's the private key used to sign plant operations.
-
-### 4. Push and plant
-
-Push your flake to a git remote. You can use Seed's built-in git hosting (Silo) or GitHub:
+Push your flake to a git remote, then use `seed-plant` to generate an identity and register in one step:
 
 ```bash
-# Option A: Silo (built-in, no account needed)
+# Push to Silo (built-in git hosting, no account needed)
 git remote add origin silo.loom.farm:my-app.git
 git push -u origin master
 
-# Option B: GitHub
-git remote add origin git@github.com:you/my-app.git
-git push -u origin master
+# Plant — generates .seed-identity-key + .seed-identity, signs, and registers
+nix run github:loomtex/seed#seed-plant -- silo:my-app <invite-code>
 ```
 
-Then register your repo with an invite code. If your flake has a `.seed-identity`, you must sign the invite code with your identity key:
+This generates an Ed25519 keypair at `.seed-identity-key`, derives the IPNS CID to `.seed-identity`, signs the invite code, and calls `ssh seed.loom.farm plant`. Commit `.seed-identity` to your repo (it's the public CID). Add `.seed-identity-key` to `.gitignore`.
+
+If you already have an identity key, pass it as a third argument:
 
 ```bash
-# Sign the invite code
-SIGNATURE=$(ssh-keygen -Y sign -n seed -f .seed-identity-key <<< "<invite-code>" | base64 -w0)
-
-# Plant with signature
-ssh seed.loom.farm plant silo:my-app <invite-code> "$SIGNATURE"
+nix run github:loomtex/seed#seed-plant -- silo:my-app <invite-code> ~/.ssh/my-seed-key
 ```
 
-If your flake has no `.seed-identity` (legacy mode), plant without a signature:
+The individual tools are also available separately:
 
 ```bash
-ssh seed.loom.farm plant silo:my-app <invite-code>
+# Derive IPNS CID from an SSH key (accepts public or private key)
+nix run github:loomtex/seed#seed-identity -- .seed-identity-key.pub
+
+# Sign an invite code
+nix run github:loomtex/seed#seed-sign -- <invite-code> .seed-identity-key
 ```
 
-The controller evaluates your flake, builds the NixOS closure, and boots the instance. Check status:
+Check status after planting:
 
 ```bash
 ssh seed.loom.farm status
@@ -126,7 +116,7 @@ ssh seed.loom.farm logs web
 
 After the initial `plant`, every `git push` triggers automatic redeployment via webhook.
 
-### 5. Verify locally
+### 4. Verify locally
 
 Before pushing, validate your instance config:
 
@@ -805,15 +795,13 @@ Optimized for agents. Everything needed to deploy an instance from scratch.
 1.  nix flake init -t github:loomtex/seed#instance-caddy
 2.  Edit web.nix (NixOS config with seed.* options)
 3.  Create .authorized_keys (your SSH public key)
-4.  ssh-keygen -t ed25519 -f .seed-identity-key   # identity keypair
-5.  Write .seed-identity (IPNS CID from public key)
-6.  nix eval .#seeds.web.meta --json              # validate
-7.  git init && git add -A && git commit -m "initial"
-8.  git remote add origin silo.loom.farm:my-app.git
-9.  git push -u origin master                      # creates repo on silo
-10. SIGNATURE=$(ssh-keygen -Y sign -n seed -f .seed-identity-key <<< "<code>" | base64 -w0)
-11. ssh seed.loom.farm plant silo:my-app <code> "$SIGNATURE"
-12. ssh seed.loom.farm status                      # verify
+4.  nix eval .#seeds.web.meta --json              # validate
+5.  git init && git add -A && git commit -m "initial"
+6.  git remote add origin silo.loom.farm:my-app.git
+7.  git push -u origin master                      # creates repo on silo
+8.  nix run github:loomtex/seed#seed-plant -- silo:my-app <invite-code>
+9.  git add .seed-identity && git commit -m "add identity" && git push
+10. ssh seed.loom.farm status                      # verify
 ```
 
 Subsequent deploys: `git push` triggers automatic reconciliation via webhook.
