@@ -170,6 +170,9 @@ in {
       systemd.services.postgresql.serviceConfig = {
         ReadOnlyPaths = [ "/seed/tls" ];
         DeviceAllow = [ "/dev/tpmrm0 rw" ];
+        # PrivateDevices=true gives postgresql its own /dev tmpfs.
+        # Bind-mount the TPM resource manager into it.
+        BindPaths = [ "/dev/tpmrm0" ];
       };
 
       # Create databases and roles declared in the config
