@@ -22,13 +22,15 @@ There's no Docker, no image registry, no Helm, no YAML. NixOS is the abstraction
 
 ## Why NixOS
 
+Because, Nix is perfectly positioned to never be typed by a human again. Seed leans into that.
+ 
 Seed uses NixOS as the instance abstraction instead of containers. Every instance is a real NixOS system evaluated from a nix flake.
 
 The full NixOS module ecosystem is available — `services.postgresql`, `security.acme`, `services.openssh`, `sops-nix` — with correct service dependencies, user management, and systemd lifecycle. Multi-service instances are just NixOS config.
 
-The tradeoff is boot time (systemd startup, not millisecond cold starts). Seed isn't a function runtime — it's infrastructure.
+The tradeoff is boot time (systemd startup, not millisecond cold starts). Seed isn't a function runtime, but you can absolutely run one on it.
 
-Because NixOS is declarative, typed, reproducible, and introspectable, it is trivially wielded by modern LLMs. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human faces. Nix is perfectly positioned to never be typed by a human again. Seed leans into that.
+Because NixOS is declarative, typed, reproducible, and introspectable, it is trivially wielded by modern LLMs. An agent can compose NixOS modules, debug systemd journals, and reason about option types without the friction a human faces.
 
 ## Getting started
 
