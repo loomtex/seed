@@ -143,6 +143,9 @@
         ];
       });
 
+      # Zitadel v4 — nixpkgs is stuck on v2.71.7
+      zitadel = final.callPackage ./pkgs/zitadel/package.nix {};
+
       kata-runtime = prev.kata-runtime.overrideAttrs (old: {
         # Patch kata shim to support multi-mount rootfs from snapshotters
         # like nix-snapshotter that return overlay + bind mounts:
@@ -291,6 +294,9 @@
         '';
       };
     in {
+      # Zitadel v4 (nixpkgs only has v2.71.7)
+      zitadel = pkgs.zitadel;
+
       # Bundled TypeScript
       controller = seedController;
 
