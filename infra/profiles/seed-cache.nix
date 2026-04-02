@@ -7,7 +7,18 @@ let
     export AWS_SHARED_CREDENTIALS_FILE=${config.sops.templates."seed-s3-credentials".path}
     if [ -f ${config.sops.secrets."seed/cache-signing-key".path} ]; then
       ${pkgs.nix}/bin/nix store sign --recursive --key-file ${config.sops.secrets."seed/cache-signing-key".path} $OUT_PATHS
-      ${pkgs.nix}/bin/nix copy --refresh --to '${cacheUrl}&compression=zstd' $OUT_PATHS
+
+      # Retry S3 upload up to 3 times with backoff
+      for attempt in 1 2 3; do
+        if ${pkgs.nix}/bin/nix copy --to '${cacheUrl}&compression=zstd' $OUT_PATHS 2>&1; then
+          exit 0
+        fi
+        if [ "$attempt" -lt 3 ]; then
+          sleep "$((attempt * 2))"
+        fi
+      done
+      echo "FATAL: S3 cache upload failed after 3 attempts" >&2
+      exit 1
     fi
   '';
 in {
