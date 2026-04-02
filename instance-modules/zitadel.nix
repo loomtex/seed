@@ -214,11 +214,18 @@ in {
         RestartSec = "5s";
       };
 
+      # Initialize internal schemas (eventstore, projections, etc) on first start.
+      # We use `init zitadel` (not bare `init`) to skip the database/user/grant
+      # steps that require connecting to the 'postgres' admin database.
+      # seed-pg-init pre-creates the DB and role; we just need the schemas.
+      preStart = ''
+        zitadel init zitadel \
+          --config ${settingsFile}
+      '';
+
       # start-from-setup runs migrations + first instance setup + server.
       # Unlike start-from-init, it doesn't try to connect to the 'postgres'
       # database — it works directly with the target database.
-      # No separate init step needed: seed-pg-init pre-creates the DB and role,
-      # and start-from-setup handles schema migration on first run.
       script = ''
         exec zitadel start-from-setup \
           --config ${settingsFile} \
