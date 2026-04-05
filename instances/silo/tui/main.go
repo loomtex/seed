@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,14 +18,18 @@ const (
 	viewIssueDetail
 )
 
+// Status filters for issue list
+var statusFilters = []string{"all", "open", "doing", "done", "closed"}
+
 type model struct {
 	reposDir string
 	keyType  string
 	keyBlob  string
 	author   string // display name for the connected user
 
-	repos  []RepoInfo
-	issues []Issue
+	repos     []RepoInfo
+	issues    []Issue // all issues (unfiltered)
+	filtered  []Issue // issues matching current filter
 
 	view           int
 	cursor         int
@@ -33,6 +38,7 @@ type model struct {
 	comments       []Comment
 	commentScroll  int
 	width, height  int
+	statusFilter   int // index into statusFilters
 
 	statusMsg    string
 	statusExpiry time.Time
@@ -115,6 +121,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case issuesMsg:
 		if msg.err == nil {
 			m.issues = msg.issues
+			m.applyFilter()
 		}
 		m.cursor = 0
 		return m, nil
@@ -138,6 +145,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 	}
 	return m, nil
+}
+
+// statusPriority orders issues: active statuses first, closed last.
+func statusPriority(s string) int {
+	switch s {
+	case "doing":
+		return 0
+	case "open":
+		return 1
+	case "done":
+		return 2
+	case "closed":
+		return 3
+	default:
+		return 1
+	}
+}
+
+func (m *model) applyFilter() {
+	filter := statusFilters[m.statusFilter]
+	if filter == "all" {
+		m.filtered = make([]Issue, len(m.issues))
+		copy(m.filtered, m.issues)
+	} else {
+		m.filtered = nil
+		for _, issue := range m.issues {
+			if issue.Status == filter {
+				m.filtered = append(m.filtered, issue)
+			}
+		}
+	}
+	// Sort: status priority, then newest first within same priority
+	sort.SliceStable(m.filtered, func(i, j int) bool {
+		pi, pj := statusPriority(m.filtered[i].Status), statusPriority(m.filtered[j].Status)
+		if pi != pj {
+			return pi < pj
+		}
+		return m.filtered[i].Created.After(m.filtered[j].Created)
+	})
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -190,17 +236,25 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < len(m.issues)-1 {
+		if m.cursor < len(m.filtered)-1 {
 			m.cursor++
 		}
 	case "enter", "l":
-		if m.cursor < len(m.issues) {
+		if m.cursor < len(m.filtered) {
 			m.selectedIssue = m.cursor
 			m.view = viewIssueDetail
 			m.commentScroll = 0
-			issue := m.issues[m.selectedIssue]
+			issue := m.filtered[m.selectedIssue]
 			return m, fetchComments(m.repos[m.selectedRepo].Path, issue.ID)
 		}
+	case "tab":
+		m.statusFilter = (m.statusFilter + 1) % len(statusFilters)
+		m.applyFilter()
+		m.cursor = 0
+	case "shift+tab":
+		m.statusFilter = (m.statusFilter + len(statusFilters) - 1) % len(statusFilters)
+		m.applyFilter()
+		m.cursor = 0
 	case "R":
 		if m.selectedRepo < len(m.repos) {
 			return m, fetchIssues(m.repos[m.selectedRepo].Path)
@@ -227,7 +281,7 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.commentScroll++
 		}
 	case "R":
-		issue := m.issues[m.selectedIssue]
+		issue := m.filtered[m.selectedIssue]
 		return m, fetchComments(m.repos[m.selectedRepo].Path, issue.ID)
 	}
 	return m, nil
@@ -325,13 +379,15 @@ func (m model) viewIssues() string {
 	if m.selectedRepo < len(m.repos) {
 		repoName = m.repos[m.selectedRepo].Name
 	}
-	b.WriteString(headerStyle.Render("silo") + "  " + titleStyle.Render(repoName) + "  " + dimStyle.Render("issues") + "\n\n")
+	// Filter indicator
+	filterLabel := statusFilters[m.statusFilter]
+	b.WriteString(headerStyle.Render("silo") + "  " + titleStyle.Render(repoName) + "  " + dimStyle.Render("issues") + "  " + statusStyle(filterLabel).Render(filterLabel) + "\n\n")
 
-	if len(m.issues) == 0 {
+	if len(m.filtered) == 0 {
 		b.WriteString(dimStyle.Render("  no issues") + "\n")
 	}
 
-	for i, issue := range m.issues {
+	for i, issue := range m.filtered {
 		prefix := "  "
 		if i == m.cursor {
 			prefix = cursorStyle.Render("▸ ")
@@ -361,7 +417,7 @@ func (m model) viewIssues() string {
 	for i := lines; i < m.height-2; i++ {
 		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render("j/k nav  enter detail  esc back  R refresh  q quit"))
+	b.WriteString(helpStyle.Render("j/k nav  enter detail  tab filter  esc back  R refresh  q quit"))
 
 	return b.String()
 }
@@ -369,10 +425,10 @@ func (m model) viewIssues() string {
 func (m model) viewDetail() string {
 	var b strings.Builder
 
-	if m.selectedIssue >= len(m.issues) {
+	if m.selectedIssue >= len(m.filtered) {
 		return "no issue selected"
 	}
-	issue := m.issues[m.selectedIssue]
+	issue := m.filtered[m.selectedIssue]
 
 	shortID := issue.ID
 	if len(shortID) > 8 {
