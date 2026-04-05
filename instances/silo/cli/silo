@@ -21,22 +21,105 @@ set -euo pipefail
 # Set SILO_AUTOSYNC=0 or pass --no-sync to disable.
 SILO_AUTOSYNC="${SILO_AUTOSYNC:-1}"
 
+# Resolve the remote to sync dit refs with.
+# Priority: SILO_REMOTE env > "silo" remote > "origin" > first available.
+dit_remote() {
+  if [ -n "${SILO_REMOTE:-}" ]; then
+    echo "$SILO_REMOTE"
+    return
+  fi
+  local remotes
+  remotes=$(git remote 2>/dev/null) || return 1
+  [ -z "$remotes" ] && return 1
+  if echo "$remotes" | grep -qx 'silo'; then
+    echo "silo"
+  elif echo "$remotes" | grep -qx 'origin'; then
+    echo "origin"
+  else
+    echo "$remotes" | head -1
+  fi
+}
+
 # Auto-fetch dit refs from the default remote before write operations.
 # Silent — if no remote exists or fetch fails, proceed with local state.
 auto_fetch() {
   local remote
-  remote=$(git remote 2>/dev/null | head -1) || return 0
-  [ -z "$remote" ] && return 0
+  remote=$(dit_remote) || return 0
   git fetch "$remote" '+refs/dit/*:refs/dit/*' 2>/dev/null || true
 }
 
 # Auto-sync dit refs after write operations if enabled.
+# On non-fast-forward failure, fetches remote state, rebases local ops
+# on top of remote tips, and retries once.
 auto_sync() {
   [ "$SILO_AUTOSYNC" = "0" ] && return 0
   local remote
-  remote=$(git remote 2>/dev/null | head -1) || return 0
-  [ -z "$remote" ] && return 0
-  git push "$remote" 'refs/dit/*:refs/dit/*' 2>/dev/null || true
+  remote=$(dit_remote) || return 0
+
+  # Try push; if it succeeds, done
+  if git push "$remote" 'refs/dit/*:refs/dit/*' 2>/dev/null; then
+    return 0
+  fi
+
+  # Push failed — save local ref tips before fetch overwrites them
+  local ref
+  declare -A local_tips
+  while IFS= read -r ref; do
+    [ -z "$ref" ] && continue
+    local_tips["$ref"]=$(git rev-parse "$ref")
+  done < <(git for-each-ref --format='%(refname)' 'refs/dit/*/head')
+
+  # Fetch remote state (force-updates local refs)
+  git fetch "$remote" '+refs/dit/*:refs/dit/*' 2>/dev/null || return 0
+
+  # Rebase any refs that diverged
+  local et
+  et=$(empty_tree)
+
+  for ref in "${!local_tips[@]}"; do
+    local old_local="${local_tips[$ref]}"
+    local remote_tip
+    remote_tip=$(git rev-parse "$ref" 2>/dev/null) || continue
+
+    # Ref unchanged — local was already up to date
+    [ "$old_local" = "$remote_tip" ] && continue
+
+    # Find common ancestor
+    local merge_base
+    merge_base=$(git merge-base "$old_local" "$remote_tip" 2>/dev/null) || continue
+
+    # Remote is ancestor of local — local is ahead, restore it
+    if [ "$merge_base" = "$remote_tip" ]; then
+      git update-ref "$ref" "$old_local"
+      continue
+    fi
+
+    # Local is ancestor of remote — remote is ahead, nothing to rebase
+    [ "$merge_base" = "$old_local" ] && continue
+
+    # Diverged: replay local-only ops on top of remote tip
+    local parent="$remote_tip"
+    local hash
+    while IFS= read -r hash; do
+      [ -z "$hash" ] && continue
+      local msg aname aemail adate
+      msg=$(git log -1 --format=%B "$hash")
+      aname=$(git log -1 --format='%an' "$hash")
+      aemail=$(git log -1 --format='%ae' "$hash")
+      adate=$(git log -1 --format='%aI' "$hash")
+      parent=$(GIT_AUTHOR_NAME="$aname" GIT_AUTHOR_EMAIL="$aemail" \
+               GIT_AUTHOR_DATE="$adate" \
+               GIT_COMMITTER_NAME="$aname" GIT_COMMITTER_EMAIL="$aemail" \
+               git commit-tree "$et" -p "$parent" -m "$msg")
+    done < <(git rev-list --reverse "$merge_base".."$old_local")
+
+    git update-ref "$ref" "$parent"
+  done
+
+  # Retry push
+  git push "$remote" 'refs/dit/*:refs/dit/*' 2>/dev/null || {
+    echo "silo: warning: sync failed after rebase — run 'silo sync' manually" >&2
+  }
 }
 
 # Get or create the empty tree object
@@ -489,13 +572,13 @@ cmd_label() {
 }
 
 cmd_sync() {
-  local remote="${1:-origin}"
+  local remote="${1:-$(dit_remote || echo origin)}"
   echo "pushing refs/dit/* to ${remote}..."
   git push "$remote" 'refs/dit/*:refs/dit/*'
 }
 
 cmd_fetch() {
-  local remote="${1:-origin}"
+  local remote="${1:-$(dit_remote || echo origin)}"
   echo "fetching refs/dit/* from ${remote}..."
   git fetch "$remote" '+refs/dit/*:refs/dit/*'
 }
