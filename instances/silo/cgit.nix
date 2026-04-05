@@ -5,6 +5,8 @@
 { config, pkgs, lib, reposDir, ... }:
 
 let
+  siloUi = import ./ui { inherit pkgs lib; };
+
   # Use our fork with filename-based injection rules baked in
   tree-sitter-nix-patched = pkgs.tree-sitter-grammars.tree-sitter-nix.overrideAttrs (old: {
     src = pkgs.fetchFromGitHub {
@@ -282,6 +284,12 @@ in {
     serverAliases = [ "silo.s-gaydazldmnsg.seed.loom.farm" ];
     enableACME = true;
     forceSSL = true;
+    locations."/ui/" = {
+      alias = "${siloUi}/";
+      extraConfig = ''
+        try_files $uri $uri/ /ui/index.html;
+      '';
+    };
     locations."/cgit-data/" = {
       alias = "${pkgs.cgit}/cgit/";
     };
