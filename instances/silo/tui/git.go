@@ -265,6 +265,69 @@ func IssueComments(repoDir, id string) ([]Comment, error) {
 	return comments, nil
 }
 
+// PushOp appends an op commit to an issue ref. If the current head commit
+// has the same op type, it amends (replaces) instead of appending — this
+// prevents clutter from rapid repeated changes (e.g. cycling priority).
+func PushOp(repoDir, issueID string, op map[string]interface{}) error {
+	ref := fmt.Sprintf("refs/dit/%s/head", issueID)
+	head, err := git(repoDir, "rev-parse", ref)
+	if err != nil {
+		return fmt.Errorf("issue not found: %s", issueID)
+	}
+
+	// Determine parent: amend if head has same op type
+	parent := head
+	oldHead := head
+	msg, err := git(repoDir, "log", "-1", "--format=%B", head)
+	if err == nil {
+		var headOp map[string]interface{}
+		if json.Unmarshal([]byte(msg), &headOp) == nil {
+			if headOp["op"] == op["op"] {
+				// Amend: parent becomes head's parent
+				if p, err := git(repoDir, "rev-parse", head+"^"); err == nil {
+					parent = p
+				}
+			}
+		}
+	}
+
+	// Get empty tree
+	tree, err := git(repoDir, "hash-object", "-t", "tree", "/dev/null")
+	if err != nil {
+		return fmt.Errorf("empty tree: %w", err)
+	}
+
+	// Serialize op
+	opJSON, err := json.Marshal(op)
+	if err != nil {
+		return err
+	}
+
+	// Create commit
+	newHash, err := git(repoDir, "commit-tree", tree, "-p", parent, "-m", string(opJSON))
+	if err != nil {
+		return fmt.Errorf("commit-tree: %w", err)
+	}
+
+	// Update ref (use old head for CAS)
+	_, err = git(repoDir, "update-ref", ref, newHash, oldHead)
+	return err
+}
+
+// NextPriority cycles: normal → high → low → normal.
+func NextPriority(current string) string {
+	switch current {
+	case "normal", "":
+		return "high"
+	case "high":
+		return "low"
+	case "low":
+		return "normal"
+	default:
+		return "normal"
+	}
+}
+
 // RecentCommits returns the last N commits on the default branch.
 func RecentCommits(repoDir string, n int) ([]string, error) {
 	head, err := git(repoDir, "rev-parse", "HEAD")
