@@ -22,14 +22,15 @@ type RepoInfo struct {
 
 // Issue is the computed state of a refs/dit/ issue.
 type Issue struct {
-	ID       string
-	Title    string
-	Body     string
-	Status   string
-	Priority string // "low", "normal", "high"
-	Author   string
-	Created  time.Time
-	Labels   []string
+	ID            string
+	Title         string
+	Body          string
+	Status        string
+	Priority      string // "low", "normal", "high"
+	Author        string
+	Created       time.Time
+	StatusChanged time.Time // when status was last set
+	Labels        []string
 }
 
 // Comment on an issue.
@@ -147,6 +148,7 @@ func replayIssue(repoDir, id, head string) (Issue, error) {
 			}
 			if s, ok := op["status"].(string); ok {
 				issue.Status = s
+				issue.StatusChanged = commitTime(repoDir, hash)
 			}
 			if p, ok := op["priority"].(string); ok && p != "" {
 				issue.Priority = p
@@ -165,6 +167,7 @@ func replayIssue(repoDir, id, head string) (Issue, error) {
 		case "set-status":
 			if s, ok := op["status"].(string); ok {
 				issue.Status = s
+				issue.StatusChanged = commitTime(repoDir, hash)
 			}
 		case "add-label":
 			if l, ok := op["label"].(string); ok {
@@ -322,6 +325,16 @@ func PushOp(repoDir, issueID string, op map[string]interface{}) error {
 	// Update ref (use old head for CAS)
 	_, err = git(repoDir, "update-ref", ref, newHash, oldHead)
 	return err
+}
+
+// commitTime returns the author date of a commit hash.
+func commitTime(repoDir, hash string) time.Time {
+	if dateStr, err := git(repoDir, "log", "-1", "--format=%aI", hash); err == nil {
+		if t, err := time.Parse(time.RFC3339, dateStr); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // NextPriority cycles: normal → high → low → normal.
