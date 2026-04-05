@@ -312,6 +312,7 @@ in {
   };
 
   services.nginx.enable = true;
+  services.nginx.validateConfigFile = true;
 
   # nginx needs fcgiwrap socket ready
   systemd.services.nginx.after = [ "fcgiwrap.service" ];
