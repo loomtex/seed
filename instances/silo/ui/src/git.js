@@ -6,7 +6,7 @@ import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import LightningFS from "@isomorphic-git/lightning-fs";
 
-const fs = new LightningFS("silo");
+const fs = new LightningFS("silo-git");
 
 function repoUrl(name) {
   return `${location.origin}/${name}.git`;
