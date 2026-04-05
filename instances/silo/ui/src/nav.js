@@ -1,8 +1,10 @@
+const BASE = "/ui";
+
 export function renderNav(el) {
   el.innerHTML = `
-    <a href="/" class="logo">silo</a>
-    <a href="/">activity</a>
-    <a href="/gate">gates</a>
-    <a href="/identity">identity</a>
+    <a href="${BASE}/" class="logo">silo</a>
+    <a href="${BASE}/">activity</a>
+    <a href="${BASE}/gate">gates</a>
+    <a href="${BASE}/identity">identity</a>
   `;
 }
