@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@noble/curves": "^1.8.2",
     "isomorphic-git": "^1.37.4"
   },
   "devDependencies": {

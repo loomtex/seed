@@ -1,10 +1,12 @@
 import { renderActivity } from "./views/activity.js";
 import { renderRepo } from "./views/repo.js";
 import { renderGates } from "./views/gates.js";
+import { renderIdentity } from "./views/identity.js";
 
 const routes = [
   { pattern: /^\/$/, render: renderActivity },
   { pattern: /^\/gate\/?$/, render: renderGates },
+  { pattern: /^\/identity\/?$/, render: renderIdentity },
   { pattern: /^\/([^/]+)\/?$/, render: renderRepo },
 ];
 
