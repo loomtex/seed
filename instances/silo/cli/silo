@@ -6,11 +6,12 @@
 # by replaying ops from head to initial commit.
 #
 # Usage:
-#   silo new "title" [-b body] [-s status] [-l label]
+#   silo new "title" [-b body] [-s status] [-p priority] [-l label]
 #   silo issues [--mine] [--status <status>] [--repo <path>]
 #   silo show <id>
 #   silo comment <id> "body"
 #   silo status <id> <open|doing|done|closed>
+#   silo priority <id> <high|normal|low>
 #   silo label <id> <add|rm> <label>
 #   silo sync [--remote <name>]
 #   silo fetch [--remote <name>]
@@ -118,7 +119,7 @@ resolve_id() {
 # Compute current state of an issue by replaying ops (oldest first)
 issue_state() {
   local head="$1"
-  local title="" body="" status="open" author="" created="" labels=""
+  local title="" body="" status="open" priority="normal" author="" created="" labels=""
 
   # Walk commits oldest-first
   local hash
@@ -133,7 +134,11 @@ issue_state() {
         title=$(echo "$op_json" | jq -r '.title // ""')
         body=$(echo "$op_json" | jq -r '.body // ""')
         status=$(echo "$op_json" | jq -r '.status // "open"')
+        priority=$(echo "$op_json" | jq -r '.priority // "normal"')
         labels=$(echo "$op_json" | jq -r '(.labels // []) | join(",")')
+        ;;
+      set-priority)
+        priority=$(echo "$op_json" | jq -r '.priority // empty')
         ;;
       set-status)
         status=$(echo "$op_json" | jq -r '.status // empty')
@@ -166,19 +171,20 @@ issue_state() {
     --arg title "$title" \
     --arg body "$body" \
     --arg status "$status" \
+    --arg priority "$priority" \
     --arg author "$author" \
     --arg created "$created" \
     --arg labels "$labels" \
-    '{title: $title, body: $body, status: $status, author: $author, created: $created, labels: ($labels | split(",") | map(select(. != "")))}'
+    '{title: $title, body: $body, status: $status, priority: $priority, author: $author, created: $created, labels: ($labels | split(",") | map(select(. != "")))}'
 }
 
 # --- Commands ---
 
 cmd_new() {
-  local title="" body="" status="open" labels=""
+  local title="" body="" status="open" priority="normal" labels=""
 
   if [ $# -lt 1 ]; then
-    echo "usage: silo new \"title\" [-b body] [-s status] [-l label]" >&2
+    echo "usage: silo new \"title\" [-b body] [-s status] [-p priority] [-l label]" >&2
     exit 1
   fi
   title="$1"; shift
@@ -187,10 +193,16 @@ cmd_new() {
     case "$1" in
       -b|--body) body="$2"; shift 2 ;;
       -s|--status) status="$2"; shift 2 ;;
+      -p|--priority) priority="$2"; shift 2 ;;
       -l|--label) labels="$2"; shift 2 ;;
       *) echo "silo new: unknown option $1" >&2; exit 1 ;;
     esac
   done
+
+  case "$priority" in
+    high|normal|low) ;;
+    *) echo "silo: invalid priority: $priority (must be high, normal, low)" >&2; exit 1 ;;
+  esac
 
   local labels_json="[]"
   if [ -n "$labels" ]; then
@@ -202,8 +214,9 @@ cmd_new() {
     --arg title "$title" \
     --arg body "$body" \
     --arg status "$status" \
+    --arg priority "$priority" \
     --argjson labels "$labels_json" \
-    '{op: "create", title: $title, body: $body, status: $status, labels: $labels}')
+    '{op: "create", title: $title, body: $body, status: $status, priority: $priority, labels: $labels}')
 
   local hash
   hash=$(make_op "" "$message")
@@ -280,9 +293,10 @@ cmd_show() {
   local state
   state=$(issue_state "$head")
 
-  local title status author created body labels
+  local title status priority author created body labels
   title=$(echo "$state" | jq -r '.title')
   status=$(echo "$state" | jq -r '.status')
+  priority=$(echo "$state" | jq -r '.priority')
   author=$(echo "$state" | jq -r '.author')
   created=$(echo "$state" | jq -r '.created')
   body=$(echo "$state" | jq -r '.body')
@@ -290,11 +304,12 @@ cmd_show() {
 
   echo "# ${title}"
   echo ""
-  echo "id:      ${full_id:0:8}"
-  echo "status:  ${status}"
-  echo "author:  ${author}"
-  echo "created: ${created}"
-  [ -n "$labels" ] && echo "labels:  ${labels}"
+  echo "id:       ${full_id:0:8}"
+  echo "status:   ${status}"
+  [ "$priority" != "normal" ] && echo "priority: ${priority}"
+  echo "author:   ${author}"
+  echo "created:  ${created}"
+  [ -n "$labels" ] && echo "labels:   ${labels}"
   if [ -n "$body" ]; then
     echo ""
     echo "$body"
@@ -327,6 +342,14 @@ cmd_show() {
         change_date=$(git log -1 --format="%ar" "$hash")
         echo ""
         echo "  ${change_author} changed status to ${new_status} (${change_date})"
+        ;;
+      set-priority)
+        local new_priority change_author change_date
+        new_priority=$(echo "$op_json" | jq -r '.priority')
+        change_author=$(git log -1 --format="%an" "$hash")
+        change_date=$(git log -1 --format="%ar" "$hash")
+        echo ""
+        echo "  ${change_author} changed priority to ${new_priority} (${change_date})"
         ;;
     esac
   done
@@ -372,6 +395,32 @@ cmd_status() {
 
   local message
   message=$(jq -n --arg status "$new_status" '{op: "set-status", status: $status}')
+
+  local new_hash
+  new_hash=$(make_op "$head" "$message")
+  git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+}
+
+cmd_priority() {
+  if [ $# -lt 2 ]; then
+    echo "usage: silo priority <id> <high|normal|low>" >&2
+    exit 1
+  fi
+
+  local full_id
+  full_id=$(resolve_id "$1")
+  local new_priority="$2"
+
+  case "$new_priority" in
+    high|normal|low) ;;
+    *) echo "silo: invalid priority: $new_priority (must be high, normal, low)" >&2; exit 1 ;;
+  esac
+
+  local head
+  head=$(git rev-parse "refs/dit/${full_id}/head")
+
+  local message
+  message=$(jq -n --arg priority "$new_priority" '{op: "set-priority", priority: $priority}')
 
   local new_hash
   new_hash=$(make_op "$head" "$message")
@@ -426,6 +475,7 @@ case "${1:-}" in
   show)     shift; cmd_show "$@" ;;
   comment)  shift; cmd_comment "$@" ;;
   status)   shift; cmd_status "$@" ;;
+  priority) shift; cmd_priority "$@" ;;
   label)    shift; cmd_label "$@" ;;
   sync)     shift; cmd_sync "$@" ;;
   fetch)    shift; cmd_fetch "$@" ;;
@@ -434,14 +484,15 @@ case "${1:-}" in
 silo — git-native issue tracker
 
 Commands:
-  new "title" [-b body] [-s status] [-l label]   Create an issue
-  issues [--mine] [--status <status>]             List issues
-  show <id>                                       Show issue detail
-  comment <id> "body"                             Add a comment
-  status <id> <open|doing|done|closed>            Update status
-  label <id> <add|rm> <label>                     Add/remove label
-  sync [remote]                                   Push issue refs
-  fetch [remote]                                  Fetch issue refs
+  new "title" [-b body] [-s status] [-p pri] [-l label]  Create an issue
+  issues [--mine] [--status <status>]              List issues
+  show <id>                                        Show issue detail
+  comment <id> "body"                              Add a comment
+  status <id> <open|doing|done|closed>             Update status
+  priority <id> <high|normal|low>                  Set priority
+  label <id> <add|rm> <label>                      Add/remove label
+  sync [remote]                                    Push issue refs
+  fetch [remote]                                   Fetch issue refs
 
 Issues are stored as empty-tree git commits under refs/dit/.
 Use 'silo sync' to push issues to a remote.

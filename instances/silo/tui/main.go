@@ -163,6 +163,32 @@ func statusPriority(s string) int {
 	}
 }
 
+// issuePriority maps priority string to sort rank (lower = higher priority).
+func issuePriority(p string) int {
+	switch p {
+	case "high":
+		return 0
+	case "normal", "":
+		return 1
+	case "low":
+		return 2
+	default:
+		return 1
+	}
+}
+
+// priorityIndicator returns the display string for a priority level.
+func priorityIndicator(p string) string {
+	switch p {
+	case "high":
+		return lipgloss.NewStyle().Foreground(gruvYellow).Render("▲")
+	case "low":
+		return dimStyle.Render("▼")
+	default:
+		return " "
+	}
+}
+
 func (m *model) applyFilter() {
 	filter := statusFilters[m.statusFilter]
 	if filter == "all" {
@@ -176,9 +202,13 @@ func (m *model) applyFilter() {
 			}
 		}
 	}
-	// Sort: status priority, then newest first within same priority
+	// Sort: status priority, then issue priority, then newest first
 	sort.SliceStable(m.filtered, func(i, j int) bool {
-		pi, pj := statusPriority(m.filtered[i].Status), statusPriority(m.filtered[j].Status)
+		si, sj := statusPriority(m.filtered[i].Status), statusPriority(m.filtered[j].Status)
+		if si != sj {
+			return si < sj
+		}
+		pi, pj := issuePriority(m.filtered[i].Priority), issuePriority(m.filtered[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
@@ -404,9 +434,10 @@ func (m model) viewIssues() string {
 			labels = " " + dimStyle.Render("["+strings.Join(issue.Labels, ", ")+"]")
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s %s  %s%s\n",
+		b.WriteString(fmt.Sprintf("%s%s %s %s  %s%s\n",
 			prefix,
 			dimStyle.Render(shortID),
+			priorityIndicator(issue.Priority),
 			st.Render(issue.Status),
 			issue.Title,
 			labels,
@@ -438,9 +469,12 @@ func (m model) viewDetail() string {
 	st := statusStyle(issue.Status)
 
 	b.WriteString(headerStyle.Render("silo") + "  " + titleStyle.Render(issue.Title) + "\n\n")
-	b.WriteString(fmt.Sprintf("  id:      %s\n", dimStyle.Render(shortID)))
-	b.WriteString(fmt.Sprintf("  status:  %s\n", st.Render(issue.Status)))
-	b.WriteString(fmt.Sprintf("  author:  %s\n", dimStyle.Render(issue.Author)))
+	b.WriteString(fmt.Sprintf("  id:       %s\n", dimStyle.Render(shortID)))
+	b.WriteString(fmt.Sprintf("  status:   %s\n", st.Render(issue.Status)))
+	if issue.Priority != "normal" && issue.Priority != "" {
+		b.WriteString(fmt.Sprintf("  priority: %s %s\n", priorityIndicator(issue.Priority), issue.Priority))
+	}
+	b.WriteString(fmt.Sprintf("  author:   %s\n", dimStyle.Render(issue.Author)))
 	if !issue.Created.IsZero() {
 		b.WriteString(fmt.Sprintf("  created: %s\n", dimStyle.Render(issue.Created.Format("2006-01-02 15:04"))))
 	}

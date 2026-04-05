@@ -22,13 +22,14 @@ type RepoInfo struct {
 
 // Issue is the computed state of a refs/dit/ issue.
 type Issue struct {
-	ID      string
-	Title   string
-	Body    string
-	Status  string
-	Author  string
-	Created time.Time
-	Labels  []string
+	ID       string
+	Title    string
+	Body     string
+	Status   string
+	Priority string // "low", "normal", "high"
+	Author   string
+	Created  time.Time
+	Labels   []string
 }
 
 // Comment on an issue.
@@ -119,7 +120,7 @@ func replayIssue(repoDir, id, head string) (Issue, error) {
 		return Issue{}, err
 	}
 
-	issue := Issue{ID: id, Status: "open"}
+	issue := Issue{ID: id, Status: "open", Priority: "normal"}
 	hashes := strings.Split(strings.TrimSpace(out), "\n")
 
 	for _, hash := range hashes {
@@ -147,12 +148,19 @@ func replayIssue(repoDir, id, head string) (Issue, error) {
 			if s, ok := op["status"].(string); ok {
 				issue.Status = s
 			}
+			if p, ok := op["priority"].(string); ok && p != "" {
+				issue.Priority = p
+			}
 			if labels, ok := op["labels"].([]interface{}); ok {
 				for _, l := range labels {
 					if ls, ok := l.(string); ok {
 						issue.Labels = append(issue.Labels, ls)
 					}
 				}
+			}
+		case "set-priority":
+			if p, ok := op["priority"].(string); ok {
+				issue.Priority = p
 			}
 		case "set-status":
 			if s, ok := op["status"].(string); ok {
@@ -242,6 +250,15 @@ func IssueComments(repoDir, id string) ([]Comment, error) {
 				Author: author,
 				Date:   date,
 				Body:   fmt.Sprintf("changed status to %s", status),
+			})
+		case "set-priority":
+			author, _ := git(repoDir, "log", "-1", "--format=%an", hash)
+			date, _ := git(repoDir, "log", "-1", "--format=%ar", hash)
+			priority, _ := op["priority"].(string)
+			comments = append(comments, Comment{
+				Author: author,
+				Date:   date,
+				Body:   fmt.Sprintf("changed priority to %s", priority),
 			})
 		}
 	}
