@@ -359,11 +359,11 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.filtered) && m.selectedRepo < len(m.repos) {
 			return m, cyclePriority(m.repos[m.selectedRepo].Path, m.filtered[m.cursor])
 		}
-	case "tab":
+	case "f":
 		m.statusFilter = (m.statusFilter + 1) % len(statusFilters)
 		m.applyFilter()
 		m.cursor = 0
-	case "shift+tab":
+	case "F":
 		m.statusFilter = (m.statusFilter + len(statusFilters) - 1) % len(statusFilters)
 		m.applyFilter()
 		m.cursor = 0
@@ -618,7 +618,7 @@ func (m model) viewIssues() string {
 	if s := m.renderStatus(); s != "" {
 		b.WriteString(s + "\n")
 	}
-	b.WriteString(helpStyle.Render("j/k nav  enter detail  p priority  tab filter  esc back  R refresh  q quit"))
+	b.WriteString(helpStyle.Render("j/k nav  enter detail  p priority  f filter  esc back  R refresh  q quit"))
 
 	return b.String()
 }
