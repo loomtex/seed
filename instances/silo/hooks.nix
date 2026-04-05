@@ -30,9 +30,23 @@ let
     # Read all ref updates, check each one
     REJECTED=false
     while read OLD NEW REF; do
-      # Always allow dit refs and gate branches
+      # Gate branches always pass
       case "$REF" in
-        refs/dit/*|refs/heads/gate/*) continue ;;
+        refs/heads/gate/*) continue ;;
+      esac
+
+      # Dit refs: allow new refs, reject non-fast-forward, otherwise pass
+      case "$REF" in
+        refs/dit/*)
+          if [ "$OLD" = "0000000000000000000000000000000000000000" ]; then
+            continue
+          fi
+          if ! ${pkgs.git}/bin/git -C "$REPO_DIR" merge-base --is-ancestor "$OLD" "$NEW" 2>/dev/null; then
+            echo "silo: force push to $REF rejected — dit refs must fast-forward" >&2
+            REJECTED=true
+          fi
+          continue
+          ;;
       esac
 
       # Protected branch — check CODEOWNERS from current HEAD
