@@ -328,6 +328,35 @@ func NextPriority(current string) string {
 	}
 }
 
+// CommitActivity returns hourly commit counts for the last N hours.
+// Index 0 is the oldest hour, last index is the most recent.
+func CommitActivity(repoDir string, hours int) []int {
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	out, err := git(repoDir, "log", "--all", "--format=%at", "--since="+since.Format(time.RFC3339))
+	if err != nil || out == "" {
+		return make([]int, hours)
+	}
+
+	buckets := make([]int, hours)
+	now := time.Now()
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ts int64
+		if _, err := fmt.Sscanf(line, "%d", &ts); err != nil {
+			continue
+		}
+		age := now.Unix() - ts
+		bucket := hours - 1 - int(age/3600)
+		if bucket >= 0 && bucket < hours {
+			buckets[bucket]++
+		}
+	}
+	return buckets
+}
+
 // RecentCommits returns the last N commits on the default branch.
 func RecentCommits(repoDir string, n int) ([]string, error) {
 	head, err := git(repoDir, "rev-parse", "HEAD")

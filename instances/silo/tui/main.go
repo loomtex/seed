@@ -40,6 +40,10 @@ type model struct {
 	width, height  int
 	statusFilter   int // index into statusFilters
 
+	// Commit activity charts (hourly buckets, 7 days)
+	allActivity  []int // aggregate across all repos
+	repoActivity []int // selected repo only
+
 	statusMsg    string
 	statusExpiry time.Time
 }
@@ -62,6 +66,11 @@ type commentsMsg struct {
 
 type opDoneMsg struct {
 	err error
+}
+
+type activityMsg struct {
+	data []int
+	repo bool // true = single repo, false = aggregate
 }
 
 type tickMsg time.Time
@@ -95,6 +104,27 @@ func cyclePriority(repoDir string, issue Issue) tea.Cmd {
 		}
 		err := PushOp(repoDir, issue.ID, op)
 		return opDoneMsg{err: err}
+	}
+}
+
+const activityHours = 1008 // 6 weeks
+
+func fetchAggregateActivity(repos []RepoInfo) tea.Cmd {
+	return func() tea.Msg {
+		agg := make([]int, activityHours)
+		for _, r := range repos {
+			buckets := CommitActivity(r.Path, activityHours)
+			for i, v := range buckets {
+				agg[i] += v
+			}
+		}
+		return activityMsg{data: agg, repo: false}
+	}
+}
+
+func fetchRepoActivity(repoDir string) tea.Cmd {
+	return func() tea.Msg {
+		return activityMsg{data: CommitActivity(repoDir, activityHours), repo: true}
 	}
 }
 
@@ -132,7 +162,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.repos = msg.repos
 		}
-		return m, nil
+		return m, fetchAggregateActivity(m.repos)
 
 	case issuesMsg:
 		if msg.err == nil {
@@ -147,6 +177,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.comments = msg.comments
 		}
 		m.commentScroll = 0
+		return m, nil
+
+	case activityMsg:
+		if msg.repo {
+			m.repoActivity = msg.data
+		} else {
+			m.allActivity = msg.data
+		}
 		return m, nil
 
 	case opDoneMsg:
@@ -273,7 +311,11 @@ func (m model) handleReposKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedRepo = m.cursor
 			m.view = viewIssues
 			m.cursor = 0
-			return m, fetchIssues(m.repos[m.selectedRepo].Path)
+			m.repoActivity = nil
+			return m, tea.Batch(
+				fetchIssues(m.repos[m.selectedRepo].Path),
+				fetchRepoActivity(m.repos[m.selectedRepo].Path),
+			)
 		}
 	case "R":
 		return m, fetchRepos(m.reposDir)
@@ -372,6 +414,8 @@ var (
 	statusDoing  = lipgloss.NewStyle().Foreground(gruvBlue)
 	statusDone   = lipgloss.NewStyle().Foreground(gruvGray)
 	statusClosed = lipgloss.NewStyle().Foreground(gruvRed)
+	chartStyle   = lipgloss.NewStyle().Foreground(gruvAqua)
+	chartLabel   = lipgloss.NewStyle().Foreground(gruvGray)
 )
 
 func statusStyle(s string) lipgloss.Style {
@@ -387,6 +431,47 @@ func statusStyle(s string) lipgloss.Style {
 	default:
 		return dimStyle
 	}
+}
+
+const avgWindow = 144 // 6-day rolling average
+
+// renderChart draws a braille area chart sized to fill available space.
+// Shows rolling average (smoothed) rather than raw hourly spikes.
+func renderChart(data []int, width, availHeight int) string {
+	if len(data) == 0 || width < 4 || availHeight < 2 {
+		return ""
+	}
+
+	// Count total for label
+	total := 0
+	for _, v := range data {
+		total += v
+	}
+
+	// Smooth with rolling average
+	smoothed := RollingAvg(data, avgWindow)
+
+	// Reserve 1 line for the label
+	chartHeight := availHeight - 1
+	if chartHeight < 1 {
+		chartHeight = 1
+	}
+	if chartHeight > 8 {
+		chartHeight = 8
+	}
+
+	chartWidth := width - 2
+	if chartWidth < 4 {
+		chartWidth = 4
+	}
+
+	var b strings.Builder
+	b.WriteString(chartLabel.Render(fmt.Sprintf("  %d commits · 6 weeks", total)) + "\n")
+	lines := AreaChart(smoothed, chartWidth, chartHeight)
+	for _, line := range lines {
+		b.WriteString("  " + chartStyle.Render(line) + "\n")
+	}
+	return b.String()
 }
 
 func (m model) View() string {
@@ -423,6 +508,15 @@ func (m model) viewRepos() string {
 			prefix = cursorStyle.Render("▸ ")
 		}
 		b.WriteString(prefix + titleStyle.Render(r.Name) + "\n")
+	}
+
+	listLines := strings.Count(b.String(), "\n")
+
+	// Chart fills space between list and help bar
+	chartAvail := m.height - listLines - 2 // 2 = help bar + padding
+	if chartAvail > 2 && len(m.allActivity) > 0 {
+		b.WriteString("\n")
+		b.WriteString(renderChart(m.allActivity, m.width, chartAvail-1))
 	}
 
 	lines := strings.Count(b.String(), "\n")
@@ -474,6 +568,15 @@ func (m model) viewIssues() string {
 			issue.Title,
 			labels,
 		))
+	}
+
+	listLines := strings.Count(b.String(), "\n")
+
+	// Chart fills space between issue list and help bar
+	chartAvail := m.height - listLines - 2
+	if chartAvail > 2 && len(m.repoActivity) > 0 {
+		b.WriteString("\n")
+		b.WriteString(renderChart(m.repoActivity, m.width, chartAvail-1))
 	}
 
 	lines := strings.Count(b.String(), "\n")
