@@ -89,6 +89,128 @@ func Sparkline(data []int, width int) string {
 	return string(result)
 }
 
+// StackedAreaChart renders two stacked data series as braille.
+// base is rendered first, overlay is stacked on top.
+// Returns lines where each line has two segments: base-colored and overlay-colored braille.
+type StackedLine struct {
+	Base    string // braille for base layer only
+	Overlay string // braille for overlay layer (on top of base)
+	Full    string // braille for combined (base+overlay)
+}
+
+func StackedAreaChart(base, overlay []int, width, height int) []StackedLine {
+	if width == 0 || height == 0 {
+		return nil
+	}
+
+	// Combine for total height
+	total := make([]int, max(len(base), len(overlay)))
+	for i := range total {
+		b, o := 0, 0
+		if i < len(base) {
+			b = base[i]
+		}
+		if i < len(overlay) {
+			o = overlay[i]
+		}
+		total[i] = b + o
+	}
+
+	peak := 0
+	for _, v := range total {
+		if v > peak {
+			peak = v
+		}
+	}
+	if peak == 0 {
+		lines := make([]StackedLine, height)
+		empty := make([]rune, width)
+		for i := range empty {
+			empty[i] = '\u2800'
+		}
+		s := string(empty)
+		for i := range lines {
+			lines[i] = StackedLine{Base: s, Overlay: s, Full: s}
+		}
+		return lines
+	}
+
+	cols := width * 2
+	resBase := resample(base, cols)
+	resOver := resample(overlay, cols)
+
+	maxDots := height * 4
+
+	// Dot heights for base and total (base+overlay)
+	baseDots := make([]int, cols)
+	totalDots := make([]int, cols)
+	for i := 0; i < cols; i++ {
+		b, o := 0, 0
+		if i < len(resBase) {
+			b = resBase[i]
+		}
+		if i < len(resOver) {
+			o = resOver[i]
+		}
+		t := b + o
+		if t > 0 {
+			td := (t * (maxDots - 1) / peak) + 1
+			if td > maxDots {
+				td = maxDots
+			}
+			totalDots[i] = td
+			// Base proportional to its share of total
+			if b > 0 {
+				bd := (b * (maxDots - 1) / peak) + 1
+				if bd > maxDots {
+					bd = maxDots
+				}
+				baseDots[i] = bd
+			}
+		}
+	}
+
+	lines := make([]StackedLine, height)
+	for row := 0; row < height; row++ {
+		baseChars := make([]rune, width)
+		overChars := make([]rune, width)
+		fullChars := make([]rune, width)
+		rowBase := (height - 1 - row) * 4
+
+		for ci := 0; ci < width; ci++ {
+			var basePat, overPat, fullPat rune = 0x2800, 0x2800, 0x2800
+			li := ci * 2
+			ri := ci*2 + 1
+
+			for dot := 0; dot < 4; dot++ {
+				dotPos := rowBase + dot
+				for col, side := range []int{li, ri} {
+					if side >= len(totalDots) {
+						continue
+					}
+					if totalDots[side] > dotPos {
+						fullPat |= brailleDots[dot][col]
+						if baseDots[side] > dotPos {
+							basePat |= brailleDots[dot][col]
+						} else {
+							overPat |= brailleDots[dot][col]
+						}
+					}
+				}
+			}
+			baseChars[ci] = basePat
+			overChars[ci] = overPat
+			fullChars[ci] = fullPat
+		}
+		lines[row] = StackedLine{
+			Base:    string(baseChars),
+			Overlay: string(overChars),
+			Full:    string(fullChars),
+		}
+	}
+	return lines
+}
+
 // AreaChart renders a multi-row braille area chart.
 // Height is in character rows (each row = 4 dots tall).
 // Width is in characters (each char = 2 dots wide).

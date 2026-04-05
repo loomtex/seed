@@ -303,10 +303,20 @@ func PushOp(repoDir, issueID string, op map[string]interface{}) error {
 		return err
 	}
 
-	// Create commit
-	newHash, err := git(repoDir, "commit-tree", tree, "-p", parent, "-m", string(opJSON))
+	// Create commit — set author/committer identity for bare repo context
+	cmd := exec.Command("git", "commit-tree", tree, "-p", parent, "-m", string(opJSON))
+	cmd.Dir = repoDir
+	cmd.Env = append(os.Environ(),
+		"GIT_DIR="+repoDir,
+		"GIT_AUTHOR_NAME=silo",
+		"GIT_AUTHOR_EMAIL=silo@silo",
+		"GIT_COMMITTER_NAME=silo",
+		"GIT_COMMITTER_EMAIL=silo@silo",
+	)
+	out, err := cmd.CombinedOutput()
+	newHash := strings.TrimSpace(string(out))
 	if err != nil {
-		return fmt.Errorf("commit-tree: %w", err)
+		return fmt.Errorf("commit-tree: %s: %w", newHash, err)
 	}
 
 	// Update ref (use old head for CAS)
@@ -328,33 +338,78 @@ func NextPriority(current string) string {
 	}
 }
 
-// CommitActivity returns daily commit counts for the last N days.
-// Index 0 is the oldest day, last index is today.
-func CommitActivity(repoDir string, days int) []int {
+// Activity holds stacked commit counts: code commits and issue (dit) commits.
+type Activity struct {
+	Code   []int // regular commits per day
+	Issues []int // refs/dit/ commits per day
+}
+
+// CommitActivity returns daily commit counts for the last N days,
+// split into code commits and issue (refs/dit/) commits.
+func CommitActivity(repoDir string, days int) Activity {
 	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-	out, err := git(repoDir, "log", "--all", "--format=%at", "--since="+since.Format(time.RFC3339))
-	if err != nil || out == "" {
-		return make([]int, days)
+	now := time.Now()
+
+	act := Activity{
+		Code:   make([]int, days),
+		Issues: make([]int, days),
 	}
 
-	buckets := make([]int, days)
-	now := time.Now()
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var ts int64
-		if _, err := fmt.Sscanf(line, "%d", &ts); err != nil {
-			continue
-		}
-		age := now.Unix() - ts
-		bucket := days - 1 - int(age/86400)
-		if bucket >= 0 && bucket < days {
-			buckets[bucket]++
+	// Code commits: default branch
+	out, err := git(repoDir, "log", "--format=%at", "--since="+since.Format(time.RFC3339))
+	if err == nil && out != "" {
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var ts int64
+			if _, err := fmt.Sscanf(line, "%d", &ts); err != nil {
+				continue
+			}
+			bucket := days - 1 - int((now.Unix()-ts)/86400)
+			if bucket >= 0 && bucket < days {
+				act.Code[bucket]++
+			}
 		}
 	}
-	return buckets
+
+	// Issue commits: refs/dit/
+	out, err = git(repoDir, "log", "--all", "--format=%at", "--since="+since.Format(time.RFC3339), "--", "refs/dit/")
+	if err == nil && out != "" {
+		// git log --all includes dit refs; filter by walking each dit ref
+		// Simpler: use for-each-ref to get dit refs, then log each
+	}
+	// Walk dit refs individually
+	refs, err := git(repoDir, "for-each-ref", "--format=%(refname)", "refs/dit/")
+	if err == nil && refs != "" {
+		for _, ref := range strings.Split(refs, "\n") {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				continue
+			}
+			out, err := git(repoDir, "log", "--format=%at", "--since="+since.Format(time.RFC3339), ref)
+			if err != nil || out == "" {
+				continue
+			}
+			for _, line := range strings.Split(out, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var ts int64
+				if _, err := fmt.Sscanf(line, "%d", &ts); err != nil {
+					continue
+				}
+				bucket := days - 1 - int((now.Unix()-ts)/86400)
+				if bucket >= 0 && bucket < days {
+					act.Issues[bucket]++
+				}
+			}
+		}
+	}
+
+	return act
 }
 
 // RecentCommits returns the last N commits on the default branch.

@@ -40,9 +40,9 @@ type model struct {
 	width, height  int
 	statusFilter   int // index into statusFilters
 
-	// Commit activity charts (hourly buckets, 7 days)
-	allActivity  []int // aggregate across all repos
-	repoActivity []int // selected repo only
+	// Commit activity charts (daily buckets, 6 weeks)
+	allActivity  Activity // aggregate across all repos
+	repoActivity Activity // selected repo only
 
 	statusMsg    string
 	statusExpiry time.Time
@@ -69,7 +69,7 @@ type opDoneMsg struct {
 }
 
 type activityMsg struct {
-	data []int
+	data Activity
 	repo bool // true = single repo, false = aggregate
 }
 
@@ -111,11 +111,19 @@ const activityDays = 42 // 6 weeks
 
 func fetchAggregateActivity(repos []RepoInfo) tea.Cmd {
 	return func() tea.Msg {
-		agg := make([]int, activityDays)
+		agg := Activity{
+			Code:   make([]int, activityDays),
+			Issues: make([]int, activityDays),
+		}
 		for _, r := range repos {
-			buckets := CommitActivity(r.Path, activityDays)
-			for i, v := range buckets {
-				agg[i] += v
+			act := CommitActivity(r.Path, activityDays)
+			for i := range agg.Code {
+				if i < len(act.Code) {
+					agg.Code[i] += act.Code[i]
+				}
+				if i < len(act.Issues) {
+					agg.Issues[i] += act.Issues[i]
+				}
 			}
 		}
 		return activityMsg{data: agg, repo: false}
@@ -311,7 +319,7 @@ func (m model) handleReposKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedRepo = m.cursor
 			m.view = viewIssues
 			m.cursor = 0
-			m.repoActivity = nil
+			m.repoActivity = Activity{}
 			return m, tea.Batch(
 				fetchIssues(m.repos[m.selectedRepo].Path),
 				fetchRepoActivity(m.repos[m.selectedRepo].Path),
@@ -433,19 +441,32 @@ func statusStyle(s string) lipgloss.Style {
 	}
 }
 
-// renderChart draws a braille area chart sized to fill available space.
-// Daily buckets over 6 weeks — no averaging needed.
-func renderChart(data []int, width, availHeight int) string {
-	if len(data) == 0 || width < 4 || availHeight < 2 {
+func (m model) renderStatus() string {
+	if m.statusMsg != "" && time.Now().Before(m.statusExpiry) {
+		return "  " + lipgloss.NewStyle().Foreground(gruvRed).Render(m.statusMsg)
+	}
+	return ""
+}
+
+var chartIssueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#fe8019")) // gruvbox orange
+
+// renderChart draws a stacked braille area chart. Code commits in aqua,
+// issue (dit) commits stacked on top in orange.
+func renderChart(act Activity, width, availHeight int) string {
+	if len(act.Code) == 0 || width < 4 || availHeight < 2 {
 		return ""
 	}
 
 	total := 0
 	peak := 0
-	for _, v := range data {
-		total += v
-		if v > peak {
-			peak = v
+	for i := range act.Code {
+		d := act.Code[i]
+		if i < len(act.Issues) {
+			d += act.Issues[i]
+		}
+		total += d
+		if d > peak {
+			peak = d
 		}
 	}
 
@@ -464,9 +485,23 @@ func renderChart(data []int, width, availHeight int) string {
 
 	var b strings.Builder
 	b.WriteString(chartLabel.Render(fmt.Sprintf("  %d commits · 6 weeks · peak %d/day", total, peak)) + "\n")
-	lines := AreaChart(data, chartWidth, chartHeight)
+
+	lines := StackedAreaChart(act.Code, act.Issues, chartWidth, chartHeight)
 	for _, line := range lines {
-		b.WriteString("  " + chartStyle.Render(line) + "\n")
+		// Color each character: orange where overlay has dots, aqua otherwise.
+		// Full = base|overlay combined, so we just pick color per character.
+		var row strings.Builder
+		row.WriteString("  ")
+		fullRunes := []rune(line.Full)
+		overRunes := []rune(line.Overlay)
+		for i, ch := range fullRunes {
+			if i < len(overRunes) && overRunes[i] != '\u2800' {
+				row.WriteString(chartIssueStyle.Render(string(ch)))
+			} else {
+				row.WriteString(chartStyle.Render(string(ch)))
+			}
+		}
+		b.WriteString(row.String() + "\n")
 	}
 	return b.String()
 }
@@ -511,7 +546,7 @@ func (m model) viewRepos() string {
 
 	// Chart fills space between list and help bar
 	chartAvail := m.height - listLines - 2 // 2 = help bar + padding
-	if chartAvail > 2 && len(m.allActivity) > 0 {
+	if chartAvail > 2 && len(m.allActivity.Code) > 0 {
 		b.WriteString("\n")
 		b.WriteString(renderChart(m.allActivity, m.width, chartAvail-1))
 	}
@@ -571,7 +606,7 @@ func (m model) viewIssues() string {
 
 	// Chart fills space between issue list and help bar
 	chartAvail := m.height - listLines - 2
-	if chartAvail > 2 && len(m.repoActivity) > 0 {
+	if chartAvail > 2 && len(m.repoActivity.Code) > 0 {
 		b.WriteString("\n")
 		b.WriteString(renderChart(m.repoActivity, m.width, chartAvail-1))
 	}
@@ -579,6 +614,9 @@ func (m model) viewIssues() string {
 	lines := strings.Count(b.String(), "\n")
 	for i := lines; i < m.height-2; i++ {
 		b.WriteString("\n")
+	}
+	if s := m.renderStatus(); s != "" {
+		b.WriteString(s + "\n")
 	}
 	b.WriteString(helpStyle.Render("j/k nav  enter detail  p priority  tab filter  esc back  R refresh  q quit"))
 
