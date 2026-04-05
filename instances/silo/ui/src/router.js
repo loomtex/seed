@@ -3,6 +3,8 @@ import { renderRepo } from "./views/repo.js";
 import { renderGates } from "./views/gates.js";
 import { renderIdentity } from "./views/identity.js";
 
+const BASE = "/ui";
+
 const routes = [
   { pattern: /^\/$/, render: renderActivity },
   { pattern: /^\/gate\/?$/, render: renderGates },
@@ -10,10 +12,17 @@ const routes = [
   { pattern: /^\/([^/]+)\/?$/, render: renderRepo },
 ];
 
+// Strip base prefix before matching
+function stripBase(path) {
+  if (path.startsWith(BASE)) return path.slice(BASE.length) || "/";
+  return path;
+}
+
 export function router(path) {
+  const local = stripBase(path);
   const app = document.getElementById("app");
   for (const route of routes) {
-    const match = path.match(route.pattern);
+    const match = local.match(route.pattern);
     if (match) {
       route.render(app, ...match.slice(1));
       return;
