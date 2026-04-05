@@ -17,6 +17,10 @@
 #   silo fetch [--remote <name>]
 set -euo pipefail
 
+# Auto-sync: push dit refs after write ops by default.
+# Set SILO_AUTOSYNC=0 or pass --no-sync to disable.
+SILO_AUTOSYNC="${SILO_AUTOSYNC:-1}"
+
 # Auto-fetch dit refs from the default remote before write operations.
 # Silent — if no remote exists or fetch fails, proceed with local state.
 auto_fetch() {
@@ -24,6 +28,15 @@ auto_fetch() {
   remote=$(git remote 2>/dev/null | head -1) || return 0
   [ -z "$remote" ] && return 0
   git fetch "$remote" '+refs/dit/*:refs/dit/*' 2>/dev/null || true
+}
+
+# Auto-sync dit refs after write operations if enabled.
+auto_sync() {
+  [ "$SILO_AUTOSYNC" = "0" ] && return 0
+  local remote
+  remote=$(git remote 2>/dev/null | head -1) || return 0
+  [ -z "$remote" ] && return 0
+  git push "$remote" 'refs/dit/*:refs/dit/*' 2>/dev/null || true
 }
 
 # Get or create the empty tree object
@@ -203,7 +216,7 @@ cmd_new() {
       -b|--body) body="$2"; shift 2 ;;
       -s|--status) status="$2"; shift 2 ;;
       -p|--priority) priority="$2"; shift 2 ;;
-      -l|--label) labels="$2"; shift 2 ;;
+      -l|--label) [ -n "$labels" ] && labels="$labels,"; labels="$labels$2"; shift 2 ;;
       *) echo "silo new: unknown option $1" >&2; exit 1 ;;
     esac
   done
@@ -233,6 +246,7 @@ cmd_new() {
   git update-ref "refs/dit/${hash}/head" "$hash"
 
   echo "${hash:0:8}"
+  auto_sync
 }
 
 cmd_issues() {
@@ -385,6 +399,7 @@ cmd_comment() {
   local new_hash
   new_hash=$(make_op "$head" "$message")
   git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+  auto_sync
 }
 
 cmd_status() {
@@ -412,6 +427,7 @@ cmd_status() {
   local new_hash
   new_hash=$(make_op "$head" "$message")
   git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+  auto_sync
 }
 
 cmd_priority() {
@@ -439,6 +455,7 @@ cmd_priority() {
   local new_hash
   new_hash=$(make_op "$head" "$message")
   git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+  auto_sync
 }
 
 cmd_label() {
@@ -468,6 +485,7 @@ cmd_label() {
   local new_hash
   new_hash=$(make_op "$head" "$message")
   git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+  auto_sync
 }
 
 cmd_sync() {
@@ -481,6 +499,16 @@ cmd_fetch() {
   echo "fetching refs/dit/* from ${remote}..."
   git fetch "$remote" '+refs/dit/*:refs/dit/*'
 }
+
+# --- Parse global flags ---
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --sync) SILO_AUTOSYNC=1; shift ;;
+    --no-sync) SILO_AUTOSYNC=0; shift ;;
+    *) break ;;
+  esac
+done
 
 # --- Dispatch ---
 
@@ -499,7 +527,7 @@ case "${1:-}" in
 silo — git-native issue tracker
 
 Commands:
-  new "title" [-b body] [-s status] [-p pri] [-l label]  Create an issue
+  new "title" [-b body] [-s status] [-p pri] [-l label]  Create issue
   issues [--mine] [--status <status>]              List issues
   show <id>                                        Show issue detail
   comment <id> "body"                              Add a comment
@@ -509,8 +537,16 @@ Commands:
   sync [remote]                                    Push issue refs
   fetch [remote]                                   Fetch issue refs
 
-Issues are stored as empty-tree git commits under refs/dit/.
-Use 'silo sync' to push issues to a remote.
+Flags:
+  --sync                Auto-push after writes (default)
+  --no-sync             Skip auto-push (for manual batching)
+
+Labels: -l accepts comma-separated or multiple flags:
+  silo new "title" -l feature -l silo -l tui
+  silo new "title" -l "feature,silo,tui"
+
+Write ops auto-fetch before and auto-push after by default.
+Set SILO_AUTOSYNC=0 to disable globally.
 USAGE
     ;;
   *)
