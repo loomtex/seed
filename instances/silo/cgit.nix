@@ -286,9 +286,14 @@ in {
     forceSSL = true;
     locations."/ui/" = {
       alias = "${siloUi}/";
+      index = "index.html";
       extraConfig = ''
         try_files $uri $uri/ /ui/index.html;
       '';
+    };
+    # SPA fallback — serves index.html for client-side routes
+    locations."= /ui/index.html" = {
+      alias = "${siloUi}/index.html";
     };
     locations."/cgit-data/" = {
       alias = "${pkgs.cgit}/cgit/";
