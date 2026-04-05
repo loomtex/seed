@@ -328,16 +328,16 @@ func NextPriority(current string) string {
 	}
 }
 
-// CommitActivity returns hourly commit counts for the last N hours.
-// Index 0 is the oldest hour, last index is the most recent.
-func CommitActivity(repoDir string, hours int) []int {
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+// CommitActivity returns daily commit counts for the last N days.
+// Index 0 is the oldest day, last index is today.
+func CommitActivity(repoDir string, days int) []int {
+	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	out, err := git(repoDir, "log", "--all", "--format=%at", "--since="+since.Format(time.RFC3339))
 	if err != nil || out == "" {
-		return make([]int, hours)
+		return make([]int, days)
 	}
 
-	buckets := make([]int, hours)
+	buckets := make([]int, days)
 	now := time.Now()
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -349,8 +349,8 @@ func CommitActivity(repoDir string, hours int) []int {
 			continue
 		}
 		age := now.Unix() - ts
-		bucket := hours - 1 - int(age/3600)
-		if bucket >= 0 && bucket < hours {
+		bucket := days - 1 - int(age/86400)
+		if bucket >= 0 && bucket < days {
 			buckets[bucket]++
 		}
 	}
