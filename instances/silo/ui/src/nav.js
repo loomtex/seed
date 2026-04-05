@@ -1,4 +1,4 @@
-const BASE = "/ui";
+import { BASE } from "./router.js";
 
 export function renderNav(el) {
   el.innerHTML = `
