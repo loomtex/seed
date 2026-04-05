@@ -316,7 +316,7 @@
     seeds = let ns = { namespace = "s-gaydazldmnsg"; }; in {
       web = mkSeed (ns // { name = "web"; module = ./instances/web.nix; });
       dns = mkSeed (ns // { name = "dns"; module = ./instances/dns.nix; });
-      silo = mkSeed (ns // { name = "silo"; module = ./instances/silo.nix; });
+      silo = mkSeed (ns // { name = "silo"; module = ./instances/silo; });
       shell = mkSeed (ns // { name = "shell"; module = ./instances/shell.nix; });
       gateway = mkSeed (ns // { name = "gateway"; module = ./instances/gateway.nix; });
       social = mkSeed (ns // { name = "social"; module = ./instances/social.nix; });
