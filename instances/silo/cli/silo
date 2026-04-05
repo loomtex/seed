@@ -17,6 +17,15 @@
 #   silo fetch [--remote <name>]
 set -euo pipefail
 
+# Auto-fetch dit refs from the default remote before write operations.
+# Silent — if no remote exists or fetch fails, proceed with local state.
+auto_fetch() {
+  local remote
+  remote=$(git remote 2>/dev/null | head -1) || return 0
+  [ -z "$remote" ] && return 0
+  git fetch "$remote" '+refs/dit/*:refs/dit/*' 2>/dev/null || true
+}
+
 # Get or create the empty tree object
 empty_tree() {
   git hash-object -t tree /dev/null
@@ -227,6 +236,7 @@ cmd_new() {
 }
 
 cmd_issues() {
+  auto_fetch
   local filter_status="" filter_mine=""
 
   while [ $# -gt 0 ]; do
@@ -280,6 +290,7 @@ cmd_issues() {
 }
 
 cmd_show() {
+  auto_fetch
   if [ $# -lt 1 ]; then
     echo "usage: silo show <id>" >&2
     exit 1
@@ -356,6 +367,7 @@ cmd_show() {
 }
 
 cmd_comment() {
+  auto_fetch
   if [ $# -lt 2 ]; then
     echo "usage: silo comment <id> \"body\"" >&2
     exit 1
@@ -376,6 +388,7 @@ cmd_comment() {
 }
 
 cmd_status() {
+  auto_fetch
   if [ $# -lt 2 ]; then
     echo "usage: silo status <id> <open|doing|done|closed>" >&2
     exit 1
@@ -402,6 +415,7 @@ cmd_status() {
 }
 
 cmd_priority() {
+  auto_fetch
   if [ $# -lt 2 ]; then
     echo "usage: silo priority <id> <high|normal|low>" >&2
     exit 1
@@ -428,6 +442,7 @@ cmd_priority() {
 }
 
 cmd_label() {
+  auto_fetch
   if [ $# -lt 3 ]; then
     echo "usage: silo label <id> <add|rm> <label>" >&2
     exit 1
