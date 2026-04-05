@@ -5,8 +5,17 @@
 { config, pkgs, lib, reposDir, ... }:
 
 let
+  siloTui = import ./tui { inherit pkgs; };
+
   siloShell = pkgs.writeShellScriptBin "silo-shell" ''
     set -euo pipefail
+
+    # No git command + TTY = launch TUI
+    if [ -z "''${SSH_ORIGINAL_COMMAND:-}" ] && [ -t 0 ]; then
+      export SILO_REPOS_DIR="${reposDir}"
+      export PATH="${pkgs.git}/bin:$PATH"
+      exec ${siloTui}/bin/silo-tui
+    fi
 
     # SSH_ORIGINAL_COMMAND is set by sshd for forced commands
     if [ -z "''${SSH_ORIGINAL_COMMAND:-}" ]; then
