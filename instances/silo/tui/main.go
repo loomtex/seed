@@ -298,16 +298,19 @@ func priorityIndicator(p string) string {
 
 func (m *model) applyFilter() {
 	filter := statusFilters[m.statusFilter]
-	if filter == "all" {
-		m.filtered = make([]Issue, len(m.issues))
-		copy(m.filtered, m.issues)
-	} else {
-		m.filtered = nil
-		for _, issue := range m.issues {
-			if issue.Status == filter {
-				m.filtered = append(m.filtered, issue)
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	m.filtered = nil
+	for _, issue := range m.issues {
+		// Hide done/closed issues older than 7 days (unless explicitly filtered to that status)
+		if filter != issue.Status && (issue.Status == "done" || issue.Status == "closed") {
+			if !issue.StatusChanged.IsZero() && issue.StatusChanged.Before(cutoff) {
+				continue
 			}
 		}
+		if filter != "all" && issue.Status != filter {
+			continue
+		}
+		m.filtered = append(m.filtered, issue)
 	}
 	// Sort: status priority, then issue priority, then newest first
 	sort.SliceStable(m.filtered, func(i, j int) bool {
@@ -493,11 +496,11 @@ func renderChart(act Activity, width, availHeight int) string {
 	total := 0
 	peak := 0
 	for i := range act.Code {
+		total += act.Code[i]
 		d := act.Code[i]
 		if i < len(act.Issues) {
 			d += act.Issues[i]
 		}
-		total += d
 		if d > peak {
 			peak = d
 		}
