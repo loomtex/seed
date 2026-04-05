@@ -8,7 +8,7 @@ pkgs.buildNpmPackage {
   pname = "silo-ui";
   version = "0.1.0";
   src = ./.;
-  npmDepsHash = "sha256-sCp4yB7HiOgTEvcXDIGw9VLnsLE0Td47w6yhgA3sN6E=";
+  npmDepsHash = "sha256-ZKbGlUdPZb9kkgR6uwNpfig6CKf+fkmuqRbTa+rsPSI=";
   nodejs = pkgs.nodejs_22;
   installPhase = ''
     runHook preInstall
