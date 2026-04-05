@@ -160,7 +160,17 @@ func replayIssue(repoDir, id, head string) (Issue, error) {
 			}
 		case "add-label":
 			if l, ok := op["label"].(string); ok {
-				issue.Labels = append(issue.Labels, l)
+				// Deduplicate
+				found := false
+				for _, existing := range issue.Labels {
+					if existing == l {
+						found = true
+						break
+					}
+				}
+				if !found {
+					issue.Labels = append(issue.Labels, l)
+				}
 			}
 		case "rm-label":
 			if l, ok := op["label"].(string); ok {
