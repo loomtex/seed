@@ -11,8 +11,14 @@ let
     DEFAULT_BRANCH=$(${pkgs.git}/bin/git -C "$REPO_DIR" symbolic-ref HEAD 2>/dev/null || echo "refs/heads/master")
 
     # Parse ref updates from stdin — find the default branch push
+    # Track whether any non-dit ref was updated (dit = issue tracking refs)
     HEAD_SHA=""
+    NON_DIT_PUSH=false
     while read OLD NEW REF; do
+      case "$REF" in
+        refs/dit/*) ;;  # issue refs — skip
+        *) NON_DIT_PUSH=true ;;
+      esac
       if [ "$REF" = "$DEFAULT_BRANCH" ]; then
         HEAD_SHA="$NEW"
       fi
@@ -26,6 +32,9 @@ let
     fi
 
     # --- Webhook to seed-controller ---
+    # Skip if only issue refs (refs/dit/*) were updated
+    [ "$NON_DIT_PUSH" = "false" ] && exit 0
+
     SECRET_FILE="/run/secrets/silo-webhook-secret"
     [ ! -f "$SECRET_FILE" ] && exit 0
     SECRET=$(${pkgs.coreutils}/bin/cat "$SECRET_FILE")
