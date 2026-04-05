@@ -168,16 +168,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reposMsg:
 		if msg.err == nil {
+			// Preserve cursor position by repo name
+			var curName string
+			if m.cursor < len(m.repos) {
+				curName = m.repos[m.cursor].Name
+			}
 			m.repos = msg.repos
+			if curName != "" {
+				for i, r := range m.repos {
+					if r.Name == curName {
+						m.cursor = i
+						break
+					}
+				}
+			}
+			if m.cursor >= len(m.repos) {
+				m.cursor = max(0, len(m.repos)-1)
+			}
 		}
 		return m, fetchAggregateActivity(m.repos)
 
 	case issuesMsg:
 		if msg.err == nil {
+			// Track current issue ID to restore cursor after refresh
+			var curID string
+			if m.cursor < len(m.filtered) {
+				curID = m.filtered[m.cursor].ID
+			}
 			m.issues = msg.issues
 			m.applyFilter()
+			// Restore cursor by ID, or clamp to bounds
+			if curID != "" {
+				m.cursor = 0
+				for i, issue := range m.filtered {
+					if issue.ID == curID {
+						m.cursor = i
+						break
+					}
+				}
+			}
+			if m.cursor >= len(m.filtered) {
+				m.cursor = max(0, len(m.filtered)-1)
+			}
 		}
-		m.cursor = 0
 		return m, nil
 
 	case commentsMsg:
