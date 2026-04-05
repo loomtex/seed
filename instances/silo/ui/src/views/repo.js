@@ -1,5 +1,6 @@
 // Repo landing page — file tree, README, clone URL, gates, cgit links.
 import { readTree, readReadme, headCommit, listGates, listIssueRefs } from "../git.js";
+import { BASE } from "../router.js";
 import { Marked } from "marked";
 import { drawChart } from "../chart.js";
 
@@ -66,7 +67,7 @@ export async function renderRepo(el, name) {
     }
     const rows = entries.map((e) => {
       const href = e.type === "tree"
-        ? `/ui/${esc(name)}/tree/${esc(e.path)}`
+        ? `${BASE}/${esc(name)}/tree/${esc(e.path)}`
         : `/${esc(name)}/tree/${esc(e.path)}`;
       return `<tr>
         <td>${fileIcon(e.type)} <a href="${href}">${esc(e.path)}</a></td>
@@ -125,7 +126,7 @@ export async function renderRepo(el, name) {
     const metaEl = el.querySelector(".repo-links");
     if (metaEl) {
       const link = document.createElement("a");
-      link.href = `/ui/${name}`;
+      link.href = `${BASE}/${name}`;
       link.textContent = `${issues.count} issue${issues.count !== 1 ? "s" : ""}`;
       link.title = "Issues";
       metaEl.appendChild(link);
@@ -156,12 +157,12 @@ export async function renderRepo(el, name) {
 export async function renderRepoTree(el, name, subpath) {
   const crumbs = subpath.split("/").filter(Boolean);
   const breadcrumb = [
-    `<a href="/ui/${esc(name)}">${esc(name)}</a>`,
+    `<a href="${BASE}/${esc(name)}">${esc(name)}</a>`,
     ...crumbs.map((part, i) => {
       const path = crumbs.slice(0, i + 1).join("/");
       return i === crumbs.length - 1
         ? `<span>${esc(part)}</span>`
-        : `<a href="/ui/${esc(name)}/tree/${esc(path)}">${esc(part)}</a>`;
+        : `<a href="${BASE}/${esc(name)}/tree/${esc(path)}">${esc(part)}</a>`;
     }),
   ].join(" / ");
 
@@ -187,7 +188,7 @@ export async function renderRepoTree(el, name, subpath) {
     const rows = entries.map((e) => {
       const fullPath = subpath + "/" + e.path;
       const href = e.type === "tree"
-        ? `/ui/${esc(name)}/tree/${esc(fullPath)}`
+        ? `${BASE}/${esc(name)}/tree/${esc(fullPath)}`
         : `/${esc(name)}/tree/${esc(fullPath)}`;
       return `<tr>
         <td>${fileIcon(e.type)} <a href="${href}">${esc(e.path)}</a></td>
