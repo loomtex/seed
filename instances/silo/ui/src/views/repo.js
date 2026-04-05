@@ -42,7 +42,7 @@ export async function renderRepo(el, name) {
       <div id="repo-commit" class="repo-commit"></div>
     </div>
     <div id="repo-gates"></div>
-    <div id="repo-chart-wrap" class="repo-chart-wrap">
+    <div id="repo-chart-wrap" class="repo-chart-wrap" hidden>
       <canvas id="repo-chart"></canvas>
     </div>
     <div id="repo-tree" class="loading">Loading...</div>
@@ -145,8 +145,11 @@ export async function renderRepo(el, name) {
     const age = Math.floor((now - commit.timestamp) / 86400);
     if (age >= 0 && age < days) buckets[days - 1 - age] = 1;
 
+    if (!buckets.some(Boolean)) return;
+    const wrap = document.getElementById("repo-chart-wrap");
     const canvas = document.getElementById("repo-chart");
-    if (canvas) {
+    if (wrap && canvas) {
+      wrap.hidden = false;
       drawChart(canvas, buckets);
       window.addEventListener("resize", () => drawChart(canvas, buckets));
     }
