@@ -246,6 +246,12 @@
         program = "${self.nixosConfigurations.vm.config.system.build.vm}/bin/run-nixos-vm";
       };
 
+      # silo CLI — git-native issue tracker
+      silo = {
+        type = "app";
+        program = "${self.packages.${system}.silo}/bin/silo";
+      };
+
       # Derive IPNS CID from an Ed25519 SSH key for .seed-identity
       seed-identity = {
         type = "app";
@@ -362,6 +368,9 @@
         '';
       };
     in {
+      # silo CLI — git-native issue tracker
+      silo = import ./instances/silo/cli { inherit pkgs; };
+
       # Zitadel v4 (nixpkgs only has v2.71.7)
       zitadel = pkgs.zitadel;
 
