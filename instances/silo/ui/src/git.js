@@ -2,6 +2,9 @@
 //
 // Repos are shallow-cloned into IndexedDB on first visit.
 // Subsequent visits fetch to check for updates.
+import { Buffer } from "buffer";
+if (!globalThis.Buffer) globalThis.Buffer = Buffer;
+
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import LightningFS from "@isomorphic-git/lightning-fs";
