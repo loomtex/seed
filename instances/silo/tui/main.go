@@ -60,6 +60,10 @@ type commentsMsg struct {
 	err      error
 }
 
+type opDoneMsg struct {
+	err error
+}
+
 type tickMsg time.Time
 
 func tickCmd() tea.Cmd {
@@ -79,6 +83,18 @@ func fetchIssues(repoDir string) tea.Cmd {
 	return func() tea.Msg {
 		issues, err := ListIssues(repoDir)
 		return issuesMsg{issues: issues, err: err}
+	}
+}
+
+func cyclePriority(repoDir string, issue Issue) tea.Cmd {
+	return func() tea.Msg {
+		next := NextPriority(issue.Priority)
+		op := map[string]interface{}{
+			"op":       "set-priority",
+			"priority": next,
+		}
+		err := PushOp(repoDir, issue.ID, op)
+		return opDoneMsg{err: err}
 	}
 }
 
@@ -131,6 +147,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.comments = msg.comments
 		}
 		m.commentScroll = 0
+		return m, nil
+
+	case opDoneMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("error: %v", msg.err)
+			m.statusExpiry = time.Now().Add(5 * time.Second)
+			return m, nil
+		}
+		// Refresh issues after a write op
+		if m.selectedRepo < len(m.repos) {
+			return m, fetchIssues(m.repos[m.selectedRepo].Path)
+		}
 		return m, nil
 
 	case tickMsg:
@@ -276,6 +304,10 @@ func (m model) handleIssuesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.commentScroll = 0
 			issue := m.filtered[m.selectedIssue]
 			return m, fetchComments(m.repos[m.selectedRepo].Path, issue.ID)
+		}
+	case "p":
+		if m.cursor < len(m.filtered) && m.selectedRepo < len(m.repos) {
+			return m, cyclePriority(m.repos[m.selectedRepo].Path, m.filtered[m.cursor])
 		}
 	case "tab":
 		m.statusFilter = (m.statusFilter + 1) % len(statusFilters)
@@ -448,7 +480,7 @@ func (m model) viewIssues() string {
 	for i := lines; i < m.height-2; i++ {
 		b.WriteString("\n")
 	}
-	b.WriteString(helpStyle.Render("j/k nav  enter detail  tab filter  esc back  R refresh  q quit"))
+	b.WriteString(helpStyle.Render("j/k nav  enter detail  p priority  tab filter  esc back  R refresh  q quit"))
 
 	return b.String()
 }
