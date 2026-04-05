@@ -441,8 +441,12 @@ func renderChart(data []int, width, availHeight int) string {
 	}
 
 	total := 0
+	peak := 0
 	for _, v := range data {
 		total += v
+		if v > peak {
+			peak = v
+		}
 	}
 
 	chartHeight := availHeight - 1
@@ -459,7 +463,7 @@ func renderChart(data []int, width, availHeight int) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(chartLabel.Render(fmt.Sprintf("  %d commits · 6 weeks", total)) + "\n")
+	b.WriteString(chartLabel.Render(fmt.Sprintf("  %d commits · 6 weeks · peak %d/day", total, peak)) + "\n")
 	lines := AreaChart(data, chartWidth, chartHeight)
 	for _, line := range lines {
 		b.WriteString("  " + chartStyle.Render(line) + "\n")
