@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+# silo — git-native issue tracker
+#
+# Issues are empty-tree commits stored under refs/dit/<id>/.
+# Each commit message is a JSON operation. Current state is computed
+# by replaying ops from head to initial commit.
+#
+# Usage:
+#   silo new "title" [-b body] [-s status] [-l label]
+#   silo issues [--mine] [--status <status>] [--repo <path>]
+#   silo show <id>
+#   silo comment <id> "body"
+#   silo status <id> <open|doing|done|closed>
+#   silo label <id> <add|rm> <label>
+#   silo sync [--remote <name>]
+#   silo fetch [--remote <name>]
+set -euo pipefail
+
+# Get or create the empty tree object
+empty_tree() {
+  git hash-object -t tree /dev/null
+}
+
+# Resolve repo root
+repo_dir() {
+  git rev-parse --git-dir 2>/dev/null || {
+    echo "silo: not a git repository" >&2
+    exit 1
+  }
+}
+
+# Get current git user identity for authorship
+git_identity() {
+  local name email
+  name=$(git config user.name 2>/dev/null || echo "unknown")
+  email=$(git config user.email 2>/dev/null || echo "unknown@unknown")
+  echo "$name <$email>"
+}
+
+# Create an empty-tree commit with a JSON message.
+# Args: parent_hash (empty for root), json_message
+# Prints: new commit hash
+make_op() {
+  local parent="$1"
+  local message="$2"
+  local identity
+  identity=$(git_identity)
+
+  local -a args=(commit-tree "$(empty_tree)" -m "$message")
+  if [ -n "$parent" ]; then
+    args+=(-p "$parent")
+  fi
+
+  GIT_AUTHOR_NAME="${identity%% <*}" \
+  GIT_AUTHOR_EMAIL="${identity#* <}" \
+  GIT_COMMITTER_NAME="${identity%% <*}" \
+  GIT_COMMITTER_EMAIL="${identity#* <}" \
+  git "${args[@]}"
+}
+
+# Read the head commit for an issue
+issue_head() {
+  local id="$1"
+  local full_id
+  full_id=$(resolve_id "$id")
+  git rev-parse --verify "refs/dit/${full_id}/head" 2>/dev/null || echo ""
+}
+
+# Resolve short ID to full issue hash
+resolve_id() {
+  local short="$1"
+  local matches=()
+  local ref
+
+  # Try exact match first
+  if git rev-parse --verify "refs/dit/${short}/head" &>/dev/null; then
+    echo "$short"
+    return
+  fi
+
+  # Prefix match
+  while IFS= read -r ref; do
+    local id="${ref#refs/dit/}"
+    id="${id%%/*}"
+    if [[ "$id" == "$short"* ]]; then
+      matches+=("$id")
+    fi
+  done < <(git for-each-ref --format='%(refname)' "refs/dit/")
+
+  # Deduplicate
+  local -A seen
+  local unique=()
+  for m in "${matches[@]}"; do
+    if [[ -z "${seen[$m]:-}" ]]; then
+      seen[$m]=1
+      unique+=("$m")
+    fi
+  done
+
+  case ${#unique[@]} in
+    0)
+      echo "silo: issue not found: $short" >&2
+      exit 1
+      ;;
+    1)
+      echo "${unique[0]}"
+      ;;
+    *)
+      echo "silo: ambiguous id '$short', matches:" >&2
+      for m in "${unique[@]}"; do
+        echo "  ${m:0:8}" >&2
+      done
+      exit 1
+      ;;
+  esac
+}
+
+# Compute current state of an issue by replaying ops (oldest first)
+issue_state() {
+  local head="$1"
+  local title="" body="" status="open" author="" created="" labels=""
+
+  # Walk commits oldest-first
+  local hash
+  while read -r hash; do
+    local op_json
+    op_json=$(git log -1 --format="%B" "$hash" | jq -c '.' 2>/dev/null) || continue
+    local op
+    op=$(echo "$op_json" | jq -r '.op // empty') || continue
+
+    case "$op" in
+      create)
+        title=$(echo "$op_json" | jq -r '.title // ""')
+        body=$(echo "$op_json" | jq -r '.body // ""')
+        status=$(echo "$op_json" | jq -r '.status // "open"')
+        labels=$(echo "$op_json" | jq -r '(.labels // []) | join(",")')
+        ;;
+      set-status)
+        status=$(echo "$op_json" | jq -r '.status // empty')
+        ;;
+      add-label)
+        local label
+        label=$(echo "$op_json" | jq -r '.label // empty')
+        if [ -n "$label" ]; then
+          [ -n "$labels" ] && labels="$labels,"
+          labels="$labels$label"
+        fi
+        ;;
+      rm-label)
+        local label
+        label=$(echo "$op_json" | jq -r '.label // empty')
+        if [ -n "$label" ]; then
+          labels=$(echo "$labels" | tr ',' '\n' | grep -v "^${label}$" | paste -sd,)
+        fi
+        ;;
+    esac
+  done < <(git rev-list --first-parent --reverse "$head")
+
+  # Get author and created date from the root commit (last in first-parent chain)
+  local root
+  root=$(git rev-list --first-parent --reverse "$head" | head -1)
+  author=$(git log -1 --format="%an <%ae>" "$root")
+  created=$(git log -1 --format="%aI" "$root")
+
+  jq -n \
+    --arg title "$title" \
+    --arg body "$body" \
+    --arg status "$status" \
+    --arg author "$author" \
+    --arg created "$created" \
+    --arg labels "$labels" \
+    '{title: $title, body: $body, status: $status, author: $author, created: $created, labels: ($labels | split(",") | map(select(. != "")))}'
+}
+
+# --- Commands ---
+
+cmd_new() {
+  local title="" body="" status="open" labels=""
+
+  if [ $# -lt 1 ]; then
+    echo "usage: silo new \"title\" [-b body] [-s status] [-l label]" >&2
+    exit 1
+  fi
+  title="$1"; shift
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -b|--body) body="$2"; shift 2 ;;
+      -s|--status) status="$2"; shift 2 ;;
+      -l|--label) labels="$2"; shift 2 ;;
+      *) echo "silo new: unknown option $1" >&2; exit 1 ;;
+    esac
+  done
+
+  local labels_json="[]"
+  if [ -n "$labels" ]; then
+    labels_json=$(echo "$labels" | tr ',' '\n' | jq -R . | jq -s .)
+  fi
+
+  local message
+  message=$(jq -n \
+    --arg title "$title" \
+    --arg body "$body" \
+    --arg status "$status" \
+    --argjson labels "$labels_json" \
+    '{op: "create", title: $title, body: $body, status: $status, labels: $labels}')
+
+  local hash
+  hash=$(make_op "" "$message")
+
+  git update-ref "refs/dit/${hash}/head" "$hash"
+
+  echo "${hash:0:8}"
+}
+
+cmd_issues() {
+  local filter_status="" filter_mine=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mine) filter_mine=1; shift ;;
+      --status) filter_status="$2"; shift 2 ;;
+      *) echo "silo issues: unknown option $1" >&2; exit 1 ;;
+    esac
+  done
+
+  local my_email=""
+  if [ -n "$filter_mine" ]; then
+    my_email=$(git config user.email 2>/dev/null || true)
+  fi
+
+  local ref
+  while IFS= read -r ref; do
+    [ -z "$ref" ] && continue
+    local id="${ref#refs/dit/}"
+    id="${id%%/*}"
+    local head
+    head=$(git rev-parse "$ref" 2>/dev/null) || continue
+
+    local state
+    state=$(issue_state "$head")
+
+    # Apply filters
+    if [ -n "$filter_status" ]; then
+      local s
+      s=$(echo "$state" | jq -r '.status')
+      [ "$s" != "$filter_status" ] && continue
+    fi
+
+    if [ -n "$filter_mine" ] && [ -n "$my_email" ]; then
+      local a
+      a=$(echo "$state" | jq -r '.author')
+      [[ "$a" != *"$my_email"* ]] && continue
+    fi
+
+    # Format output
+    local s title labels
+    s=$(echo "$state" | jq -r '.status')
+    title=$(echo "$state" | jq -r '.title')
+    labels=$(echo "$state" | jq -r '.labels | join(", ")')
+
+    local label_str=""
+    [ -n "$labels" ] && label_str=" [$labels]"
+
+    printf "%-8s %-8s %s%s\n" "${id:0:8}" "$s" "$title" "$label_str"
+  done < <(git for-each-ref --format='%(refname)' 'refs/dit/*/head')
+}
+
+cmd_show() {
+  if [ $# -lt 1 ]; then
+    echo "usage: silo show <id>" >&2
+    exit 1
+  fi
+
+  local full_id
+  full_id=$(resolve_id "$1")
+  local head
+  head=$(git rev-parse "refs/dit/${full_id}/head")
+
+  local state
+  state=$(issue_state "$head")
+
+  local title status author created body labels
+  title=$(echo "$state" | jq -r '.title')
+  status=$(echo "$state" | jq -r '.status')
+  author=$(echo "$state" | jq -r '.author')
+  created=$(echo "$state" | jq -r '.created')
+  body=$(echo "$state" | jq -r '.body')
+  labels=$(echo "$state" | jq -r '.labels | join(", ")')
+
+  echo "# ${title}"
+  echo ""
+  echo "id:      ${full_id:0:8}"
+  echo "status:  ${status}"
+  echo "author:  ${author}"
+  echo "created: ${created}"
+  [ -n "$labels" ] && echo "labels:  ${labels}"
+  if [ -n "$body" ]; then
+    echo ""
+    echo "$body"
+  fi
+
+  # Show comments
+  echo ""
+  echo "--- comments ---"
+  local hash
+  git rev-list --first-parent --reverse "$head" | while read -r hash; do
+    local op_json
+    op_json=$(git log -1 --format="%B" "$hash" | jq -c '.' 2>/dev/null) || continue
+    local op
+    op=$(echo "$op_json" | jq -r '.op // empty') || continue
+
+    case "$op" in
+      comment)
+        local comment_body comment_author comment_date
+        comment_body=$(echo "$op_json" | jq -r '.body // ""')
+        comment_author=$(git log -1 --format="%an" "$hash")
+        comment_date=$(git log -1 --format="%ar" "$hash")
+        echo ""
+        echo "  ${comment_author} (${comment_date}):"
+        echo "  ${comment_body}"
+        ;;
+      set-status)
+        local new_status change_author change_date
+        new_status=$(echo "$op_json" | jq -r '.status')
+        change_author=$(git log -1 --format="%an" "$hash")
+        change_date=$(git log -1 --format="%ar" "$hash")
+        echo ""
+        echo "  ${change_author} changed status to ${new_status} (${change_date})"
+        ;;
+    esac
+  done
+}
+
+cmd_comment() {
+  if [ $# -lt 2 ]; then
+    echo "usage: silo comment <id> \"body\"" >&2
+    exit 1
+  fi
+
+  local full_id
+  full_id=$(resolve_id "$1")
+  local body="$2"
+  local head
+  head=$(git rev-parse "refs/dit/${full_id}/head")
+
+  local message
+  message=$(jq -n --arg body "$body" '{op: "comment", body: $body}')
+
+  local new_hash
+  new_hash=$(make_op "$head" "$message")
+  git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+}
+
+cmd_status() {
+  if [ $# -lt 2 ]; then
+    echo "usage: silo status <id> <open|doing|done|closed>" >&2
+    exit 1
+  fi
+
+  local full_id
+  full_id=$(resolve_id "$1")
+  local new_status="$2"
+
+  case "$new_status" in
+    open|doing|done|closed) ;;
+    *) echo "silo: invalid status: $new_status (must be open, doing, done, closed)" >&2; exit 1 ;;
+  esac
+
+  local head
+  head=$(git rev-parse "refs/dit/${full_id}/head")
+
+  local message
+  message=$(jq -n --arg status "$new_status" '{op: "set-status", status: $status}')
+
+  local new_hash
+  new_hash=$(make_op "$head" "$message")
+  git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+}
+
+cmd_label() {
+  if [ $# -lt 3 ]; then
+    echo "usage: silo label <id> <add|rm> <label>" >&2
+    exit 1
+  fi
+
+  local full_id
+  full_id=$(resolve_id "$1")
+  local action="$2"
+  local label="$3"
+  local head
+  head=$(git rev-parse "refs/dit/${full_id}/head")
+
+  local op
+  case "$action" in
+    add) op="add-label" ;;
+    rm)  op="rm-label" ;;
+    *)   echo "silo label: action must be add or rm" >&2; exit 1 ;;
+  esac
+
+  local message
+  message=$(jq -n --arg op "$op" --arg label "$label" '{op: $op, label: $label}')
+
+  local new_hash
+  new_hash=$(make_op "$head" "$message")
+  git update-ref "refs/dit/${full_id}/head" "$new_hash" "$head"
+}
+
+cmd_sync() {
+  local remote="${1:-origin}"
+  echo "pushing refs/dit/* to ${remote}..."
+  git push "$remote" 'refs/dit/*:refs/dit/*'
+}
+
+cmd_fetch() {
+  local remote="${1:-origin}"
+  echo "fetching refs/dit/* from ${remote}..."
+  git fetch "$remote" '+refs/dit/*:refs/dit/*'
+}
+
+# --- Dispatch ---
+
+case "${1:-}" in
+  new)      shift; cmd_new "$@" ;;
+  issues)   shift; cmd_issues "$@" ;;
+  show)     shift; cmd_show "$@" ;;
+  comment)  shift; cmd_comment "$@" ;;
+  status)   shift; cmd_status "$@" ;;
+  label)    shift; cmd_label "$@" ;;
+  sync)     shift; cmd_sync "$@" ;;
+  fetch)    shift; cmd_fetch "$@" ;;
+  -h|--help|"")
+    cat <<'USAGE'
+silo — git-native issue tracker
+
+Commands:
+  new "title" [-b body] [-s status] [-l label]   Create an issue
+  issues [--mine] [--status <status>]             List issues
+  show <id>                                       Show issue detail
+  comment <id> "body"                             Add a comment
+  status <id> <open|doing|done|closed>            Update status
+  label <id> <add|rm> <label>                     Add/remove label
+  sync [remote]                                   Push issue refs
+  fetch [remote]                                  Fetch issue refs
+
+Issues are stored as empty-tree git commits under refs/dit/.
+Use 'silo sync' to push issues to a remote.
+USAGE
+    ;;
+  *)
+    echo "silo: unknown command '$1'" >&2
+    echo "run 'silo --help' for usage" >&2
+    exit 1
+    ;;
+esac
