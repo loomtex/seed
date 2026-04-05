@@ -31,7 +31,7 @@ export async function renderRepo(el, name) {
     <div class="repo-header">
       <h2>${esc(name)}</h2>
       <div class="repo-meta">
-        <code class="clone-url">ssh://git@silo.loom.farm/${esc(name)}.git</code>
+        <code class="clone-url">git clone silo.loom.farm:${esc(name)}.git</code>
         <span class="repo-links">
           <a href="/${esc(name)}/log" title="Commit log">log</a>
           <a href="/${esc(name)}/tree/" title="File tree">tree</a>
@@ -50,9 +50,9 @@ export async function renderRepo(el, name) {
 
   // Fetch all data in parallel
   const [treeP, readmeP, headP, gatesP, issuesP] = [
-    readTree(name).catch(() => null),
-    readReadme(name).catch(() => null),
-    headCommit(name).catch(() => null),
+    readTree(name).catch((e) => { console.error("readTree:", e); return null; }),
+    readReadme(name).catch((e) => { console.error("readReadme:", e); return null; }),
+    headCommit(name).catch((e) => { console.error("headCommit:", e); return null; }),
     listGates(name),
     listIssueRefs(name),
   ];
