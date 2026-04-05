@@ -284,14 +284,16 @@ in {
     serverAliases = [ "silo.s-gaydazldmnsg.seed.loom.farm" ];
     enableACME = true;
     forceSSL = true;
+    locations."= /ui" = {
+      return = "302 /ui/";
+    };
     locations."/ui/" = {
       alias = "${siloUi}/";
-      index = "index.html";
       extraConfig = ''
+        index index.html;
         try_files $uri $uri/ /ui/index.html;
       '';
     };
-    # SPA fallback — serves index.html for client-side routes
     locations."= /ui/index.html" = {
       alias = "${siloUi}/index.html";
     };
