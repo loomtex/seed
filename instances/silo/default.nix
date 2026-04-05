@@ -15,6 +15,7 @@ in {
     ./shell.nix
     ./hooks.nix
     ./cgit.nix
+    ./git-http.nix
     ./archive.nix
     ./sshfp.nix
   ];
