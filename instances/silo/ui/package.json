@@ -9,8 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@isomorphic-git/lightning-fs": "^4.6.2",
     "@noble/curves": "^1.8.2",
-    "isomorphic-git": "^1.37.4"
+    "isomorphic-git": "^1.37.4",
+    "marked": "^17.0.6"
   },
   "devDependencies": {
     "vite": "^8.0.3"
