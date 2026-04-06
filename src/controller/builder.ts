@@ -208,6 +208,40 @@ echo "[builder] done"
   };
 }
 
+/**
+ * Capture logs from builder pods, keyed by pod name.
+ * Call before cleanup to preserve logs in reconcile status.
+ */
+export async function captureBuilderLogs(
+  clients: KubeClients,
+  namespace: string,
+): Promise<Record<string, string[]>> {
+  const logs: Record<string, string[]> = {};
+  try {
+    const pods = await clients.core.listNamespacedPod({
+      namespace,
+      labelSelector: "seed.loom.farm/builder=true",
+    });
+    for (const pod of pods.items) {
+      const podName = pod.metadata?.name;
+      if (!podName) continue;
+      try {
+        const logResponse = await clients.core.readNamespacedPodLog({
+          name: podName,
+          namespace,
+          tailLines: 200,
+        });
+        logs[podName] = (logResponse as string).split("\n").filter(Boolean);
+      } catch {
+        logs[podName] = ["(logs unavailable)"];
+      }
+    }
+  } catch {
+    // Best-effort
+  }
+  return logs;
+}
+
 /** Clean up old builder Jobs and ConfigMaps. */
 async function cleanupBuilderResources(
   clients: KubeClients,

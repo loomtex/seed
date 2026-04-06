@@ -455,8 +455,10 @@ let
         if [ "$JSON_OUT" = true ]; then
           echo "$RESULT" | jq .
         else
+          SOURCE=$(echo "$RESULT" | jq -r '.source')
+          [ "$SOURCE" = "cached" ] && printf '\033[2m(cached from last build)\033[0m\n'
           echo "$RESULT" | jq -r '.builds[] |
-            "\u001b[1;4m\(.instance)\u001b[0m  \u001b[2m(\(.pod))\u001b[0m",
+            "\u001b[1;4m\(.pod)\u001b[0m",
             (.lines[] | "  \(.)"),
             ""'
         fi
