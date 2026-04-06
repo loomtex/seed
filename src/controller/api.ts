@@ -394,7 +394,9 @@ async function handleBuildLog(
         allLogs.push({ name: inst, lines: ["(logs unavailable)"] });
       }
     }
-    jsonResponse(res, 200, { source: "live", builds: allLogs });
+    const reconcile = reconcileStatuses.get(namespace);
+    const failed = reconcile?.phase === "failed";
+    jsonResponse(res, 200, { source: "live", failed, builds: allLogs });
     return;
   }
 
@@ -405,7 +407,8 @@ async function handleBuildLog(
       .filter(([name]) => !instance || name === instance)
       .map(([name, lines]) => ({ name, lines }));
     if (builds.length > 0) {
-      jsonResponse(res, 200, { source: "cached", builds });
+      const failed = reconcile?.phase === "failed";
+      jsonResponse(res, 200, { source: "cached", failed, builds });
       return;
     }
   }
