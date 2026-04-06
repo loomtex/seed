@@ -4,7 +4,7 @@ import { renderRepoTree } from "./views/repo.js";
 import { renderGates } from "./views/gates.js";
 import { renderIdentity } from "./views/identity.js";
 
-export const BASE = "/ui";
+export const BASE = "";
 
 const routes = [
   { pattern: /^\/$/, render: renderActivity },
