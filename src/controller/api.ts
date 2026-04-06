@@ -3,6 +3,7 @@
 // Endpoints:
 //   GET  /api/keys                            — key→namespace index (for SSH auth)
 //   GET  /api/ns/:namespace/status            — instance status overview
+//   GET  /api/ns/:namespace/build-log          — nix builder pod logs
 //   GET  /api/ns/:namespace/keys/:instance    — TPM age public key (for sops encryption)
 //   GET  /api/ns/:namespace/logs/:instance    — pod logs (last 100 lines)
 //   POST /api/ns/:namespace/restart/:instance — restart an instance (delete pod)
@@ -186,6 +187,14 @@ export async function handleApiRequest(
       return true;
     }
 
+    // GET /api/ns/:namespace/build-log?instance=NAME&lines=N
+    if (req.method === "GET" && rest === "build-log") {
+      const instance = params.get("instance") || "";
+      const lines = Math.min(Math.max(parseInt(params.get("lines") || "200", 10) || 200, 1), 10000);
+      await handleBuildLog(res, routeCtx.clients, namespace, instance, lines);
+      return true;
+    }
+
     // GET /api/ns/:namespace/keys/:instance — TPM age public key
     const keysMatch = rest.match(/^keys\/([a-z0-9-]+)$/);
     if (req.method === "GET" && keysMatch) {
@@ -352,6 +361,99 @@ async function handleStatus(
 
   const reconcile = reconcileStatuses.get(namespace) || null;
   jsonResponse(res, 200, { namespace, instances, reconcile });
+}
+
+async function handleBuildLog(
+  res: ServerResponse,
+  clients: KubeClients,
+  namespace: string,
+  instance: string,
+  tailLines: number,
+): Promise<void> {
+  // Find builder pods — optionally filtered by instance
+  const labelSelector = instance
+    ? `seed.loom.farm/builder=true,${LABELS.INSTANCE}=${instance}`
+    : "seed.loom.farm/builder=true";
+
+  const pods = await clients.core.listNamespacedPod({ namespace, labelSelector });
+  if (pods.items.length === 0) {
+    // No live pods — try jobs (may have terminated)
+    const jobs = await clients.batch.listNamespacedJob({ namespace });
+    const builderJobs = jobs.items
+      .filter((j) => j.metadata?.labels?.["seed.loom.farm/builder"] === "true")
+      .filter((j) => !instance || j.metadata?.labels?.[LABELS.INSTANCE] === instance);
+
+    if (builderJobs.length === 0) {
+      jsonResponse(res, 404, { error: "no builder jobs found" });
+      return;
+    }
+
+    // Get the most recent job's pod
+    builderJobs.sort((a, b) =>
+      new Date(b.metadata?.creationTimestamp ?? 0).getTime() - new Date(a.metadata?.creationTimestamp ?? 0).getTime(),
+    );
+    const jobName = builderJobs[0].metadata?.name;
+    const jobPods = await clients.core.listNamespacedPod({
+      namespace,
+      labelSelector: `job-name=${jobName}`,
+    });
+
+    if (jobPods.items.length === 0) {
+      jsonResponse(res, 404, { error: `builder job ${jobName} has no pods (may have been cleaned up)` });
+      return;
+    }
+
+    return returnPodLogs(res, clients, namespace, jobPods.items[0], tailLines);
+  }
+
+  // Sort pods by creation time descending, take the most recent
+  pods.items.sort((a, b) =>
+    new Date(b.metadata?.creationTimestamp ?? 0).getTime() - new Date(a.metadata?.creationTimestamp ?? 0).getTime(),
+  );
+
+  // Return logs from all builder pods (grouped by instance)
+  const allLogs: { instance: string; pod: string; lines: string[] }[] = [];
+  for (const pod of pods.items) {
+    const inst = pod.metadata?.labels?.[LABELS.INSTANCE] || "unknown";
+    const podName = pod.metadata?.name || "unknown";
+    try {
+      const logResponse = await clients.core.readNamespacedPodLog({
+        name: podName,
+        namespace,
+        tailLines,
+      });
+      allLogs.push({ instance: inst, pod: podName, lines: (logResponse as string).split("\n").filter(Boolean) });
+    } catch {
+      allLogs.push({ instance: inst, pod: podName, lines: ["(logs unavailable)"] });
+    }
+  }
+
+  jsonResponse(res, 200, { builds: allLogs });
+}
+
+async function returnPodLogs(
+  res: ServerResponse,
+  clients: KubeClients,
+  namespace: string,
+  pod: k8s.V1Pod,
+  tailLines: number,
+): Promise<void> {
+  const podName = pod.metadata?.name || "unknown";
+  const inst = pod.metadata?.labels?.[LABELS.INSTANCE] || "unknown";
+  try {
+    const logResponse = await clients.core.readNamespacedPodLog({
+      name: podName,
+      namespace,
+      tailLines,
+    });
+    jsonResponse(res, 200, {
+      builds: [{ instance: inst, pod: podName, lines: (logResponse as string).split("\n").filter(Boolean) }],
+    });
+  } catch {
+    jsonResponse(res, 200, {
+      builds: [{ instance: inst, pod: podName, lines: ["(logs unavailable — pod may have been cleaned up)"] }],
+    });
+  }
 }
 
 /** Parse a journal JSON line into a human-readable string. */

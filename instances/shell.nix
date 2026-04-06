@@ -410,6 +410,58 @@ let
         fi
         ;;
 
+      build-log)
+        require_repos
+        # build-log [repo] [--instance NAME]
+        # If ARG looks like a repo, use it; otherwise treat as instance filter
+        BLOG_REPO=""
+        BLOG_INSTANCE=""
+        if [ -n "$ARG" ]; then
+          # Check if it's a known repo name
+          FOUND=false
+          for i in "''${!REPO_NAMES[@]}"; do
+            if [ "''${REPO_NAMES[$i]}" = "$ARG" ]; then
+              FOUND=true
+              break
+            fi
+          done
+          if [ "$FOUND" = true ]; then
+            BLOG_REPO="$ARG"
+            BLOG_INSTANCE="''${ARG2:-}"
+          else
+            # Not a repo — treat as instance filter on first/only repo
+            BLOG_INSTANCE="$ARG"
+          fi
+        fi
+
+        # If no repo specified and only one repo, use it
+        if [ -z "$BLOG_REPO" ] && [ ''${#REPO_NAMES[@]} -eq 1 ]; then
+          BLOG_REPO="''${REPO_NAMES[0]}"
+        elif [ -z "$BLOG_REPO" ]; then
+          echo "error: multiple repos — specify which one: build-log <repo> [instance]" >&2
+          echo "available: ''${REPO_NAMES[*]}" >&2
+          exit 1
+        fi
+
+        NS=$(resolve_repo "$BLOG_REPO") || exit 1
+        BLOG_URL="$API/ns/$NS/build-log"
+        [ -n "$BLOG_INSTANCE" ] && BLOG_URL="$BLOG_URL?instance=$BLOG_INSTANCE"
+
+        RESULT=$(curl -sf "$BLOG_URL") || {
+          echo "error: failed to fetch build logs" >&2
+          exit 1
+        }
+
+        if [ "$JSON_OUT" = true ]; then
+          echo "$RESULT" | jq .
+        else
+          echo "$RESULT" | jq -r '.builds[] |
+            "\u001b[1;4m\(.instance)\u001b[0m  \u001b[2m(\(.pod))\u001b[0m",
+            (.lines[] | "  \(.)"),
+            ""'
+        fi
+        ;;
+
       restart)
         require_repos
         if [ -z "$ARG" ]; then
@@ -455,6 +507,7 @@ let
         echo "  replant <identity> <new-uri>    change source URI (identity preserved)"
         echo "  status [repo] [-w N]            show instance status (default: all repos)"
         echo "  logs <[repo/]instance>          show recent logs (default: 100 lines)"
+        echo "  build-log [repo] [instance]     show nix build output from last build"
         echo "  restart <[repo/]instance>       restart an instance"
         echo "  keys <[repo/]instance>          show age public key (for sops encryption)"
         echo "  help                            show this help"
@@ -467,6 +520,8 @@ let
         echo "  status seed                     status of the 'seed' repo"
         echo "  logs web                        logs for 'web' (auto-resolves repo)"
         echo "  logs seed/web -f                follow logs for 'web' in 'seed' repo"
+        echo "  build-log seed                  build output for all instances"
+        echo "  build-log seed silo             build output for silo only"
         echo "  restart shoot-demo/shoot-demo"
         echo "  keys web                        age public key for sops encryption"
         echo ""
