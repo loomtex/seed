@@ -16,7 +16,7 @@ import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Con
 import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask, generateInstanceDNSRecords, generateDomainCRD } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB, readBGPConfig } from "./metallb.js";
-import { runBuilders } from "./builder.js";
+import { runBuilders, captureBuilderLogs } from "./builder.js";
 import { runViaPoolManager } from "./pool-client.js";
 import { startWebhookServer } from "./webhook.js";
 import { initApi, updateKeyIndex, updateValidNamespaces, setPlantHandler, setReplantHandler, getReconcileStatus, updateReconcileStatus, type KeyIndex, type NamespaceEntry, type ReconcileStatus } from "./api.js";
@@ -1789,6 +1789,7 @@ async function main(): Promise<void> {
       startedAt: new Date().toISOString(),
       finishedAt: prev?.finishedAt || "",
       error: "",
+      buildLog: {},
       instances: {},
     };
     updateReconcileStatus(namespace, rStatus);
@@ -1846,6 +1847,10 @@ async function main(): Promise<void> {
           buildResults.set(name, { imagePath, meta });
         }
       }
+
+      // Cache builder logs before they get cleaned up
+      rStatus.buildLog = await captureBuilderLogs(clients, namespace);
+      updateReconcileStatus(namespace, rStatus);
 
       // Validate: reject instances whose metadata claims a different namespace
       for (const [name, result] of buildResults) {
@@ -1986,6 +1991,10 @@ async function main(): Promise<void> {
         } catch { /* SeedDomain CRD may not exist */ }
       }
     } catch (err) {
+      // Capture builder pod logs if not already cached (failure may happen after build)
+      if (Object.keys(rStatus.buildLog).length === 0) {
+        rStatus.buildLog = await captureBuilderLogs(clients, namespace);
+      }
       // Mark reconcile status as failed
       rStatus.phase = "failed";
       rStatus.finishedAt = new Date().toISOString();
