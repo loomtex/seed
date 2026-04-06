@@ -29,7 +29,7 @@ export interface ReconcileStatus {
   startedAt: string;          // ISO timestamp
   finishedAt: string;         // ISO timestamp (empty if in progress)
   error: string;              // last error message (empty on success)
-  buildLog: Record<string, string[]>; // pod name → builder output (cached from last build)
+  buildLog: Record<string, string[]>; // instance name → builder output (cached from last build)
   instances: Record<string, InstanceBuildStatus>;
 }
 
@@ -379,8 +379,9 @@ async function handleBuildLog(
   const pods = await clients.core.listNamespacedPod({ namespace, labelSelector });
   if (pods.items.length > 0) {
     // Live pods — return their logs directly
-    const allLogs: { pod: string; lines: string[] }[] = [];
+    const allLogs: { name: string; lines: string[] }[] = [];
     for (const pod of pods.items) {
+      const inst = pod.metadata?.labels?.[LABELS.INSTANCE] || "unknown";
       const podName = pod.metadata?.name || "unknown";
       try {
         const logResponse = await clients.core.readNamespacedPodLog({
@@ -388,9 +389,9 @@ async function handleBuildLog(
           namespace,
           tailLines,
         });
-        allLogs.push({ pod: podName, lines: (logResponse as string).split("\n").filter(Boolean) });
+        allLogs.push({ name: inst, lines: (logResponse as string).split("\n").filter(Boolean) });
       } catch {
-        allLogs.push({ pod: podName, lines: ["(logs unavailable)"] });
+        allLogs.push({ name: inst, lines: ["(logs unavailable)"] });
       }
     }
     jsonResponse(res, 200, { source: "live", builds: allLogs });
@@ -401,8 +402,8 @@ async function handleBuildLog(
   const reconcile = reconcileStatuses.get(namespace);
   if (reconcile?.buildLog && Object.keys(reconcile.buildLog).length > 0) {
     const builds = Object.entries(reconcile.buildLog)
-      .filter(([pod]) => !instance || pod.includes(instance))
-      .map(([pod, lines]) => ({ pod, lines }));
+      .filter(([name]) => !instance || name === instance)
+      .map(([name, lines]) => ({ name, lines }));
     if (builds.length > 0) {
       jsonResponse(res, 200, { source: "cached", builds });
       return;
