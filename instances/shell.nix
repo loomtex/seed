@@ -455,12 +455,19 @@ let
         if [ "$JSON_OUT" = true ]; then
           echo "$RESULT" | jq .
         else
+          FAILED=$(echo "$RESULT" | jq -r '.failed')
           SOURCE=$(echo "$RESULT" | jq -r '.source')
-          [ "$SOURCE" = "cached" ] && printf '\033[2m(cached from last build)\033[0m\n'
-          echo "$RESULT" | jq -r '.builds[] |
-            "\u001b[1;4m\(.name)\u001b[0m",
-            (.lines[] | "  \(.)"),
-            ""'
+
+          # Without an instance filter, only show logs on failure
+          if [ -z "$BLOG_INSTANCE" ] && [ "$FAILED" != "true" ]; then
+            printf '\033[2mlast build succeeded — specify an instance to view logs\033[0m\n'
+          else
+            [ "$SOURCE" = "cached" ] && printf '\033[2m(cached from last build)\033[0m\n'
+            echo "$RESULT" | jq -r '.builds[] |
+              "\u001b[1;4m\(.name)\u001b[0m",
+              (.lines[] | "  \(.)"),
+              ""'
+          fi
         fi
         ;;
 
@@ -509,7 +516,7 @@ let
         echo "  replant <identity> <new-uri>    change source URI (identity preserved)"
         echo "  status [repo] [-w N]            show instance status (default: all repos)"
         echo "  logs <[repo/]instance>          show recent logs (default: 100 lines)"
-        echo "  build-log [repo] [instance]     show nix build output from last build"
+        echo "  build-log [repo] [instance]     show nix build output (failures only without instance)"
         echo "  restart <[repo/]instance>       restart an instance"
         echo "  keys <[repo/]instance>          show age public key (for sops encryption)"
         echo "  help                            show this help"
