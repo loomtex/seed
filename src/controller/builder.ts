@@ -209,7 +209,7 @@ echo "[builder] done"
 }
 
 /**
- * Capture logs from builder pods, keyed by pod name.
+ * Capture logs from builder pods, keyed by instance name.
  * Call before cleanup to preserve logs in reconcile status.
  */
 export async function captureBuilderLogs(
@@ -223,6 +223,7 @@ export async function captureBuilderLogs(
       labelSelector: "seed.loom.farm/builder=true",
     });
     for (const pod of pods.items) {
+      const instance = pod.metadata?.labels?.[LABELS.INSTANCE] || "unknown";
       const podName = pod.metadata?.name;
       if (!podName) continue;
       try {
@@ -231,9 +232,9 @@ export async function captureBuilderLogs(
           namespace,
           tailLines: 200,
         });
-        logs[podName] = (logResponse as string).split("\n").filter(Boolean);
+        logs[instance] = (logResponse as string).split("\n").filter(Boolean);
       } catch {
-        logs[podName] = ["(logs unavailable)"];
+        logs[instance] = ["(logs unavailable)"];
       }
     }
   } catch {
