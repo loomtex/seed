@@ -168,7 +168,6 @@ let
     ARG2=""
     JSON_OUT=false
     FOLLOW=false
-    BUILD_LOG=false
     LINES=""
     WATCH=0
 
@@ -178,7 +177,6 @@ let
         --json)   JSON_OUT=true ;;
         --follow) FOLLOW=true ;;
         -f)       FOLLOW=true ;;
-        --build|-b) BUILD_LOG=true ;;
         --lines)  shift; LINES="''${1:-}" ;;
         --watch|-w) WATCH="''${2:-5}"; shift ;;
         *)        if [ -z "$ARG" ]; then ARG="$1"; elif [ -z "$ARG2" ]; then ARG2="$1"; elif [ -z "$ARG3" ]; then ARG3="$1"; fi ;;
@@ -359,73 +357,110 @@ let
       logs)
         require_repos
         if [ -z "$ARG" ]; then
-          echo "usage: logs <[repo/]instance> [-f|--follow] [--lines N] [--build] [--json]" >&2
+          echo "usage: logs <[repo/]instance> [-f|--follow] [--lines N] [--json]" >&2
           exit 1
         fi
 
         resolve_instance "$ARG"
 
-        if [ "$BUILD_LOG" = true ]; then
-          # Build log mode: logs <instance> --build
-          BLOG_URL="$API/ns/$RESOLVED_NS/build-log?instance=$RESOLVED_INSTANCE"
-          RESULT=$(curl -sf "$BLOG_URL") || {
-            echo "no build logs available for $RESOLVED_INSTANCE" >&2
+        # Build query string
+        QUERY=""
+        [ -n "$LINES" ] && QUERY="lines=$LINES"
+        if [ "$FOLLOW" = true ]; then
+          [ -n "$QUERY" ] && QUERY="$QUERY&follow=true" || QUERY="follow=true"
+        fi
+        LOG_URL="$API/ns/$RESOLVED_NS/logs/$RESOLVED_INSTANCE"
+        [ -n "$QUERY" ] && LOG_URL="$LOG_URL?$QUERY"
+
+        if [ "$FOLLOW" = true ]; then
+          # Streaming mode — read SSE events line by line
+          curl -sfN "$LOG_URL" | while IFS= read -r line; do
+            case "$line" in
+              data:\ *)
+                DATA="''${line#data: }"
+                if [ "$JSON_OUT" = true ]; then
+                  echo "$DATA"
+                else
+                  echo "$DATA" | jq -r '.line |
+                    if test(":") then
+                      "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
+                    else . end'
+                fi
+                ;;
+            esac
+          done
+        else
+          RESULT=$(curl -sf "$LOG_URL") || {
+            echo "error: failed to fetch logs for $RESOLVED_INSTANCE" >&2
             exit 1
           }
-
           if [ "$JSON_OUT" = true ]; then
             echo "$RESULT" | jq .
           else
-            SOURCE=$(echo "$RESULT" | jq -r '.source')
-            [ "$SOURCE" = "cached" ] && printf '\033[2m(cached from last build)\033[0m\n'
-            echo "$RESULT" | jq -r '.builds[] | .lines[]'
-          fi
-        else
-          # Instance log mode
-          QUERY=""
-          [ -n "$LINES" ] && QUERY="lines=$LINES"
-          if [ "$FOLLOW" = true ]; then
-            [ -n "$QUERY" ] && QUERY="$QUERY&follow=true" || QUERY="follow=true"
-          fi
-          LOG_URL="$API/ns/$RESOLVED_NS/logs/$RESOLVED_INSTANCE"
-          [ -n "$QUERY" ] && LOG_URL="$LOG_URL?$QUERY"
-
-          if [ "$FOLLOW" = true ]; then
-            # Streaming mode — read SSE events line by line
-            curl -sfN "$LOG_URL" | while IFS= read -r line; do
-              case "$line" in
-                data:\ *)
-                  DATA="''${line#data: }"
-                  if [ "$JSON_OUT" = true ]; then
-                    echo "$DATA"
-                  else
-                    echo "$DATA" | jq -r '.line |
-                      if test(":") then
-                        "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
-                      else . end'
-                  fi
-                  ;;
-              esac
-            done
-          else
-            RESULT=$(curl -sf "$LOG_URL") || {
-              echo "error: failed to fetch logs for $RESOLVED_INSTANCE" >&2
-              exit 1
-            }
-            if [ "$JSON_OUT" = true ]; then
-              echo "$RESULT" | jq .
-            else
-              echo "$RESULT" | jq -r '.lines[] |
-                # Colorize unit prefix in cyan
-                if test(":") then
-                  "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
-                else . end'
-              NOTE=$(echo "$RESULT" | jq -r '.note // empty')
-              if [ -n "$NOTE" ]; then
-                printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
-              fi
+            echo "$RESULT" | jq -r '.lines[] |
+              # Colorize unit prefix in cyan
+              if test(":") then
+                "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
+              else . end'
+            NOTE=$(echo "$RESULT" | jq -r '.note // empty')
+            if [ -n "$NOTE" ]; then
+              printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
             fi
           fi
+        fi
+        ;;
+
+      build-log)
+        require_repos
+        # build-log [repo] [--instance NAME]
+        # If ARG looks like a repo, use it; otherwise treat as instance filter
+        BLOG_REPO=""
+        BLOG_INSTANCE=""
+        if [ -n "$ARG" ]; then
+          # Check if it's a known repo name
+          FOUND=false
+          for i in "''${!REPO_NAMES[@]}"; do
+            if [ "''${REPO_NAMES[$i]}" = "$ARG" ]; then
+              FOUND=true
+              break
+            fi
+          done
+          if [ "$FOUND" = true ]; then
+            BLOG_REPO="$ARG"
+            BLOG_INSTANCE="''${ARG2:-}"
+          else
+            # Not a repo — treat as instance filter on first/only repo
+            BLOG_INSTANCE="$ARG"
+          fi
+        fi
+
+        # If no repo specified and only one repo, use it
+        if [ -z "$BLOG_REPO" ] && [ ''${#REPO_NAMES[@]} -eq 1 ]; then
+          BLOG_REPO="''${REPO_NAMES[0]}"
+        elif [ -z "$BLOG_REPO" ]; then
+          echo "error: multiple repos — specify which one: build-log <repo> [instance]" >&2
+          echo "available: ''${REPO_NAMES[*]}" >&2
+          exit 1
+        fi
+
+        NS=$(resolve_repo "$BLOG_REPO") || exit 1
+        BLOG_URL="$API/ns/$NS/build-log"
+        [ -n "$BLOG_INSTANCE" ] && BLOG_URL="$BLOG_URL?instance=$BLOG_INSTANCE"
+
+        RESULT=$(curl -sf "$BLOG_URL") || {
+          echo "error: failed to fetch build logs" >&2
+          exit 1
+        }
+
+        if [ "$JSON_OUT" = true ]; then
+          echo "$RESULT" | jq .
+        else
+          SOURCE=$(echo "$RESULT" | jq -r '.source')
+          [ "$SOURCE" = "cached" ] && printf '\033[2m(cached from last build)\033[0m\n'
+          echo "$RESULT" | jq -r '.builds[] |
+            "\u001b[1;4m\(.name)\u001b[0m",
+            (.lines[] | "  \(.)"),
+            ""'
         fi
         ;;
 
@@ -474,7 +509,7 @@ let
         echo "  replant <identity> <new-uri>    change source URI (identity preserved)"
         echo "  status [repo] [-w N]            show instance status (default: all repos)"
         echo "  logs <[repo/]instance>          show recent logs (default: 100 lines)"
-        echo "  logs <instance> --build         show nix build output for an instance"
+        echo "  build-log [repo] [instance]     show nix build output from last build"
         echo "  restart <[repo/]instance>       restart an instance"
         echo "  keys <[repo/]instance>          show age public key (for sops encryption)"
         echo "  help                            show this help"
@@ -487,7 +522,8 @@ let
         echo "  status seed                     status of the 'seed' repo"
         echo "  logs web                        logs for 'web' (auto-resolves repo)"
         echo "  logs seed/web -f                follow logs for 'web' in 'seed' repo"
-        echo "  logs silo --build               nix build output for silo"
+        echo "  build-log seed                  build output for all instances"
+        echo "  build-log seed silo             build output for silo only"
         echo "  restart shoot-demo/shoot-demo"
         echo "  keys web                        age public key for sops encryption"
         echo ""
