@@ -33,11 +33,7 @@ export async function renderRepo(el, name) {
       <h2>${esc(name)}</h2>
       <div class="repo-meta">
         <code class="clone-url">git clone silo.loom.farm:${esc(name)}.git</code>
-        <span class="repo-links">
-          <a href="/${esc(name)}/log" title="Commit log">log</a>
-          <a href="/${esc(name)}/tree/" title="File tree">tree</a>
-          <a href="/${esc(name)}/diff/" title="Diffs">diff</a>
-        </span>
+        <span class="repo-links"></span>
       </div>
       <div id="repo-commit" class="repo-commit"></div>
     </div>
@@ -66,9 +62,7 @@ export async function renderRepo(el, name) {
       return;
     }
     const rows = entries.map((e) => {
-      const href = e.type === "tree"
-        ? `${BASE}/${esc(name)}/tree/${esc(e.path)}`
-        : `/${esc(name)}/tree/${esc(e.path)}`;
+      const href = `${BASE}/${esc(name)}/tree/${esc(e.path)}`;
       return `<tr>
         <td>${fileIcon(e.type)} <a href="${href}">${esc(e.path)}</a></td>
       </tr>`;
@@ -173,9 +167,7 @@ export async function renderRepoTree(el, name, subpath) {
     <div class="repo-header">
       <h2>${breadcrumb}</h2>
       <div class="repo-meta">
-        <span class="repo-links">
-          <a href="/${esc(name)}/tree/${esc(subpath)}">view in cgit</a>
-        </span>
+        <span class="repo-links"></span>
       </div>
     </div>
     <div id="repo-tree" class="loading">Loading...</div>
@@ -190,9 +182,7 @@ export async function renderRepoTree(el, name, subpath) {
     }
     const rows = entries.map((e) => {
       const fullPath = subpath + "/" + e.path;
-      const href = e.type === "tree"
-        ? `${BASE}/${esc(name)}/tree/${esc(fullPath)}`
-        : `/${esc(name)}/tree/${esc(fullPath)}`;
+      const href = `${BASE}/${esc(name)}/tree/${esc(fullPath)}`;
       return `<tr>
         <td>${fileIcon(e.type)} <a href="${href}">${esc(e.path)}</a></td>
       </tr>`;

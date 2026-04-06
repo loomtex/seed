@@ -284,31 +284,11 @@ in {
     serverAliases = [ "silo.s-gaydazldmnsg.seed.loom.farm" ];
     enableACME = true;
     forceSSL = true;
-    locations."= /ui" = {
-      return = "302 /ui/";
-    };
-    locations."/ui/" = {
-      alias = "${siloUi}/";
+    locations."/" = {
+      root = "${siloUi}";
       extraConfig = ''
         index index.html;
-        try_files $uri $uri/ /ui/index.html;
-      '';
-    };
-    locations."= /ui/index.html" = {
-      alias = "${siloUi}/index.html";
-    };
-    locations."/cgit-data/" = {
-      alias = "${pkgs.cgit}/cgit/";
-    };
-    locations."/" = {
-      extraConfig = ''
-        include ${pkgs.nginx}/conf/fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME "${pkgs.cgit}/cgit/cgit.cgi";
-        fastcgi_param SCRIPT_NAME "";
-        fastcgi_param PATH_INFO $uri;
-        fastcgi_param QUERY_STRING $query_string;
-        fastcgi_param HTTP_HOST $server_name;
-        fastcgi_pass unix:/run/fcgiwrap/fcgiwrap.sock;
+        try_files $uri $uri/ /index.html;
       '';
     };
   };
@@ -316,7 +296,5 @@ in {
   services.nginx.enable = true;
   services.nginx.validateConfigFile = true;
 
-  # nginx needs fcgiwrap socket ready
-  systemd.services.nginx.after = [ "fcgiwrap.service" ];
-  systemd.services.nginx.wants = [ "fcgiwrap.service" ];
+  # cgit disconnected — definition kept for reference but not routed
 }
