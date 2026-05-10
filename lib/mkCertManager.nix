@@ -40,7 +40,6 @@ let
   controllerBin = buildCertManagerBin "controller" "sha256-SW/LNkAwq1A2Ua2v6fPIl9y+arcbauLk5F0wANLNSRU=";
   webhookBin = buildCertManagerBin "webhook" "sha256-BPCsFK+Hb83vg3H0h08JxRmM9032WtA6smyjbzTENFo=";
   cainjectorBin = buildCertManagerBin "cainjector" "sha256-l3EDiQEkEzZLUkQNz6rr3H1DM0rOU4OKXpIcKnJ/FSI=";
-  startupapicheckBin = buildCertManagerBin "startupapicheck" "sha256-kNw+jih+YCuxbnoYmsk9hdJwF6H3+7T87FtxlAif+1I=";
 
   # --- nix-snapshotter images ---
 
@@ -59,10 +58,6 @@ let
     entrypoint = "${cainjectorBin}/bin/cainjector-binary";
   };
 
-  startupapicheck = mkK8sComponent {
-    name = "cert-manager-startupapicheck";
-    entrypoint = "${startupapicheckBin}/bin/startupapicheck-binary";
-  };
 
   # --- Helm chart for manifest generation ---
 
@@ -81,7 +76,7 @@ let
     securityContext = securityContext;
     webhook.securityContext = securityContext;
     cainjector.securityContext = securityContext;
-    startupapicheck.securityContext = securityContext;
+    startupapicheck.enabled = false;
   } extraValues;
 
   # Image ref replacements: sed the rendered manifests to swap quay.io
@@ -91,7 +86,6 @@ let
     { from = "quay.io/jetstack/cert-manager-controller:v${version}"; to = controller.imageRef; }
     { from = "quay.io/jetstack/cert-manager-cainjector:v${version}"; to = cainjector.imageRef; }
     { from = "quay.io/jetstack/cert-manager-webhook:v${version}"; to = webhook.imageRef; }
-    { from = "quay.io/jetstack/cert-manager-startupapicheck:v${version}"; to = startupapicheck.imageRef; }
   ];
 
   sedExpr = lib.concatMapStringsSep " " (r:
@@ -159,10 +153,6 @@ let
     emit webhook-mutating-webhook.yaml
     emit webhook-validating-webhook.yaml
 
-    # 8. Startup check
-    emit startupapicheck-serviceaccount.yaml
-    emit startupapicheck-rbac.yaml
-    emit startupapicheck-job.yaml
   '';
 
   # Self-signed ClusterIssuer + CA issuer for internal platform PKI.
@@ -216,5 +206,5 @@ let
 in {
   manifests = renderedManifests;
   inherit namespace platformCA;
-  images = [ controller.image webhook.image cainjector.image startupapicheck.image ];
+  images = [ controller.image webhook.image cainjector.image ];
 }
