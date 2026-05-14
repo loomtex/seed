@@ -173,4 +173,4 @@ home-manager.users.myuser = {
 
 ## License
 
-MIT
+AGPL-3.0 — see [LICENSE](LICENSE).

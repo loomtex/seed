@@ -882,4 +882,4 @@ seed.shoot.enable = false;          # ephemeral VM forking
 
 ## License
 
-MIT
+AGPL-3.0 — see [LICENSE](LICENSE).
