@@ -98,8 +98,22 @@ func (m model) fetchLogs(namespace, instance string) tea.Cmd {
 		if err != nil {
 			return logsMsg{err: err}
 		}
-		return logsMsg{lines: resp.Lines}
+		lines := make([]string, len(resp.Lines))
+		for i, l := range resp.Lines {
+			lines[i] = formatLogLine(l)
+		}
+		return logsMsg{lines: lines}
 	}
+}
+
+// formatLogLine renders a log line as "MM-DD HH:MM:SS message", matching the
+// seed shell. ts is ISO8601 (e.g. 2026-06-02T00:08:07.852Z); lines without a
+// timestamp (early boot) render the message alone.
+func formatLogLine(l LogLine) string {
+	if len(l.Ts) >= 19 {
+		return strings.Replace(l.Ts[5:19], "T", " ", 1) + " " + l.Msg
+	}
+	return l.Msg
 }
 
 func (m model) restartInstance(namespace, instance string) tea.Cmd {

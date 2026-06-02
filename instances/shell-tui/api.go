@@ -66,12 +66,19 @@ type NamespaceEntry struct {
 	Identity  string `json:"identity"`
 }
 
+// LogLine is one parsed pod-log line: an ISO8601 timestamp (empty when none
+// could be determined) and the human-readable message.
+type LogLine struct {
+	Ts  string `json:"ts"`
+	Msg string `json:"msg"`
+}
+
 // LogsResponse from GET /api/ns/:namespace/logs/:instance
 type LogsResponse struct {
-	Instance string   `json:"instance"`
-	Pod      string   `json:"pod"`
-	Lines    []string `json:"lines"`
-	Note     string   `json:"note"`
+	Instance string    `json:"instance"`
+	Pod      string    `json:"pod"`
+	Lines    []LogLine `json:"lines"`
+	Note     string    `json:"note"`
 }
 
 // RestartResponse from POST /api/ns/:namespace/restart/:instance
