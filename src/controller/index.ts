@@ -1205,7 +1205,8 @@ async function listSeedFlakes(
       plural: "seedflakes",
     }) as { items: SeedFlake[] };
     return result.items;
-  } catch {
+  } catch (err) {
+    log("controller", `listSeedFlakes failed: ${err}`);
     return [];
   }
 }
@@ -1580,6 +1581,22 @@ async function main(): Promise<void> {
 
   log("controller", `starting (flakes=${config.flakePaths.join(", ")})`);
 
+  // Gate everything below on the k8s API being reachable. loadSeedFlakes issues
+  // the first API call; if it runs before the connection is ready, listSeedFlakes
+  // silently returns [] and flakeStates (plus the key index) stays empty until the
+  // next restart — webhooks can't recover it since they skip unknown flakes.
+  // (listNamespace — we have RBAC for namespaces, not nodes.)
+  log("controller", "waiting for k8s API...");
+  while (true) {
+    try {
+      await clients.core.listNamespace();
+      break;
+    } catch {
+      await sleep(5000);
+    }
+  }
+  log("controller", "k8s API ready");
+
   // Per-flake state
   const flakeStates = new Map<string, FlakeState>();
   const namespaceToFlake = new Map<string, string>();
@@ -1642,18 +1659,6 @@ async function main(): Promise<void> {
       log("controller", `ACME initialization failed: ${err}`);
     }
   }
-
-  // Wait for k8s API (use listNamespace — we have RBAC for namespaces, not nodes)
-  log("controller", "waiting for k8s API...");
-  while (true) {
-    try {
-      await clients.core.listNamespace();
-      break;
-    } catch {
-      await sleep(5000);
-    }
-  }
-  log("controller", "k8s API ready");
 
   // Load platform CA certificate from cert-manager for seed trust
   let platformCACert = "";
