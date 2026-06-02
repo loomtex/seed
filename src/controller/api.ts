@@ -416,18 +416,30 @@ async function handleBuildLog(
   jsonResponse(res, 404, { error: "no build logs available" });
 }
 
-/** Parse a journal JSON line into a human-readable string. */
-function parseLogLine(line: string): string {
+export interface LogLine {
+  ts: string; // ISO8601 (UTC), empty if none could be determined
+  msg: string;
+}
+
+/** Parse a journal-JSON log line into a timestamp + human-readable message.
+ *  Pod logs are journald JSON forwarded to the console; __REALTIME_TIMESTAMP
+ *  is the event time in microseconds since the epoch. Non-JSON lines (e.g.
+ *  early boot before the journal starts) carry no timestamp. */
+export function parseLogLine(line: string): LogLine {
   try {
     const entry = JSON.parse(line);
     if (entry.MESSAGE) {
       const unit = entry.UNIT || entry.SYSLOG_IDENTIFIER || "";
-      return unit ? `${unit}: ${entry.MESSAGE}` : entry.MESSAGE;
+      const msg = unit ? `${unit}: ${entry.MESSAGE}` : entry.MESSAGE;
+      let ts = "";
+      const us = Number(entry.__REALTIME_TIMESTAMP);
+      if (Number.isFinite(us) && us > 0) ts = new Date(us / 1000).toISOString();
+      return { ts, msg };
     }
-    return line;
   } catch {
-    return line; // Not JSON, return as-is
+    // Not JSON — fall through to the raw line.
   }
+  return { ts: "", msg: line };
 }
 
 async function handleLogs(
@@ -542,14 +554,12 @@ async function handleLogFollow(
           buffer = lines.pop() || ""; // Keep incomplete line in buffer
           for (const line of lines) {
             if (!line) continue;
-            const msg = parseLogLine(line);
-            res.write(`data: ${JSON.stringify({ line: msg })}\n\n`);
+            res.write(`data: ${JSON.stringify(parseLogLine(line))}\n\n`);
           }
         });
         k8sRes.on("end", () => {
           if (buffer) {
-            const msg = parseLogLine(buffer);
-            res.write(`data: ${JSON.stringify({ line: msg })}\n\n`);
+            res.write(`data: ${JSON.stringify(parseLogLine(buffer))}\n\n`);
           }
           res.end();
         });

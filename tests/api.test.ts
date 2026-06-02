@@ -5,7 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { updateKeyIndex, handleApiRequest, initApi, updateValidNamespaces } from "../src/controller/api.js";
+import { updateKeyIndex, handleApiRequest, initApi, updateValidNamespaces, parseLogLine } from "../src/controller/api.js";
 
 // Mock KubeClients — we only test routing and key index, not k8s calls
 const mockClients = {
@@ -70,6 +70,63 @@ describe("API routing", () => {
     initApi(mockClients, {} as any, new Set(["s-valid"]));
     const { status } = await simulateRequest("GET", "/api/ns/s-invalid/status");
     assert.equal(status, 404);
+  });
+});
+
+describe("parseLogLine", () => {
+  it("extracts timestamp + unit-prefixed message from journal JSON", () => {
+    const line = JSON.stringify({
+      __REALTIME_TIMESTAMP: "1780358887852000",
+      UNIT: "sshd.service",
+      MESSAGE: "Accepted publickey",
+    });
+    const { ts, msg } = parseLogLine(line);
+    assert.equal(ts, "2026-06-02T00:08:07.852Z");
+    assert.equal(msg, "sshd.service: Accepted publickey");
+  });
+
+  it("produces the slice the shell's jq renderer formats (MM-DD HH:MM:SS)", () => {
+    // The shell renders `.ts[5:19] | gsub("T";" ")`. Pin that contract here so a
+    // change to the ISO shape can't silently break the shell's timestamp column.
+    const { ts } = parseLogLine(
+      JSON.stringify({ __REALTIME_TIMESTAMP: "1780358887852000", MESSAGE: "x" }),
+    );
+    assert.equal(ts.slice(5, 19).replace("T", " "), "06-02 00:08:07");
+  });
+
+  it("falls back to SYSLOG_IDENTIFIER when UNIT is absent", () => {
+    const { msg } = parseLogLine(
+      JSON.stringify({ SYSLOG_IDENTIFIER: "kernel", MESSAGE: "boot" }),
+    );
+    assert.equal(msg, "kernel: boot");
+  });
+
+  it("leaves the message unprefixed when there is no unit identifier", () => {
+    const { ts, msg } = parseLogLine(JSON.stringify({ MESSAGE: "bare message" }));
+    assert.equal(ts, "");
+    assert.equal(msg, "bare message");
+  });
+
+  it("emits an empty timestamp when __REALTIME_TIMESTAMP is missing or invalid", () => {
+    assert.equal(parseLogLine(JSON.stringify({ MESSAGE: "a" })).ts, "");
+    assert.equal(
+      parseLogLine(JSON.stringify({ __REALTIME_TIMESTAMP: "0", MESSAGE: "a" })).ts,
+      "",
+    );
+    assert.equal(
+      parseLogLine(JSON.stringify({ __REALTIME_TIMESTAMP: "notnum", MESSAGE: "a" })).ts,
+      "",
+    );
+  });
+
+  it("passes non-JSON lines through verbatim with no timestamp", () => {
+    const raw = "[    0.000000] Linux version 6.18";
+    assert.deepEqual(parseLogLine(raw), { ts: "", msg: raw });
+  });
+
+  it("passes JSON without a MESSAGE field through as the raw line", () => {
+    const line = JSON.stringify({ __REALTIME_TIMESTAMP: "1780358887852000", PRIORITY: "6" });
+    assert.deepEqual(parseLogLine(line), { ts: "", msg: line });
   });
 });
 

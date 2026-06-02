@@ -381,10 +381,12 @@ let
                 if [ "$JSON_OUT" = true ]; then
                   echo "$DATA"
                 else
-                  echo "$DATA" | jq -r '.line |
-                    if test(":") then
-                      "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
-                    else . end'
+                  echo "$DATA" | jq -r '
+                    (if (.ts // "") != "" then "\u001b[2m" + (.ts[5:19] | gsub("T"; " ")) + "\u001b[0m " else "" end) +
+                    ((.msg // .line) |
+                      if test(":") then
+                        "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
+                      else . end)'
                 fi
                 ;;
             esac
@@ -398,10 +400,13 @@ let
             echo "$RESULT" | jq .
           else
             echo "$RESULT" | jq -r '.lines[] |
-              # Colorize unit prefix in cyan
-              if test(":") then
-                "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
-              else . end'
+              # Object shape is {ts,msg}; tolerate the old bare-string shape too.
+              (if type == "object" then . else {ts:"", msg:.} end) |
+              (if (.ts // "") != "" then "\u001b[2m" + (.ts[5:19] | gsub("T"; " ")) + "\u001b[0m " else "" end) +
+              (.msg |
+                if test(":") then
+                  "\u001b[36m" + split(":")[0] + ":\u001b[0m" + (split(":")[1:] | join(":"))
+                else . end)'
             NOTE=$(echo "$RESULT" | jq -r '.note // empty')
             if [ -n "$NOTE" ]; then
               printf '\033[33mnote: %s\033[0m\n' "$NOTE" >&2
