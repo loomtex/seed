@@ -199,6 +199,9 @@
       # SSH any-key identity auth (used by seed-shell and silo)
       ssh-auth = ./ssh-auth.nix;
 
+      # silo's git service on a plain NixOS host (local stand-in for VM tests)
+      silo-standalone = ./instances/silo/standalone.nix;
+
       # Wrapped instance modules — seed.services.*
       postgresql = ./instance-modules/postgresql.nix;
       keycloak = ./instance-modules/keycloak.nix;
@@ -676,6 +679,8 @@ INITEOF
       shell = import ./tests/shell.nix { inherit self pkgs nixpkgs; };
       # Tests Vultr metadata API jq parsing (canned payloads, no network)
       metadata = import ./tests/metadata.nix { inherit pkgs; };
+      # silo behaviors relied on by loom enrollment, on silo-standalone (KVM)
+      silo-enrollment = import ./tests/silo/enrollment.nix { inherit self pkgs; };
     };
 
     templates = {
