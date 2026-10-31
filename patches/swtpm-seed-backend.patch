@@ -3,12 +3,17 @@ Split-path swtpm NVRAM backend for multi-host TPM.
 Routes "permall" (persistent keys/certs) to a shared directory (CephFS)
 and all other state (volatilestate, savestate) to a local tmpfs directory.
 No session-level lock — only a brief flock during permall writes.
+(Session exclusivity is enforced by the Kata shim's flock on
+<state-dir>/.session-lock, not by this backend.)
 
-This enables concurrent swtpm instances on multiple hosts sharing the
-same TPM identity without lock contention from the dir:// backend.
+Create-gate: a missing permall in the shared dir is an error unless
+SWTPM_SEED_ALLOW_CREATE=1 is set. This prevents swtpm from silently
+manufacturing a fresh TPM when the shared filesystem is not mounted.
+Other read errors and an empty permall are always errors.
 
 URI format: seed:///path/to/shared/dir
 Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
+Create opt-in: SWTPM_SEED_ALLOW_CREATE=1
 
 --- a/src/swtpm/Makefile.am
 +++ b/src/swtpm/Makefile.am
@@ -28,14 +33,13 @@ Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
  extern struct nvram_backend_ops nvram_dir_ops;
  extern struct nvram_backend_ops nvram_linear_ops;
 +extern struct nvram_backend_ops nvram_seed_ops;
-
-
+ 
+ 
  int SWTPM_NVRAM_PrintJson(void);
 
 --- a/src/swtpm/swtpm_nvstore.c
 +++ b/src/swtpm/swtpm_nvstore.c
-@@ -186,6 +186,8 @@
-     } else if (strncmp(backend_uri, "dir://", 6) == 0) {
+@@ -187,6 +187,8 @@
          g_nvram_backend_ops = &nvram_dir_ops;
      } else if (strncmp(backend_uri, "file://", 7) == 0) {
          g_nvram_backend_ops = &nvram_linear_ops;
@@ -47,7 +51,7 @@ Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
 
 --- /dev/null
 +++ b/src/swtpm/swtpm_nvstore_seed.c
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,449 @@
 +/*
 + * swtpm_nvstore_seed.c — Split-path NVRAM backend for multi-host TPM.
 + *
@@ -61,6 +65,11 @@ Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
 + *
 + * URI format: seed:///path/to/shared/dir
 + * Volatile dir: SWTPM_SEED_VOLATILE_DIR environment variable
++ *
++ * Create-gate: if permall is missing from the shared dir, loading fails
++ * unless SWTPM_SEED_ALLOW_CREATE=1 is set, in which case libtpms is told
++ * there is no state and manufactures a new TPM. Any other read error
++ * (and an empty permall) is always fatal.
 + *
 + * SPDX-License-Identifier: BSD-3-Clause
 + */
@@ -103,6 +112,18 @@ Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
 +    if (strcmp(name, "permall") == 0)
 +        return g_shared_dir;
 +    return g_volatile_dir;
++}
++
++/*
++ * Creating a brand-new TPM (no permall in the shared dir) is only allowed
++ * when SWTPM_SEED_ALLOW_CREATE=1. Without it a missing permall is an error.
++ */
++static TPM_BOOL
++allow_create(void)
++{
++    const char *v = getenv("SWTPM_SEED_ALLOW_CREATE");
++
++    return v != NULL && strcmp(v, "1") == 0;
 +}
 +
 +static TPM_RESULT
@@ -211,6 +232,7 @@ Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
 +    char filepath[FILENAME_MAX];
 +    struct stat statbuf;
 +    const char *dir;
++    TPM_BOOL is_permall = (strcmp(name, "permall") == 0);
 +
 +    dir = route_dir(name);
 +
@@ -221,7 +243,19 @@ Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
 +    if (rc == 0) {
 +        fd = open(filepath, O_RDONLY);
 +        if (fd < 0) {
-+            if (errno == ENOENT) {
++            if (errno == ENOENT && is_permall && !allow_create()) {
++                /*
++                 * Create-gate: a missing permall in the shared dir must
++                 * never silently turn into a freshly manufactured TPM
++                 * (e.g. CephFS not mounted yet → empty local dir). Only
++                 * an explicit opt-in may create a new TPM identity.
++                 */
++                logprintf(STDERR_FILENO,
++                          "SWTPM_NVRAM_LoadData_Seed: %s does not exist and "
++                          "SWTPM_SEED_ALLOW_CREATE=1 is not set; refusing to "
++                          "manufacture a new TPM\n", filepath);
++                rc = TPM_FAIL;
++            } else if (errno == ENOENT) {
 +                TPM_DEBUG("SWTPM_NVRAM_LoadData_Seed: No such file %s\n",
 +                          filepath);
 +                rc = TPM_RETRY;
@@ -246,6 +280,12 @@ Volatile dir: SWTPM_SEED_VOLATILE_DIR env var
 +
 +    if (rc == 0) {
 +        *length = statbuf.st_size;
++        if (is_permall && *length == 0) {
++            /* a truncated permall is corruption, never "no state" */
++            logprintf(STDERR_FILENO,
++                      "SWTPM_NVRAM_LoadData_Seed: %s is empty\n", filepath);
++            rc = TPM_FAIL;
++        }
 +    }
 +
 +    if ((rc == 0) && *length != 0) {
