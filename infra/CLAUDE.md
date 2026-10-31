@@ -60,6 +60,7 @@ infra/
 │   ├── server.nix         # Base server (nix flakes, common packages)
 │   ├── seed-ceph.nix      # Ceph MON + MGR + OSD (dmcrypt) per node
 │   ├── seed-cache.nix     # S3 binary cache (substituter + post-build-hook)
+│   ├── seed-build-pool.nix# Nodes are each other's ssh-ng remote builders
 │   ├── seed-luks.nix      # LUKS + Clevis/Tang auto-unlock
 │   ├── seed-vpc.nix       # Vultr VPC v1 static IP
 │   └── seed-controller.nix# Controller shared secrets

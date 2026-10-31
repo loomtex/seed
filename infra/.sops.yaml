@@ -67,6 +67,18 @@ creation_rules:
           - *puncher_atl1_1_age
           - *ada_age
 
+  # Secrets shared by the k3s nodes only (not stake/puncher/tang):
+  # the nix build pool SSH key, which is trusted by every node's daemon.
+  - path_regex: secrets/seed-nodes-atl1\.yaml$
+    key_groups:
+      - pgp:
+          - *admin_josh
+        age:
+          - *seed_atl1_1_age
+          - *seed_atl1_2_age
+          - *seed_atl1_3_age
+          - *ada_age
+
   - path_regex: secrets/luks-recovery\.yaml$
     key_groups:
       - pgp:
