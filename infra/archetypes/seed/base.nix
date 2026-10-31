@@ -1,8 +1,17 @@
 # Base configuration shared by all seed k3s nodes.
 # Host-specific settings (hostname, sopsFile, timeZone, hardware, controller)
 # are provided by the archetype functions in flake.nix.
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, clusterNodes, ... }:
 
+let
+  # Stagger auto-upgrades 30 minutes apart in node order (04:00, 04:30, ...),
+  # so the nodes don't all rebuild at once and bounce the same derivations
+  # between each other through the build pool.
+  nodeIndex = lib.lists.findFirstIndex (n: n == config.networking.hostName) 0
+    (lib.sort lib.lessThan (lib.attrNames clusterNodes));
+  upgradeMinutes = 4 * 60 + 30 * nodeIndex;
+  upgradeTime = "${lib.fixedWidthNumber 2 (upgradeMinutes / 60)}:${lib.fixedWidthNumber 2 (lib.mod upgradeMinutes 60)}";
+in
 {
   imports = [
     ../../profiles/server.nix
@@ -59,8 +68,10 @@
   environment.variables.NIX_REMOTE = "daemon";
 
   system.autoUpgrade = {
-    enable = true;
-    dates = "04:00";
+    # Disabled 2026-10-31 while the build pool and shim-owned swtpm work is
+    # deployed from branches; master would otherwise roll out unreviewed state.
+    enable = false;
+    dates = upgradeTime;
     flake = "github:loomtex/seed?dir=infra";
     allowReboot = false;
   };
