@@ -70,8 +70,7 @@ export async function configureMetalLB(
   );
 
   if (!ready) {
-    log("metallb", "not ready after 5 minutes, skipping pool config");
-    return;
+    throw new Error("CRDs/webhook not ready after 5 minutes");
   }
 
   // Build address list
@@ -249,7 +248,7 @@ async function configureL2(clients: KubeClients): Promise<void> {
   );
 }
 
-/** Create-or-update a custom resource. */
+/** Create-or-update a custom resource. Throws on any failure so callers can retry. */
 async function applyCustomResource(
   api: import("@kubernetes/client-node").CustomObjectsApi,
   group: string,
@@ -259,32 +258,24 @@ async function applyCustomResource(
   name: string,
   body: Record<string, unknown>,
 ): Promise<void> {
+  let existing: Record<string, unknown> | null = null;
   try {
-    const existing = await api.getNamespacedCustomObject({ group, version, namespace, plural, name }) as Record<string, unknown>;
+    existing = await api.getNamespacedCustomObject({ group, version, namespace, plural, name }) as Record<string, unknown>;
+  } catch (err) {
+    if ((err as { code?: number }).code !== 404) throw err;
+  }
+
+  if (existing) {
     // Exists — update it, preserving resourceVersion
     const metadata = existing.metadata as Record<string, unknown> | undefined;
     const bodyMeta = (body.metadata || {}) as Record<string, unknown>;
     bodyMeta.resourceVersion = metadata?.resourceVersion;
     body.metadata = bodyMeta;
-    try {
-      await api.replaceNamespacedCustomObject({ group, version, namespace, plural, name, body });
-      log("metallb", `updated ${plural}/${name}`);
-    } catch (replaceErr) {
-      log("metallb", `failed to update ${plural}/${name}: ${replaceErr}`);
-    }
-  } catch {
-    // Doesn't exist (or get failed) — try create
-    try {
-      await api.createNamespacedCustomObject({ group, version, namespace, plural, body });
-      log("metallb", `created ${plural}/${name}`);
-    } catch (createErr) {
-      // 409 = already exists, which is fine
-      const code = (createErr as { code?: number }).code;
-      if (code === 409) {
-        log("metallb", `${plural}/${name} already exists, skipping`);
-      } else {
-        throw createErr;
-      }
-    }
+    await api.replaceNamespacedCustomObject({ group, version, namespace, plural, name, body });
+    log("metallb", `updated ${plural}/${name}`);
+    return;
   }
+
+  await api.createNamespacedCustomObject({ group, version, namespace, plural, body });
+  log("metallb", `created ${plural}/${name}`);
 }

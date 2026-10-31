@@ -168,6 +168,69 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** HTTP status from a k8s client error, or undefined (network error, bug, etc.). */
+export function apiErrorCode(err: unknown): number | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "number" ? code : undefined;
+}
+
+export function isNotFound(err: unknown): boolean {
+  return apiErrorCode(err) === 404;
+}
+
+/** Read an object, returning null on 404. Any other error propagates. */
+export async function getOrNull<T>(read: () => Promise<T>): Promise<T | null> {
+  try {
+    return await read();
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+/** Swallow a 404 (e.g. deleting something already gone); rethrow anything else. */
+export function ignoreNotFound(err: unknown): void {
+  if (!isNotFound(err)) throw err;
+}
+
+/**
+ * Worth retrying: 429 (throttling / watch cache "(re)initializing"), 5xx,
+ * 409 (stale resourceVersion — the retried op re-reads), and network errors
+ * (Node sets a string code like ECONNRESET). Validation errors, 403s and
+ * plain bugs are not.
+ */
+export function isRetryableApiError(err: unknown): boolean {
+  const code = apiErrorCode(err);
+  if (code !== undefined) return code === 409 || code === 429 || code >= 500;
+  const sysCode = (err as { code?: unknown } | null)?.code;
+  return typeof sysCode === "string" && sysCode.startsWith("E");
+}
+
+/** A retryable API error that outlasted withApiRetry's budget. */
+export class TransientApiError extends Error {}
+
+/**
+ * Run a k8s API operation, retrying retryable errors with backoff for up to
+ * ~2 minutes. The op should be a whole read-then-write step so a 409 retry
+ * re-reads. Throws the original error if it isn't retryable, or
+ * TransientApiError once the budget runs out.
+ */
+export async function withApiRetry<T>(desc: string, op: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 120_000;
+  for (let delay = 1000; ; delay = Math.min(delay * 2, 15_000)) {
+    try {
+      return await op();
+    } catch (err) {
+      if (!isRetryableApiError(err)) throw err;
+      if (Date.now() + delay > deadline) {
+        throw new TransientApiError(`${desc}: ${err}`, { cause: err });
+      }
+      log("kube", `${desc} failed, retrying in ${delay / 1000}s: ${err}`);
+      await sleep(delay);
+    }
+  }
+}
+
 /**
  * JSON.stringify with deterministic key ordering.
  * Prevents false diffs when comparing k8s objects whose keys
@@ -210,12 +273,7 @@ export async function applyResource(
   try {
     switch (kind) {
       case "Service": {
-        let existing: k8s.V1Service | null = null;
-        try {
-          existing = await core.readNamespacedService({ name, namespace });
-        } catch {
-          // Not found — will create below
-        }
+        const existing = await getOrNull(() => core.readNamespacedService({ name, namespace }));
 
         if (existing) {
           // Deep-clone to avoid mutating the original manifest (which may be
@@ -255,28 +313,24 @@ export async function applyResource(
         break;
       }
       case "PersistentVolumeClaim":
-        try {
-          await core.readNamespacedPersistentVolumeClaim({ name, namespace });
-          // PVC exists — immutable, skip
-          return;
-        } catch {
-          await core.createNamespacedPersistentVolumeClaim({
-            namespace,
-            body: manifest as k8s.V1PersistentVolumeClaim,
-          });
-        }
+        // PVC exists — immutable, skip
+        if (await getOrNull(() => core.readNamespacedPersistentVolumeClaim({ name, namespace }))) return;
+        await core.createNamespacedPersistentVolumeClaim({
+          namespace,
+          body: manifest as k8s.V1PersistentVolumeClaim,
+        });
         break;
       case "Namespace":
-        try {
-          await core.readNamespace({ name });
-        } catch {
-          await core.createNamespace({ body: manifest as k8s.V1Namespace });
-        }
+        if (await getOrNull(() => core.readNamespace({ name }))) return;
+        await core.createNamespace({ body: manifest as k8s.V1Namespace });
         break;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to apply ${kind} ${name}: ${msg}`);
+    // Keep the status code so callers can tell retryable errors apart.
+    throw Object.assign(new Error(`Failed to apply ${kind} ${name}: ${msg}`, { cause: err }), {
+      code: (err as { code?: unknown } | null)?.code,
+    });
   }
 }
 
@@ -294,12 +348,7 @@ export async function applyDeployment(
 
   // Separate read from write — a replace 409 (stale resourceVersion during
   // rollout) must not fall through to create, which would 409 AlreadyExists.
-  let existing: k8s.V1Deployment | null = null;
-  try {
-    existing = await apps.readNamespacedDeployment({ name, namespace });
-  } catch {
-    // Not found — will create below
-  }
+  const existing = await getOrNull(() => apps.readNamespacedDeployment({ name, namespace }));
 
   if (existing) {
     // Skip replace if neither spec nor labels changed — prevents feedback loop.

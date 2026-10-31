@@ -10,7 +10,7 @@
 // k8s handles pod replacement, restart, and health.
 
 import * as k8s from "@kubernetes/client-node";
-import { loadKubeConfig, makeClients, deriveNamespace, deriveNamespaceFromIdentity, computeGeneration, log, sleep, applyResource, applyDeployment } from "../shared/kube.js";
+import { loadKubeConfig, makeClients, deriveNamespace, deriveNamespaceFromIdentity, computeGeneration, log, sleep, applyResource, applyDeployment, getOrNull, ignoreNotFound, withApiRetry, TransientApiError } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
 import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult, SeedDNSRecord, SeedDomain, CombineConfig, CombineDomainConfig } from "../shared/types.js";
 import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask, generateInstanceDNSRecords, generateDomainCRD } from "./manifests.js";
@@ -152,6 +152,15 @@ async function getFlakeRevision(flakePath: string): Promise<string | null> {
   }
 }
 
+/**
+ * Download a flake's source tree without evaluating it. Throws only when the
+ * source is unreachable — a broken flake.nix still prefetches fine, so this
+ * separates fetch failures (worth retrying) from build failures (wait for a push).
+ */
+async function prefetchFlake(flakePath: string): Promise<void> {
+  await execFileAsync("nix", ["flake", "prefetch", flakePath, "--json"], { timeout: 120_000 });
+}
+
 // --- Authorized keys extraction ---
 
 /**
@@ -182,8 +191,10 @@ async function extractAuthorizedKeys(
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith("#"));
-  } catch {
-    return [];
+  } catch (err) {
+    // Fetch/eval failure (e.g. silo not up yet on cold start) — not the same as
+    // "no keys". Let buildKeyIndex keep the last known keys for this flake.
+    throw new Error(`failed to read .authorized_keys for ${flakePath}: ${err}`);
   }
 }
 
@@ -206,18 +217,32 @@ function repoName(flakePath: string): string {
   return flakePath;
 }
 
+// Last successfully read .authorized_keys per flake, so a transient fetch
+// failure doesn't drop a flake's keys from the index.
+const lastAuthorizedKeys = new Map<string, string[]>();
+
 /**
  * Build a key→namespace index from all flake states.
- * Called after reconciliation to update the API's key index.
+ * Flakes whose keys can't be fetched keep their last known keys; `failed`
+ * counts flakes that have never been read successfully or failed this round.
  */
 async function buildKeyIndex(
   flakeStates: Map<string, FlakeState>,
   refresh: boolean,
-): Promise<KeyIndex> {
+): Promise<KeyIndex & { failed: number }> {
   const keys: Record<string, NamespaceEntry[]> = {};
+  let failed = 0;
 
   for (const [flakePath, fs] of flakeStates) {
-    const authorizedKeys = await extractAuthorizedKeys(flakePath, refresh);
+    let authorizedKeys: string[];
+    try {
+      authorizedKeys = await extractAuthorizedKeys(flakePath, refresh);
+      lastAuthorizedKeys.set(flakePath, authorizedKeys);
+    } catch (err) {
+      failed++;
+      authorizedKeys = lastAuthorizedKeys.get(flakePath) ?? [];
+      log("controller", `${err} (using ${authorizedKeys.length} cached keys)`, flakePath);
+    }
     const entry: NamespaceEntry = { name: repoName(flakePath), namespace: fs.namespace, identity: fs.identity };
     for (const key of authorizedKeys) {
       if (!keys[key]) keys[key] = [];
@@ -227,7 +252,7 @@ async function buildKeyIndex(
     }
   }
 
-  return { keys };
+  return { keys, failed };
 }
 
 // --- Reconciliation ---
@@ -443,16 +468,14 @@ async function ensureSeedCAConfigMap(
     data: { "ca.crt": caCert },
   };
 
-  try {
-    const existing = await core.readNamespacedConfigMap({ name: "seed-ca", namespace });
-    if (existing.data?.["ca.crt"] !== caCert) {
-      configMap.metadata!.resourceVersion = existing.metadata?.resourceVersion;
-      await core.replaceNamespacedConfigMap({ name: "seed-ca", namespace, body: configMap });
-      log("controller", `updated seed-ca ConfigMap`, namespace);
-    }
-  } catch {
+  const existing = await getOrNull(() => core.readNamespacedConfigMap({ name: "seed-ca", namespace }));
+  if (!existing) {
     await core.createNamespacedConfigMap({ namespace, body: configMap });
     log("controller", `created seed-ca ConfigMap`, namespace);
+  } else if (existing.data?.["ca.crt"] !== caCert) {
+    configMap.metadata!.resourceVersion = existing.metadata?.resourceVersion;
+    await core.replaceNamespacedConfigMap({ name: "seed-ca", namespace, body: configMap });
+    log("controller", `updated seed-ca ConfigMap`, namespace);
   }
 }
 
@@ -465,49 +488,31 @@ async function applyDesiredState(
   desired: DesiredState,
   platformCACert?: string,
 ): Promise<void> {
+  // Every step retries transient API errors (withApiRetry) and otherwise fails
+  // fast: a step that can't be applied aborts the whole apply, so later steps
+  // (and the reap after it) never run against a partially applied set. All
+  // steps are idempotent, so the next reconcile simply re-applies.
   const { namespace } = desired;
 
   // Replicate platform CA certificate as ConfigMap in instance namespace
   if (platformCACert) {
-    try {
-      await ensureSeedCAConfigMap(clients.core, namespace, platformCACert);
-    } catch (err) {
-      log("controller", `seed-ca ConfigMap error: ${err}`, namespace);
-    }
+    await withApiRetry(`seed-ca ConfigMap in ${namespace}`, () =>
+      ensureSeedCAConfigMap(clients.core, namespace, platformCACert));
   }
 
   // Apply SeedHostTasks first (swtpm must be running before pods start)
   for (const [name, instance] of desired.instances) {
-    if (instance.hostTask) {
-      try {
-        const existing = await clients.custom.getNamespacedCustomObject({
-          group: "seed.loom.farm",
-          version: "v1alpha1",
-          namespace,
-          plural: "seedhosttasks",
-          name: instance.hostTask.metadata!.name!,
-        }) as SeedHostTask;
-        // Update generation label if changed
-        const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
-        if (existingGen !== desired.generation) {
-          existing.metadata = existing.metadata || {};
-          existing.metadata.labels = {
-            ...existing.metadata.labels,
-            [LABELS.GENERATION]: desired.generation,
-          };
-          await clients.custom.replaceNamespacedCustomObject({
-            group: "seed.loom.farm",
-            version: "v1alpha1",
-            namespace,
-            plural: "seedhosttasks",
-            name: instance.hostTask.metadata!.name!,
-            body: existing,
-          });
-          log("controller", `updated SeedHostTask swtpm-${name} generation`, name);
-        } else {
-          log("controller", `SeedHostTask swtpm-${name} up to date`, name);
-        }
-      } catch {
+    if (!instance.hostTask) continue;
+    const taskName = instance.hostTask.metadata!.name!;
+    await withApiRetry(`SeedHostTask ${taskName}`, async () => {
+      const existing = await getOrNull(() => clients.custom.getNamespacedCustomObject({
+        group: "seed.loom.farm",
+        version: "v1alpha1",
+        namespace,
+        plural: "seedhosttasks",
+        name: taskName,
+      })) as SeedHostTask | null;
+      if (!existing) {
         await clients.custom.createNamespacedCustomObject({
           group: "seed.loom.farm",
           version: "v1alpha1",
@@ -516,76 +521,93 @@ async function applyDesiredState(
           body: instance.hostTask,
         });
         log("controller", `created SeedHostTask swtpm-${name}`, name);
+        return;
       }
-    }
+      // Update generation label if changed
+      const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
+      if (existingGen !== desired.generation) {
+        existing.metadata = existing.metadata || {};
+        existing.metadata.labels = {
+          ...existing.metadata.labels,
+          [LABELS.GENERATION]: desired.generation,
+        };
+        await clients.custom.replaceNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seedhosttasks",
+          name: taskName,
+          body: existing,
+        });
+        log("controller", `updated SeedHostTask swtpm-${name} generation`, name);
+      } else {
+        log("controller", `SeedHostTask swtpm-${name} up to date`, name);
+      }
+    });
   }
 
   // Apply PVCs (before deployments, so volumes are available)
   for (const [name, instance] of desired.instances) {
     for (const pvc of instance.pvcs) {
-      try {
-        await applyResource(clients.core, "PersistentVolumeClaim", namespace, pvc);
-        log("controller", `applied PVC ${pvc.metadata!.name}`, name);
-      } catch (err) {
-        log("controller", `PVC ${pvc.metadata!.name} error: ${err}`, name);
-      }
+      await withApiRetry(`PVC ${pvc.metadata!.name}`, () =>
+        applyResource(clients.core, "PersistentVolumeClaim", namespace, pvc));
+      log("controller", `applied PVC ${pvc.metadata!.name}`, name);
     }
   }
 
   // Apply Deployments — k8s handles pod replacement on spec change
   for (const [name, instance] of desired.instances) {
-    try {
-      await applyDeployment(clients.apps, namespace, instance.deployment);
-      log("controller", `applied deployment ${name}`, name);
-    } catch (err) {
-      log("controller", `deployment error: ${err}`, name);
-    }
+    await withApiRetry(`deployment ${name}`, () =>
+      applyDeployment(clients.apps, namespace, instance.deployment));
+    log("controller", `applied deployment ${name}`, name);
   }
 
   // Apply services (ClusterIP)
   for (const [name, instance] of desired.instances) {
     for (const svc of instance.services) {
-      try {
-        await applyResource(clients.core, "Service", namespace, svc);
-        log("controller", `applied service ${svc.metadata!.name}`, name);
-      } catch (err) {
-        log("controller", `service error: ${err}`, name);
-      }
+      await withApiRetry(`service ${svc.metadata!.name}`, () =>
+        applyResource(clients.core, "Service", namespace, svc));
+      log("controller", `applied service ${svc.metadata!.name}`, name);
     }
   }
 
   // Apply ingress services (per-instance IPv6 LoadBalancer)
   for (const [name, instance] of desired.instances) {
-    if (instance.ingressService) {
-      try {
-        await applyResource(clients.core, "Service", namespace, instance.ingressService);
-        log("controller", `applied ingress service ${instance.ingressService.metadata!.name}`, name);
-      } catch (err) {
-        log("controller", `ingress service error: ${err}`, name);
-      }
-    }
+    const svc = instance.ingressService;
+    if (!svc) continue;
+    await withApiRetry(`ingress service ${svc.metadata!.name}`, () =>
+      applyResource(clients.core, "Service", namespace, svc));
+    log("controller", `applied ingress service ${svc.metadata!.name}`, name);
   }
 
   // Apply route services (LoadBalancer)
   for (const svc of [...desired.routes.ipv4, ...desired.routes.ipv6]) {
-    try {
-      await applyResource(clients.core, "Service", namespace, svc);
-      log("controller", `applied route service ${svc.metadata!.name}`);
-    } catch (err) {
-      log("controller", `route service error: ${err}`);
-    }
+    await withApiRetry(`route service ${svc.metadata!.name}`, () =>
+      applyResource(clients.core, "Service", namespace, svc));
+    log("controller", `applied route service ${svc.metadata!.name}`);
   }
 
   // Apply SeedDomain CRDs
   for (const domain of desired.domains) {
-    try {
-      const existing = await clients.custom.getNamespacedCustomObject({
+    await withApiRetry(`SeedDomain ${domain.spec.name}`, async () => {
+      const existing = await getOrNull(() => clients.custom.getNamespacedCustomObject({
         group: "seed.loom.farm",
         version: "v1alpha1",
         namespace,
         plural: "seeddomains",
         name: domain.metadata!.name!,
-      }) as SeedDomain;
+      })) as SeedDomain | null;
+      if (!existing) {
+        await clients.custom.createNamespacedCustomObject({
+          group: "seed.loom.farm",
+          version: "v1alpha1",
+          namespace,
+          plural: "seeddomains",
+          body: domain,
+        });
+        log("controller", `created SeedDomain ${domain.spec.name}`);
+        return;
+      }
       // Update generation label if changed, preserve status
       const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
       if (existingGen !== desired.generation) {
@@ -605,29 +627,31 @@ async function applyDesiredState(
         });
         log("controller", `updated SeedDomain ${domain.spec.name}`);
       }
-    } catch {
-      await clients.custom.createNamespacedCustomObject({
-        group: "seed.loom.farm",
-        version: "v1alpha1",
-        namespace,
-        plural: "seeddomains",
-        body: domain,
-      });
-      log("controller", `created SeedDomain ${domain.spec.name}`);
-    }
+    });
   }
 
   // Apply SeedDNSRecords
   for (const [name, instance] of desired.instances) {
     for (const dnsRecord of instance.dnsRecords) {
-      try {
-        const existing = await clients.custom.getNamespacedCustomObject({
+      await withApiRetry(`SeedDNSRecord ${dnsRecord.metadata!.name}`, async () => {
+        const existing = await getOrNull(() => clients.custom.getNamespacedCustomObject({
           group: "seed.loom.farm",
           version: "v1alpha1",
           namespace,
           plural: "seeddnsrecords",
           name: dnsRecord.metadata!.name!,
-        }) as SeedDNSRecord;
+        })) as SeedDNSRecord | null;
+        if (!existing) {
+          await clients.custom.createNamespacedCustomObject({
+            group: "seed.loom.farm",
+            version: "v1alpha1",
+            namespace,
+            plural: "seeddnsrecords",
+            body: dnsRecord,
+          });
+          log("controller", `created SeedDNSRecord ${dnsRecord.metadata!.name}`, name);
+          return;
+        }
         // Update generation label if changed
         const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
         if (existingGen !== desired.generation) {
@@ -647,16 +671,7 @@ async function applyDesiredState(
           });
           log("controller", `updated SeedDNSRecord ${dnsRecord.metadata!.name}`, name);
         }
-      } catch {
-        await clients.custom.createNamespacedCustomObject({
-          group: "seed.loom.farm",
-          version: "v1alpha1",
-          namespace,
-          plural: "seeddnsrecords",
-          body: dnsRecord,
-        });
-        log("controller", `created SeedDNSRecord ${dnsRecord.metadata!.name}`, name);
-      }
+      });
     }
   }
 }
@@ -710,7 +725,7 @@ async function reapOldResources(
   }
 
   // Reap Deployments not in desired state
-  try {
+  await withApiRetry(`reap deployments in ${namespace}`, async () => {
     const deployments = await clients.apps.listNamespacedDeployment({
       namespace,
       labelSelector: MANAGED_SELECTOR,
@@ -719,15 +734,13 @@ async function reapOldResources(
       const name = dep.metadata?.name;
       if (name && !desiredDeployments.has(name)) {
         log("controller", `reaping deployment: ${name}`);
-        await clients.apps.deleteNamespacedDeployment({ name, namespace });
+        await clients.apps.deleteNamespacedDeployment({ name, namespace }).catch(ignoreNotFound);
       }
     }
-  } catch (err) {
-    log("controller", `error reaping deployments: ${err}`);
-  }
+  });
 
   // Reap Services not in desired state
-  try {
+  await withApiRetry(`reap services in ${namespace}`, async () => {
     const svcs = await clients.core.listNamespacedService({
       namespace,
       labelSelector: MANAGED_SELECTOR,
@@ -736,15 +749,13 @@ async function reapOldResources(
       const name = svc.metadata?.name;
       if (name && !desiredServices.has(name)) {
         log("controller", `reaping service: ${name}`);
-        await clients.core.deleteNamespacedService({ name, namespace });
+        await clients.core.deleteNamespacedService({ name, namespace }).catch(ignoreNotFound);
       }
     }
-  } catch (err) {
-    log("controller", `error reaping services: ${err}`);
-  }
+  });
 
   // Reap SeedHostTasks not in desired state
-  try {
+  await withApiRetry(`reap SeedHostTasks in ${namespace}`, async () => {
     const tasks = await clients.custom.listNamespacedCustomObject({
       group: "seed.loom.farm",
       version: "v1alpha1",
@@ -761,15 +772,13 @@ async function reapOldResources(
           namespace,
           plural: "seedhosttasks",
           name,
-        });
+        }).catch(ignoreNotFound);
       }
     }
-  } catch (err) {
-    log("controller", `error reaping SeedHostTasks: ${err}`);
-  }
+  });
 
   // Reap SeedDNSRecords not in desired state
-  try {
+  await withApiRetry(`reap SeedDNSRecords in ${namespace}`, async () => {
     const dnsRecords = await clients.custom.listNamespacedCustomObject({
       group: "seed.loom.farm",
       version: "v1alpha1",
@@ -786,15 +795,13 @@ async function reapOldResources(
           namespace,
           plural: "seeddnsrecords",
           name,
-        });
+        }).catch(ignoreNotFound);
       }
     }
-  } catch (err) {
-    log("controller", `error reaping SeedDNSRecords: ${err}`);
-  }
+  });
 
   // Reap SeedDomains not in desired state
-  try {
+  await withApiRetry(`reap SeedDomains in ${namespace}`, async () => {
     const domains = await clients.custom.listNamespacedCustomObject({
       group: "seed.loom.farm",
       version: "v1alpha1",
@@ -811,12 +818,10 @@ async function reapOldResources(
           namespace,
           plural: "seeddomains",
           name,
-        });
+        }).catch(ignoreNotFound);
       }
     }
-  } catch (err) {
-    log("controller", `error reaping SeedDomains: ${err}`);
-  }
+  });
 
   // PVCs are never reaped
 }
@@ -1206,8 +1211,11 @@ async function listSeedFlakes(
     }) as { items: SeedFlake[] };
     return result.items;
   } catch (err) {
-    log("controller", `listSeedFlakes failed: ${err}`);
-    return [];
+    // CRD not installed yet → genuinely no SeedFlakes. Anything else (e.g. kine
+    // 429 "storage is (re)initializing") must propagate: returning [] would look
+    // like an empty registry and leave the key index empty with no retry.
+    if ((err as { code?: number }).code === 404) return [];
+    throw err;
   }
 }
 
@@ -1614,14 +1622,20 @@ async function main(): Promise<void> {
     log("controller", `registered flake ${flakePath} → namespace ${namespace}`);
   }
 
-  // Load active SeedFlakes from CRDs
-  try {
-    const newPaths = await loadSeedFlakes(clients, flakeStates, namespaceToFlake);
-    if (newPaths.length > 0) {
-      log("controller", `loaded ${newPaths.length} SeedFlake(s) from CRDs`);
+  // Load active SeedFlakes from CRDs. This is the only full load (webhooks skip
+  // unknown flakes), so retry until it succeeds — the API can pass the readiness
+  // gate above and still 429 while kine reinitializes after a node reboot.
+  for (let delay = 2000; ; delay = Math.min(delay * 2, 60000)) {
+    try {
+      const newPaths = await loadSeedFlakes(clients, flakeStates, namespaceToFlake);
+      if (newPaths.length > 0) {
+        log("controller", `loaded ${newPaths.length} SeedFlake(s) from CRDs`);
+      }
+      break;
+    } catch (err) {
+      log("controller", `SeedFlake CRD load failed, retrying in ${delay / 1000}s: ${err}`);
+      await sleep(delay);
     }
-  } catch (err) {
-    log("controller", `SeedFlake CRD load failed (CRD may not exist yet): ${err}`);
   }
 
   if (flakeStates.size === 0) {
@@ -1661,21 +1675,31 @@ async function main(): Promise<void> {
   }
 
   // Load platform CA certificate from cert-manager for seed trust
+  // Retry transient errors: an empty CA disables EST and renders every instance
+  // without platform trust until the next restart. Only a 404 means "not deployed".
   let platformCACert = "";
-  try {
-    const secret = await clients.core.readNamespacedSecret({
-      name: "seed-root-ca",
-      namespace: "cert-manager",
-    });
-    const caCertB64 = secret.data?.["tls.crt"];
-    if (caCertB64) {
-      platformCACert = Buffer.from(caCertB64, "base64").toString("utf-8");
-      log("controller", "loaded platform CA certificate from cert-manager/seed-root-ca");
-    } else {
-      log("controller", "warning: seed-root-ca secret exists but has no tls.crt");
+  for (let delay = 2000; ; delay = Math.min(delay * 2, 60000)) {
+    try {
+      const secret = await clients.core.readNamespacedSecret({
+        name: "seed-root-ca",
+        namespace: "cert-manager",
+      });
+      const caCertB64 = secret.data?.["tls.crt"];
+      if (caCertB64) {
+        platformCACert = Buffer.from(caCertB64, "base64").toString("utf-8");
+        log("controller", "loaded platform CA certificate from cert-manager/seed-root-ca");
+      } else {
+        log("controller", "warning: seed-root-ca secret exists but has no tls.crt");
+      }
+      break;
+    } catch (err) {
+      if ((err as { code?: number }).code === 404) {
+        log("controller", "platform CA not available (cert-manager may not be deployed)");
+        break;
+      }
+      log("controller", `platform CA load failed, retrying in ${delay / 1000}s: ${err}`);
+      await sleep(delay);
     }
-  } catch (err) {
-    log("controller", `platform CA not available (cert-manager may not be deployed): ${err}`);
   }
 
   // Initialize EST endpoint (certificate enrollment via TPM attestation)
@@ -1726,12 +1750,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // Configure MetalLB pools (once at startup)
-  try {
-    await configureMetalLB(clients, config.ipv4Address, config.ipv6Block, readBGPConfig());
-  } catch (err) {
-    log("controller", `MetalLB configuration failed: ${err}`);
-  }
+  // Configure MetalLB pools in the background, retrying until it succeeds.
+  // Nothing below depends on it (LoadBalancer services just wait for an IP), so
+  // a slow or broken MetalLB must not hold up the rest of startup.
+  void (async () => {
+    for (let delay = 10_000; ; delay = Math.min(delay * 2, 300_000)) {
+      try {
+        await configureMetalLB(clients, config.ipv4Address, config.ipv6Block, readBGPConfig());
+        return;
+      } catch (err) {
+        log("controller", `MetalLB configuration failed, retrying in ${delay / 1000}s: ${err}`);
+        await sleep(delay);
+      }
+    }
+  })();
 
   // Initialize management API
   const validNamespaces = new Set([...flakeStates.values()].map((fs) => fs.namespace));
@@ -2011,22 +2043,75 @@ async function main(): Promise<void> {
     }
   }
 
+  // Build the key index before the startup reconcile — it only needs each
+  // flake's source, and the shell is unusable until it exists. Then keep it
+  // fresh on a timer: webhooks are the only other rebuild trigger, and a fetch
+  // that fails at boot (e.g. silo not up yet) would otherwise stick.
+  async function refreshKeyIndex(): Promise<void> {
+    let failed = 1;
+    try {
+      const index = await buildKeyIndex(flakeStates, false);
+      failed = index.failed;
+      updateKeyIndex({ keys: index.keys });
+    } catch (err) {
+      log("controller", `key index build failed: ${err}`);
+    }
+    setTimeout(refreshKeyIndex, failed > 0 ? 30_000 : 5 * 60_000).unref();
+  }
+  await refreshKeyIndex();
+
+  // A reconcile that failed on API errors outlasting withApiRetry (not a build
+  // failure) is re-queued with backoff until it gets through, so a flaky API
+  // can't leave a flake half-applied until the next push.
+  const apiRetryDelay = new Map<string, number>();
+  function handleReconcileResult(flakePath: string, err?: unknown): void {
+    if (err === undefined) {
+      apiRetryDelay.delete(flakePath);
+      return;
+    }
+    if (!(err instanceof TransientApiError)) {
+      log("controller", `reconciliation failed (will retry on next webhook): ${err}`, flakePath);
+      return;
+    }
+    const delay = apiRetryDelay.get(flakePath) ?? 30_000;
+    apiRetryDelay.set(flakePath, Math.min(delay * 2, 600_000));
+    log("controller", `reconciliation hit API errors, retrying in ${delay / 1000}s: ${err}`, flakePath);
+    setTimeout(() => triggerReconcile(flakePath), delay).unref();
+  }
+
+  // Retry a flake whose source couldn't be fetched (e.g. silo not up yet on a
+  // cold start) until the fetch works, then queue it like a webhook. Build
+  // failures are deliberately not retried — they wait for the next push.
+  function retryFetch(flakePath: string, delay: number): void {
+    setTimeout(async () => {
+      try {
+        await prefetchFlake(flakePath);
+        log("controller", "flake source reachable, queueing reconciliation", flakePath);
+        triggerReconcile(flakePath);
+      } catch (err) {
+        const next = Math.min(delay * 2, 600_000);
+        log("controller", `flake fetch failed, retrying in ${next / 1000}s: ${err}`, flakePath);
+        retryFetch(flakePath, next);
+      }
+    }, delay);
+  }
+
   // Startup: always reconcile all flakes to ensure desired state is correct.
   // Errors in one flake must not prevent other flakes from reconciling.
   for (const [flakePath, fs] of flakeStates) {
     try {
-      await reconcile(flakePath, fs.namespace, false);
+      await prefetchFlake(flakePath);
     } catch (err) {
-      log("controller", `reconciliation failed (will retry on next webhook): ${err}`, flakePath);
+      log("controller", `flake fetch failed, retrying in 30s: ${err}`, flakePath);
+      retryFetch(flakePath, 30_000);
+      continue;
     }
-  }
-
-  // Build initial key index from all flakes
-  try {
-    const index = await buildKeyIndex(flakeStates, false);
-    updateKeyIndex(index);
-  } catch (err) {
-    log("controller", `initial key index build failed: ${err}`);
+    try {
+      await reconcile(flakePath, fs.namespace, false);
+      handleReconcileResult(flakePath);
+    } catch (err) {
+      handleReconcileResult(flakePath, err);
+    }
   }
 
   // Start k8s API watches for drift correction (cluster-wide).
@@ -2056,15 +2141,16 @@ async function main(): Promise<void> {
       log("controller", `webhook triggered reconciliation`, flakePath);
       try {
         await reconcile(flakePath, fs.namespace, true);
+        handleReconcileResult(flakePath);
       } catch (err) {
-        log("controller", `reconciliation failed: ${err}`, flakePath);
+        handleReconcileResult(flakePath, err);
       }
     }
 
     // Rebuild key index after reconciliation (keys may have changed)
     try {
       const index = await buildKeyIndex(flakeStates, true);
-      updateKeyIndex(index);
+      updateKeyIndex({ keys: index.keys });
     } catch (err) {
       log("controller", `key index rebuild failed: ${err}`);
     }

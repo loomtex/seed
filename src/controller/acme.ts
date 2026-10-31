@@ -18,7 +18,7 @@ import { readFile } from "node:fs/promises";
 import * as k8s from "@kubernetes/client-node";
 import * as jose from "jose";
 import type { CryptoKey } from "jose";
-import { loadKubeConfig, log } from "../shared/kube.js";
+import { loadKubeConfig, log, sleep } from "../shared/kube.js";
 
 // --- Types ---
 
@@ -106,8 +106,12 @@ async function loadState(): Promise<void> {
       leAccountUrl = cm.data["leAccountUrl"];
       log("acme", `restored LE account: ${leAccountUrl}`);
     }
-  } catch {
-    // ConfigMap doesn't exist yet — first run
+  } catch (err) {
+    // Only a 404 means first run. Anything else (e.g. a 429 after a node reboot)
+    // must not fall through to empty state: the next saveState() would replace
+    // the ConfigMap and drop every stored account.
+    if ((err as { code?: number }).code === 404) return;
+    throw err;
   }
 }
 
@@ -144,7 +148,15 @@ export async function initAcme(cfg: AcmeConfig): Promise<void> {
 
   const kc = loadKubeConfig();
   coreApi = kc.makeApiClient(k8s.CoreV1Api);
-  await loadState();
+  for (let delay = 2000; ; delay = Math.min(delay * 2, 60000)) {
+    try {
+      await loadState();
+      break;
+    } catch (err) {
+      log("acme", `state load failed, retrying in ${delay / 1000}s: ${err}`);
+      await sleep(delay);
+    }
+  }
 
   log("acme", "ACME endpoint initialized");
 }
