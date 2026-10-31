@@ -439,6 +439,7 @@ let
               # PATH: nix + git + coreutils (for nix eval/build)
               { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz pkgs.age pkgs.age-plugin-tpm ]; }
               { name = "SEED_SILO_HOST"; value = cfg.siloHost; }
+              { name = "SEED_RECONCILE_CONCURRENCY"; value = toString cfg.reconcileConcurrency; }
             ] ++ lib.optional (cfg.ipv4Address != "") {
               name = "SEED_IPV4_ADDRESS"; value = cfg.ipv4Address;
             } ++ lib.optional (cfg.ipv6Block != "") {
@@ -896,6 +897,16 @@ in {
       type = lib.types.str;
       default = "silo.loom.farm";
       description = "Hostname of the silo git server, used to expand silo: shorthand in plant command.";
+    };
+
+    reconcileConcurrency = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 3;
+      description = ''
+        Maximum number of flakes reconciled at once (SEED_RECONCILE_CONCURRENCY).
+        A single flake never has two reconciles running; triggers that arrive
+        mid-reconcile coalesce into one re-run.
+      '';
     };
 
     poolManager = {
