@@ -379,7 +379,7 @@ running → k3s-joined
 k3s-joined → healthy
   needs: All seed-system pods scheduled and running, reserved IPs attached
   action: Verify via kubectl + network probes:
-    - seed-controller pod running (on controller nodes)
+    - seed-controller pod running (one replica, any seed node)
     - seed-host-agent pod running (DaemonSet, all nodes)
     - seed-pool-manager pod running (on controller nodes)
     - MetalLB speaker running (DaemonSet, all nodes)
