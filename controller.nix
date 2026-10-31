@@ -405,8 +405,11 @@ let
         metadata.labels = systemLabels "controller";
         spec = {
           serviceAccountName = "seed-controller";
-          # Pin to this node — controller needs hostPath secrets (sops-nix)
-          nodeSelector."kubernetes.io/hostname" = config.networking.hostName;
+          # Not pinned to a node: secrets come from k8s Secrets, and the
+          # hostPaths it mounts exist on every seed node (nix-daemon socket,
+          # /nix/store, and the CephFS-backed tpm-state dir). Builds go to
+          # whichever node's daemon it lands on, which fans out over the
+          # cluster build pool.
           # Default runtime — controller doesn't need Kata
           containers = [{
             name = "controller";
