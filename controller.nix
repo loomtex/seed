@@ -600,6 +600,11 @@ let
     };
     spec = {
       selector.matchLabels."app.kubernetes.io/name" = "seed-host-agent";
+      # OnDelete while the host agent still owns swtpms: a restart kills every
+      # swtpm on the node and cloud-hypervisor never reconnects, breaking guest
+      # TPMs. Template changes (e.g. SEED_SHIM_SWTPM) apply only when a pod is
+      # deleted by hand. Switch to RollingUpdate once swtpm moves to the shim.
+      updateStrategy.type = "OnDelete";
       template = {
         metadata.labels = systemLabels "host-agent";
         spec = {
@@ -614,6 +619,7 @@ let
             securityContext.privileged = true;
             env = [
               { name = "SEED_NETPOL_ENABLED"; value = if cfg.netpol.enable then "1" else ""; }
+              { name = "SEED_SHIM_SWTPM"; value = builtins.concatStringsSep "," cfg.shimSwtpm; }
               { name = "SEED_CLUSTER_CIDR"; value = "10.42.0.0/16,fd00::/56"; }
               { name = "SEED_SERVICE_CIDR"; value = "10.43.0.0/16,fd01::/108"; }
               { name = "SEED_DNS_IP"; value = "10.43.0.10"; }
