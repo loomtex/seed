@@ -1,0 +1,2115 @@
+From fda6603f3520d95339d3b3d8b2e3c96a62f0c97b Mon Sep 17 00:00:00 2001
+From: Ada <ada@6bit.com>
+Date: Sat, 31 Oct 2026 17:55:26 -0600
+Subject: [PATCH] runtime: shim-owned swtpm for seed TPM sandboxes
+
+Sandboxes annotated with seed.loom.farm/tpm-mode (create|verify) get one
+swtpm owned by the shim, managed like virtiofsd. Before cloud-hypervisor
+starts, the shim:
+
+1. checks that swtpm_sentinel_path contains swtpm_expected_fsid, and
+   that the state dir is below the sentinel's dir on the same filesystem
+2. takes an exclusive flock on <state-dir>/.session-lock (up to
+   swtpm_lock_timeout); the lock fd is shared with swtpm so the lock is
+   held for as long as swtpm lives
+3. starts swtpm (seed:// backend, startup-clear, ctrl socket in the
+   sandbox dir, per-sandbox volatile dir, SWTPM_SEED_ALLOW_CREATE=1 only
+   in create mode) with Pdeathsig on a locked OS thread and its own
+   process group; create mode refuses an existing permall
+4. computes the TPM fingerprint over the swtpm ctrl + data channels:
+   SHA-256 of the marshaled TPMT_PUBLIC of the owner-hierarchy ECC P-256
+   SRK (TCG template, unique = 32+32 zero bytes)
+5. create: writes <state-dir>/tpm-fingerprint atomically; verify:
+   compares with seed.loom.farm/tpm-fingerprint
+6. closes its data channel and syncs on the ctrl channel so swtpm has
+   dropped the data fd before CLH sends CMD_SET_DATAFD; CLH's own
+   CMD_STOP/CMD_INIT then power-cycles the TPM
+
+swtpm dying after boot stops the VM (CLH never reconnects). On teardown
+swtpm gets SIGTERM, then SIGKILL, and only then is the lock released and
+the volatile dir and socket removed. The legacy tpm_socket annotation is
+unchanged; the two are mutually exclusive.
+
+New config keys (hypervisor.clh): swtpm_path, swtpm_sentinel_path,
+swtpm_expected_fsid, swtpm_lock_timeout.
+
+TPM2 marshaling (CreatePrimary, FlushContext, Startup) is implemented
+inline; kata vendors no TPM library.
+
+Co-Authored-By: Joshua Perry <josh@6bit.com>
+---
+ config/configuration-clh.toml.in              |  17 +
+ pkg/katautils/config.go                       |  22 +
+ pkg/oci/seed_tpm_test.go                      |  77 ++
+ pkg/oci/utils.go                              |  38 +
+ virtcontainers/clh.go                         |  53 +-
+ virtcontainers/hypervisor.go                  |  11 +
+ virtcontainers/pkg/annotations/annotations.go |   7 +
+ virtcontainers/swtpm.go                       | 985 ++++++++++++++++++
+ virtcontainers/swtpm_test.go                  | 719 +++++++++++++
+ 9 files changed, 1927 insertions(+), 2 deletions(-)
+ create mode 100644 src/runtime/pkg/oci/seed_tpm_test.go
+ create mode 100644 src/runtime/virtcontainers/swtpm.go
+ create mode 100644 src/runtime/virtcontainers/swtpm_test.go
+
+diff --git a/config/configuration-clh.toml.in b/config/configuration-clh.toml.in
+index 204b2fb70..a0b336d70 100644
+--- a/config/configuration-clh.toml.in
++++ b/config/configuration-clh.toml.in
+@@ -22,6 +22,23 @@ image = "@IMAGEPATH@"
+ #   - erofs
+ rootfs_type=@DEFROOTFSTYPE@
+ 
++# Seed shim-owned swtpm. Used only for sandboxes annotated with
++# seed.loom.farm/tpm-mode (create|verify), seed.loom.farm/tpm-state-dir and,
++# for verify, seed.loom.farm/tpm-fingerprint. The shim then checks the
++# sentinel, takes an exclusive flock on <state-dir>/.session-lock, runs one
++# swtpm (seed:// backend) for the sandbox and checks the TPM fingerprint
++# before cloud-hypervisor starts.
++#
++# swtpm binary (must support the seed:// backend). Required for tpm-mode.
++#swtpm_path = ""
++# File whose trimmed content must equal swtpm_expected_fsid; the state dir
++# must be below its directory and on the same filesystem.
++#swtpm_sentinel_path = "/var/lib/seed-controller/tpm/.seed-fs"
++# Ceph fsid of the shared TPM state filesystem. Required for tpm-mode.
++#swtpm_expected_fsid = ""
++# Seconds to wait for the session lock.
++#swtpm_lock_timeout = 120
++
+ # Enable confidential guest support.
+ # Toggling that setting may trigger different hardware features, ranging
+ # from memory encryption to both memory and CPU-state encryption and integrity.
+diff --git a/pkg/katautils/config.go b/pkg/katautils/config.go
+index 05c281937..38cf34304 100644
+--- a/pkg/katautils/config.go
++++ b/pkg/katautils/config.go
+@@ -110,6 +110,10 @@ type hypervisor struct {
+ 	SnpIdBlock                     string                    `toml:"snp_id_block"`
+ 	SnpIdAuth                      string                    `toml:"snp_id_auth"`
+ 	TpmSocket                      string                    `toml:"tpm_socket"`
++	SwtpmPath                      string                    `toml:"swtpm_path"`
++	SwtpmSentinelPath              string                    `toml:"swtpm_sentinel_path"`
++	SwtpmExpectedFsid              string                    `toml:"swtpm_expected_fsid"`
++	SwtpmLockTimeout               uint32                    `toml:"swtpm_lock_timeout"`
+ 	HypervisorPathList             []string                  `toml:"valid_hypervisor_paths"`
+ 	JailerPathList                 []string                  `toml:"valid_jailer_paths"`
+ 	VirtioFSDaemonList             []string                  `toml:"valid_virtio_fs_daemon_paths"`
+@@ -691,6 +695,20 @@ func (h hypervisor) getNetRateLimiterOpsOneTimeBurst() int64 {
+ 	return h.NetRateLimiterOpsOneTimeBurst
+ }
+ 
++func (h hypervisor) swtpmSentinelPath() string {
++	if h.SwtpmSentinelPath == "" {
++		return vc.DefaultSwtpmSentinelPath
++	}
++	return h.SwtpmSentinelPath
++}
++
++func (h hypervisor) swtpmLockTimeout() uint32 {
++	if h.SwtpmLockTimeout == 0 {
++		return vc.DefaultSwtpmLockTimeout
++	}
++	return h.SwtpmLockTimeout
++}
++
+ func (h hypervisor) getIOMMUPlatform() bool {
+ 	if h.IOMMUPlatform {
+ 		kataUtilsLogger.Info("IOMMUPlatform is enabled by default.")
+@@ -1109,6 +1127,10 @@ func newClhHypervisorConfig(h hypervisor) (vc.HypervisorConfig, error) {
+ 		DisableGuestSeLinux:            h.DisableGuestSeLinux,
+ 		NetRateLimiterBwMaxRate:        h.getNetRateLimiterBwMaxRate(),
+ 		TpmSocket:                      h.TpmSocket,
++		SwtpmPath:                      h.SwtpmPath,
++		SwtpmSentinelPath:              h.swtpmSentinelPath(),
++		SwtpmExpectedFsid:              h.SwtpmExpectedFsid,
++		SwtpmLockTimeout:               h.swtpmLockTimeout(),
+ 		NetRateLimiterBwOneTimeBurst:   h.getNetRateLimiterBwOneTimeBurst(),
+ 		NetRateLimiterOpsMaxRate:       h.getNetRateLimiterOpsMaxRate(),
+ 		NetRateLimiterOpsOneTimeBurst:  h.getNetRateLimiterOpsOneTimeBurst(),
+diff --git a/pkg/oci/seed_tpm_test.go b/pkg/oci/seed_tpm_test.go
+new file mode 100644
+index 000000000..7e1aa9096
+--- /dev/null
++++ b/pkg/oci/seed_tpm_test.go
+@@ -0,0 +1,77 @@
++// Copyright (c) 2026 Seed contributors
++//
++// SPDX-License-Identifier: Apache-2.0
++//
++
++package oci
++
++import (
++	"strings"
++	"testing"
++
++	specs "github.com/opencontainers/runtime-spec/specs-go"
++	"github.com/stretchr/testify/assert"
++
++	vc "github.com/kata-containers/kata-containers/src/runtime/virtcontainers"
++	vcAnnotations "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/pkg/annotations"
++)
++
++func TestAddSeedTpmOverrides(t *testing.T) {
++	fp := strings.Repeat("ab", 32)
++	dir := "/var/lib/seed-controller/tpm/s-gaydazldmnsg-social"
++
++	run := func(ann map[string]string) (vc.SandboxConfig, error) {
++		cfg := vc.SandboxConfig{Annotations: map[string]string{}}
++		err := addSeedTpmOverrides(specs.Spec{Annotations: ann}, &cfg)
++		return cfg, err
++	}
++
++	// absent: nothing happens
++	cfg, err := run(map[string]string{})
++	assert.NoError(t, err)
++	assert.Equal(t, "", cfg.HypervisorConfig.SeedTpmMode)
++
++	cfg, err = run(map[string]string{
++		vcAnnotations.SeedTpmMode:     "create",
++		vcAnnotations.SeedTpmStateDir: dir,
++	})
++	assert.NoError(t, err)
++	assert.Equal(t, "create", cfg.HypervisorConfig.SeedTpmMode)
++	assert.Equal(t, dir, cfg.HypervisorConfig.SeedTpmStateDir)
++
++	cfg, err = run(map[string]string{
++		vcAnnotations.SeedTpmMode:        "verify",
++		vcAnnotations.SeedTpmStateDir:    dir,
++		vcAnnotations.SeedTpmFingerprint: fp,
++	})
++	assert.NoError(t, err)
++	assert.Equal(t, fp, cfg.HypervisorConfig.SeedTpmFingerprint)
++
++	bad := []map[string]string{
++		{vcAnnotations.SeedTpmMode: "maybe", vcAnnotations.SeedTpmStateDir: dir},
++		{vcAnnotations.SeedTpmMode: "create"},
++		{vcAnnotations.SeedTpmMode: "create", vcAnnotations.SeedTpmStateDir: "relative/dir"},
++		{vcAnnotations.SeedTpmMode: "verify", vcAnnotations.SeedTpmStateDir: dir},
++	}
++	for _, ann := range bad {
++		_, err := run(ann)
++		assert.Error(t, err, ann)
++	}
++
++	// mutually exclusive with the legacy tpm_socket annotation
++	c := vc.SandboxConfig{Annotations: map[string]string{}}
++	c.HypervisorConfig.TpmSocket = "/run/swtpm/x/swtpm-sock"
++	err = addSeedTpmOverrides(specs.Spec{Annotations: map[string]string{
++		vcAnnotations.SeedTpmMode:     "create",
++		vcAnnotations.SeedTpmStateDir: dir,
++	}}, &c)
++	assert.Error(t, err)
++}
++
++// The seed.loom.farm/* keys are not io.katacontainers.config.hypervisor.*
++// keys, so enable_annotations must not filter them.
++func TestSeedTpmAnnotationsNotFiltered(t *testing.T) {
++	for _, k := range []string{vcAnnotations.SeedTpmMode, vcAnnotations.SeedTpmStateDir, vcAnnotations.SeedTpmFingerprint} {
++		assert.True(t, checkAnnotationNameIsValid([]string{"tpm_socket"}, k, vcAnnotations.KataAnnotationHypervisorPrefix), k)
++	}
++}
+diff --git a/pkg/oci/utils.go b/pkg/oci/utils.go
+index 217ebeb4b..b0ef96ada 100644
+--- a/pkg/oci/utils.go
++++ b/pkg/oci/utils.go
+@@ -578,6 +578,44 @@ func addHypervisorConfigOverrides(ocispec specs.Spec, config *vc.SandboxConfig,
+ 		}
+ 	}
+ 
++	if err := addSeedTpmOverrides(ocispec, config); err != nil {
++		return err
++	}
++
++	return nil
++}
++
++// addSeedTpmOverrides reads the seed.loom.farm/tpm-* annotations that make
++// the shim own the sandbox's swtpm (virtcontainers/swtpm.go).
++func addSeedTpmOverrides(ocispec specs.Spec, config *vc.SandboxConfig) error {
++	mode, ok := ocispec.Annotations[vcAnnotations.SeedTpmMode]
++	if !ok {
++		return nil
++	}
++	stateDir := ocispec.Annotations[vcAnnotations.SeedTpmStateDir]
++	fingerprint := ocispec.Annotations[vcAnnotations.SeedTpmFingerprint]
++
++	switch mode {
++	case vc.SeedTpmModeCreate, vc.SeedTpmModeVerify:
++	default:
++		return fmt.Errorf("annotation %s: invalid value %q (want %q or %q)",
++			vcAnnotations.SeedTpmMode, mode, vc.SeedTpmModeCreate, vc.SeedTpmModeVerify)
++	}
++	if stateDir == "" || !filepath.IsAbs(stateDir) {
++		return fmt.Errorf("annotation %s must be an absolute path, got %q", vcAnnotations.SeedTpmStateDir, stateDir)
++	}
++	if mode == vc.SeedTpmModeVerify && fingerprint == "" {
++		return fmt.Errorf("annotation %s is required when %s=%s",
++			vcAnnotations.SeedTpmFingerprint, vcAnnotations.SeedTpmMode, vc.SeedTpmModeVerify)
++	}
++	if config.HypervisorConfig.TpmSocket != "" {
++		return fmt.Errorf("annotations %s and %s are mutually exclusive",
++			vcAnnotations.SeedTpmMode, vcAnnotations.TpmSocket)
++	}
++
++	config.HypervisorConfig.SeedTpmMode = mode
++	config.HypervisorConfig.SeedTpmStateDir = stateDir
++	config.HypervisorConfig.SeedTpmFingerprint = fingerprint
+ 	return nil
+ }
+ 
+diff --git a/virtcontainers/clh.go b/virtcontainers/clh.go
+index f83e431db..20ee2ed90 100644
+--- a/virtcontainers/clh.go
++++ b/virtcontainers/clh.go
+@@ -252,6 +252,7 @@ func (s *CloudHypervisorState) reset() {
+ type cloudHypervisor struct {
+ 	console         console.Console
+ 	virtiofsDaemon  VirtiofsDaemon
++	swtpm           *swtpm
+ 	APIClient       clhClient
+ 	ctx             context.Context
+ 	id              string
+@@ -565,7 +566,19 @@ func (clh *cloudHypervisor) CreateVM(ctx context.Context, id string, network Net
+ 	clh.vmconfig.Rng.SetIommu(clh.config.IOMMU)
+ 
+ 	// vTPM: pass swtpm socket to CLH for TPM 2.0 CRB device in guest
+-	if clh.config.TpmSocket != "" {
++	if clh.config.SeedTpmMode != "" {
++		// Seed: the shim owns this sandbox's swtpm (swtpm.go). It is
++		// started in StartVM, before cloud-hypervisor.
++		if clh.config.TpmSocket != "" {
++			return errors.New("seed tpm-mode and tpm_socket are mutually exclusive")
++		}
++		cfg := newSwtpmConfig(&clh.config, filepath.Join(clh.config.VMStorePath, id))
++		if err := cfg.validate(); err != nil {
++			return err
++		}
++		clh.swtpm = newSwtpm(cfg)
++		clh.vmconfig.Tpm = chclient.NewTpmConfig(cfg.socketPath)
++	} else if clh.config.TpmSocket != "" {
+ 		clh.vmconfig.Tpm = chclient.NewTpmConfig(clh.config.TpmSocket)
+ 	}
+ 
+@@ -707,6 +720,21 @@ func (clh *cloudHypervisor) StartVM(ctx context.Context, timeout int) error {
+ 		defer label.SetProcessLabel("")
+ 	}
+ 
++	// Seed: sentinel, session lock, swtpm, fingerprint check -- all before
++	// cloud-hypervisor exists. Any failure fails sandbox creation.
++	if clh.swtpm != nil {
++		if err = clh.swtpm.Start(ctx); err != nil {
++			return err
++		}
++		defer func() {
++			if err != nil {
++				if stopErr := clh.swtpm.Stop(ctx); stopErr != nil {
++					clh.Logger().WithError(stopErr).Warn("error stopping swtpm")
++				}
++			}
++		}()
++	}
++
+ 	err = clh.setupVirtiofsDaemon(ctx)
+ 	if err != nil {
+ 		return err
+@@ -731,10 +759,18 @@ func (clh *cloudHypervisor) StartVM(ctx context.Context, timeout int) error {
+ 	ctx, cancel := context.WithTimeout(ctx, bootTimeout*time.Second)
+ 	defer cancel()
+ 
+-	if err := clh.bootVM(ctx); err != nil {
++	if err = clh.bootVM(ctx); err != nil {
+ 		return err
+ 	}
+ 
++	if clh.swtpm != nil {
++		// From now on a dying swtpm tears the sandbox down, like virtiofsd:
++		// cloud-hypervisor never reconnects to a restarted swtpm.
++		clh.swtpm.arm(func() {
++			clh.StopVM(context.Background(), false)
++		})
++	}
++
+ 	clh.state.state = clhReady
+ 	return nil
+ }
+@@ -1272,6 +1308,19 @@ func (clh *cloudHypervisor) terminate(ctx context.Context, waitOnly bool) (err e
+ 		}
+ 	}()
+ 
++	// Runs before cleanupVM (defers are LIFO) and on every return path:
++	// swtpm must not outlive the sandbox, and the TPM session lock is only
++	// released once swtpm has exited.
++	defer func() {
++		if clh.swtpm == nil {
++			return
++		}
++		clh.Logger().Debug("stop swtpm")
++		if err1 := clh.swtpm.Stop(ctx); err1 != nil {
++			clh.Logger().WithError(err1).Error("failed to stop swtpm")
++		}
++	}()
++
+ 	clh.Logger().Debug("Stopping Cloud Hypervisor")
+ 
+ 	if pidRunning && !waitOnly {
+diff --git a/virtcontainers/hypervisor.go b/virtcontainers/hypervisor.go
+index 615a0adc8..739a725d0 100644
+--- a/virtcontainers/hypervisor.go
++++ b/virtcontainers/hypervisor.go
+@@ -406,6 +406,17 @@ type HypervisorConfig struct {
+ 	// TpmSocket is the path to the swtpm socket for vTPM device passthrough via CLH
+ 	TpmSocket string
+ 
++	// Seed shim-owned swtpm (see swtpm.go). The Swtpm* fields come from the
++	// Kata configuration file, the SeedTpm* fields from the sandbox's
++	// seed.loom.farm/tpm-* annotations. SeedTpmMode == "" disables it.
++	SwtpmPath          string
++	SwtpmSentinelPath  string
++	SwtpmExpectedFsid  string
++	SwtpmLockTimeout   uint32
++	SeedTpmMode        string
++	SeedTpmStateDir    string
++	SeedTpmFingerprint string
++
+ 	// VMid is the id of the VM that create the hypervisor if the VM is created by the factory.
+ 	// VMid is "" if the hypervisor is not created by the factory.
+ 	VMid string
+diff --git a/virtcontainers/pkg/annotations/annotations.go b/virtcontainers/pkg/annotations/annotations.go
+index c31733ad9..466369706 100644
+--- a/virtcontainers/pkg/annotations/annotations.go
++++ b/virtcontainers/pkg/annotations/annotations.go
+@@ -176,6 +176,13 @@ const (
+ 	// TpmSocket is a sandbox annotation to specify the swtpm socket path for vTPM device
+ 	TpmSocket = kataAnnotHypervisorPrefix + "tpm_socket"
+ 
++	// Seed shim-owned swtpm. These are not io.katacontainers.* keys, so they
++	// are not subject to enable_annotations; containerd must pass them
++	// through (pod_annotations).
++	SeedTpmMode        = "seed.loom.farm/tpm-mode"
++	SeedTpmStateDir    = "seed.loom.farm/tpm-state-dir"
++	SeedTpmFingerprint = "seed.loom.farm/tpm-fingerprint"
++
+ 	// Enable Hypervisor Devices IOMMU_PLATFORM
+ 	IOMMUPlatform = kataAnnotHypervisorPrefix + "enable_iommu_platform"
+ 
+diff --git a/virtcontainers/swtpm.go b/virtcontainers/swtpm.go
+new file mode 100644
+index 000000000..b02fac1dc
+--- /dev/null
++++ b/virtcontainers/swtpm.go
+@@ -0,0 +1,985 @@
++// Copyright (c) 2026 Seed contributors
++//
++// SPDX-License-Identifier: Apache-2.0
++//
++
++// Shim-owned swtpm (seed).
++//
++// When a sandbox carries the seed.loom.farm/tpm-mode annotation, the Kata
++// shim owns exactly one swtpm process for that sandbox, the same way it owns
++// virtiofsd. Everything below happens before cloud-hypervisor starts:
++//
++//  1. Sentinel: the file at swtpm_sentinel_path must contain the expected
++//     Ceph fsid. This proves the shared TPM state filesystem is mounted, so a
++//     missing state dir can never be mistaken for "no TPM yet".
++//  2. Lock: an exclusive flock on <state-dir>/.session-lock, waited for up to
++//     swtpm_lock_timeout. CephFS enforces flock across clients, so at most one
++//     swtpm in the cluster runs against a given TPM state. The lock fd is
++//     shared with the swtpm child, so the lock is only released once both the
++//     shim has let go of it and swtpm has exited.
++//  3. swtpm is started in socket mode with the seed:// backend. Only create
++//     mode passes SWTPM_SEED_ALLOW_CREATE=1 (the backend refuses to manufacture
++//     a TPM otherwise). swtpm gets Pdeathsig and its own process group.
++//  4. Fingerprint: the shim speaks the swtpm control protocol and raw TPM 2.0
++//     commands to derive the owner-hierarchy SRK and hashes its public area
++//     (see srkTemplate / fingerprintFromPublic for the exact bytes).
++//  5. create: the fingerprint is written to <state-dir>/tpm-fingerprint.
++//     verify: it must equal the seed.loom.farm/tpm-fingerprint annotation.
++//  6. The data channel is closed and cloud-hypervisor attaches to the same
++//     control socket. CLH issues CMD_STOP + CMD_INIT itself, which power
++//     cycles the TPM (swtpm sends TPM2_Shutdown(CLEAR) before stopping), so
++//     the guest sees a freshly powered-on TPM and does its own TPM2_Startup.
++//  7. Teardown: SIGTERM (SIGKILL fallback) to swtpm, then the lock is
++//     released and the per-sandbox volatile dir and socket are removed.
++
++package virtcontainers
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"encoding/binary"
++	"encoding/hex"
++	"fmt"
++	"io"
++	"net"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"syscall"
++	"time"
++
++	"github.com/pkg/errors"
++	log "github.com/sirupsen/logrus"
++	"golang.org/x/sys/unix"
++)
++
++const (
++	SeedTpmModeCreate = "create"
++	SeedTpmModeVerify = "verify"
++
++	DefaultSwtpmSentinelPath = "/var/lib/seed-controller/tpm/.seed-fs"
++	DefaultSwtpmLockTimeout  = 120 // seconds
++
++	swtpmSocketName      = "swtpm.sock"
++	swtpmVolatileDirName = "swtpm-volatile"
++	swtpmSessionLockName = ".session-lock"
++	swtpmPermallName     = "tpm2-00.permall"
++	swtpmFingerprintName = "tpm-fingerprint"
++)
++
++var (
++	// Variables so unit tests can shorten them.
++	swtpmSocketWaitTimeout = 10 * time.Second
++	swtpmIOTimeout         = 30 * time.Second
++	swtpmStopTimeout       = 10 * time.Second
++	swtpmLockPollInterval  = 250 * time.Millisecond
++)
++
++// swtpmConfig is everything needed to run one sandbox's swtpm.
++type swtpmConfig struct {
++	// From the Kata configuration file.
++	path         string
++	sentinelPath string
++	expectedFsid string
++	lockTimeout  time.Duration
++
++	// From the sandbox annotations.
++	mode        string
++	stateDir    string
++	fingerprint string
++
++	// Per-sandbox, local (under the sandbox's runtime dir).
++	socketPath  string
++	volatileDir string
++}
++
++// newSwtpmConfig builds the swtpm config for a sandbox from its hypervisor
++// config. vmDir is the sandbox runtime dir (e.g. /run/vc/vm/<sandbox-id>).
++func newSwtpmConfig(hc *HypervisorConfig, vmDir string) swtpmConfig {
++	sentinel := hc.SwtpmSentinelPath
++	if sentinel == "" {
++		sentinel = DefaultSwtpmSentinelPath
++	}
++	timeout := hc.SwtpmLockTimeout
++	if timeout == 0 {
++		timeout = DefaultSwtpmLockTimeout
++	}
++	return swtpmConfig{
++		path:         hc.SwtpmPath,
++		sentinelPath: sentinel,
++		expectedFsid: hc.SwtpmExpectedFsid,
++		lockTimeout:  time.Duration(timeout) * time.Second,
++		mode:         hc.SeedTpmMode,
++		stateDir:     hc.SeedTpmStateDir,
++		fingerprint:  hc.SeedTpmFingerprint,
++		socketPath:   filepath.Join(vmDir, swtpmSocketName),
++		volatileDir:  filepath.Join(vmDir, swtpmVolatileDirName),
++	}
++}
++
++func (c *swtpmConfig) validate() error {
++	if c.mode != SeedTpmModeCreate && c.mode != SeedTpmModeVerify {
++		return fmt.Errorf("seed tpm: invalid tpm-mode %q (want %q or %q)", c.mode, SeedTpmModeCreate, SeedTpmModeVerify)
++	}
++	if c.path == "" {
++		return errors.New("seed tpm: swtpm_path is not set in the Kata configuration")
++	}
++	if c.expectedFsid == "" {
++		return errors.New("seed tpm: swtpm_expected_fsid is not set in the Kata configuration")
++	}
++	if !filepath.IsAbs(c.sentinelPath) {
++		return fmt.Errorf("seed tpm: swtpm_sentinel_path %q is not absolute", c.sentinelPath)
++	}
++	if !filepath.IsAbs(c.stateDir) || filepath.Clean(c.stateDir) != c.stateDir {
++		return fmt.Errorf("seed tpm: tpm-state-dir %q must be a clean absolute path", c.stateDir)
++	}
++	// The state dir must live below the directory that holds the sentinel,
++	// i.e. on the filesystem the sentinel vouches for.
++	root := filepath.Dir(c.sentinelPath)
++	if !strings.HasPrefix(c.stateDir, root+string(filepath.Separator)) {
++		return fmt.Errorf("seed tpm: tpm-state-dir %q is not below %q", c.stateDir, root)
++	}
++	if c.mode == SeedTpmModeVerify && !isSha256Hex(c.fingerprint) {
++		return fmt.Errorf("seed tpm: verify mode needs tpm-fingerprint as 64 lowercase hex chars, got %q", c.fingerprint)
++	}
++	if c.lockTimeout <= 0 {
++		return errors.New("seed tpm: swtpm_lock_timeout must be positive")
++	}
++	return nil
++}
++
++func isSha256Hex(s string) bool {
++	if len(s) != 64 {
++		return false
++	}
++	for _, r := range s {
++		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
++			return false
++		}
++	}
++	return true
++}
++
++// checkSentinel verifies the shared TPM filesystem is the one we expect.
++func checkSentinel(path, expectedFsid string) error {
++	data, err := os.ReadFile(path)
++	if err != nil {
++		return fmt.Errorf("seed tpm: cannot read sentinel %s (is the shared TPM filesystem mounted?): %w", path, err)
++	}
++	got := strings.TrimSpace(string(data))
++	if got != expectedFsid {
++		return fmt.Errorf("seed tpm: sentinel %s contains %q, expected fsid %q", path, got, expectedFsid)
++	}
++	return nil
++}
++
++// checkSameFilesystem makes sure dir is on the same filesystem (st_dev) as
++// the sentinel, so a dir that shadows the mount point cannot slip through.
++func checkSameFilesystem(sentinel, dir string) error {
++	var a, b unix.Stat_t
++	if err := unix.Stat(sentinel, &a); err != nil {
++		return fmt.Errorf("seed tpm: stat %s: %w", sentinel, err)
++	}
++	if err := unix.Stat(dir, &b); err != nil {
++		return fmt.Errorf("seed tpm: stat %s: %w", dir, err)
++	}
++	if a.Dev != b.Dev {
++		return fmt.Errorf("seed tpm: %s is not on the same filesystem as sentinel %s", dir, sentinel)
++	}
++	return nil
++}
++
++// acquireSessionLock takes an exclusive flock on <stateDir>/.session-lock,
++// polling until timeout or ctx cancellation.
++func acquireSessionLock(ctx context.Context, stateDir string, timeout time.Duration) (*os.File, error) {
++	path := filepath.Join(stateDir, swtpmSessionLockName)
++	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0600)
++	if err != nil {
++		return nil, fmt.Errorf("seed tpm: open %s: %w", path, err)
++	}
++	deadline := time.Now().Add(timeout)
++	for {
++		err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
++		if err == nil {
++			return f, nil
++		}
++		if err != unix.EWOULDBLOCK && err != unix.EINTR {
++			f.Close()
++			return nil, fmt.Errorf("seed tpm: flock %s: %w", path, err)
++		}
++		if time.Now().After(deadline) {
++			f.Close()
++			return nil, fmt.Errorf("seed tpm: timed out after %s waiting for session lock %s (another swtpm holds this TPM)", timeout, path)
++		}
++		select {
++		case <-ctx.Done():
++			f.Close()
++			return nil, fmt.Errorf("seed tpm: waiting for session lock %s: %w", path, ctx.Err())
++		case <-time.After(swtpmLockPollInterval):
++		}
++	}
++}
++
++// writeFileAtomic writes data to path via a temp file + fsync + rename.
++func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
++	dir := filepath.Dir(path)
++	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
++	if err != nil {
++		return err
++	}
++	tmpName := tmp.Name()
++	defer os.Remove(tmpName) // no-op after a successful rename
++	if _, err := tmp.Write(data); err != nil {
++		tmp.Close()
++		return err
++	}
++	if err := tmp.Chmod(perm); err != nil {
++		tmp.Close()
++		return err
++	}
++	if err := tmp.Sync(); err != nil {
++		tmp.Close()
++		return err
++	}
++	if err := tmp.Close(); err != nil {
++		return err
++	}
++	if err := os.Rename(tmpName, path); err != nil {
++		return err
++	}
++	if d, err := os.Open(dir); err == nil {
++		d.Sync()
++		d.Close()
++	}
++	return nil
++}
++
++// tailBuffer forwards swtpm output to the log and keeps the tail for errors.
++type tailBuffer struct {
++	mu     sync.Mutex
++	buf    []byte
++	logger *log.Entry
++}
++
++const tailBufferMax = 4096
++
++func (t *tailBuffer) Write(p []byte) (int, error) {
++	t.mu.Lock()
++	defer t.mu.Unlock()
++	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
++		if line != "" {
++			t.logger.WithField("swtpm", line).Warn("swtpm output")
++		}
++	}
++	t.buf = append(t.buf, p...)
++	if len(t.buf) > tailBufferMax {
++		t.buf = t.buf[len(t.buf)-tailBufferMax:]
++	}
++	return len(p), nil
++}
++
++func (t *tailBuffer) String() string {
++	t.mu.Lock()
++	defer t.mu.Unlock()
++	return strings.TrimSpace(string(t.buf))
++}
++
++// swtpm is the shim-owned swtpm process for one sandbox.
++type swtpm struct {
++	cfg swtpmConfig
++
++	lockFile *os.File
++	cmd      *exec.Cmd
++	pid      int
++	done     chan struct{} // closed when the swtpm process has exited
++	waitErr  error
++	output   *tailBuffer
++
++	stopping atomic.Bool
++	onQuit   atomic.Value // onQuitFunc, set by arm()
++	stopOnce sync.Once
++
++	// Fingerprint computed at start.
++	Fingerprint string
++}
++
++func newSwtpm(cfg swtpmConfig) *swtpm {
++	return &swtpm{cfg: cfg}
++}
++
++func (s *swtpm) Logger() *log.Entry {
++	return hvLogger.WithFields(log.Fields{
++		"subsystem": "swtpm",
++		"state-dir": s.cfg.stateDir,
++		"tpm-mode":  s.cfg.mode,
++	})
++}
++
++// Start runs steps 1-5. On error nothing is left running and the lock is
++// released.
++func (s *swtpm) Start(ctx context.Context) (err error) {
++	cfg := &s.cfg
++	if err := cfg.validate(); err != nil {
++		return err
++	}
++
++	defer func() {
++		if err != nil {
++			s.Stop(ctx)
++		}
++	}()
++
++	// 1. sentinel
++	if err := checkSentinel(cfg.sentinelPath, cfg.expectedFsid); err != nil {
++		return err
++	}
++
++	if cfg.mode == SeedTpmModeCreate {
++		if err := os.Mkdir(cfg.stateDir, 0755); err != nil && !os.IsExist(err) {
++			return fmt.Errorf("seed tpm: create state dir: %w", err)
++		}
++	}
++	if st, err := os.Lstat(cfg.stateDir); err != nil {
++		return fmt.Errorf("seed tpm: state dir: %w", err)
++	} else if !st.IsDir() {
++		return fmt.Errorf("seed tpm: state dir %s is not a directory", cfg.stateDir)
++	}
++	if err := checkSameFilesystem(cfg.sentinelPath, cfg.stateDir); err != nil {
++		return err
++	}
++
++	// 2. lock
++	s.Logger().WithField("timeout", cfg.lockTimeout).Info("waiting for TPM session lock")
++	if s.lockFile, err = acquireSessionLock(ctx, cfg.stateDir, cfg.lockTimeout); err != nil {
++		return err
++	}
++	s.Logger().Info("acquired TPM session lock")
++
++	permall := filepath.Join(cfg.stateDir, swtpmPermallName)
++	_, statErr := os.Stat(permall)
++	switch {
++	case cfg.mode == SeedTpmModeCreate && statErr == nil:
++		return fmt.Errorf("seed tpm: create mode but %s already exists; refusing to replace an existing TPM", permall)
++	case cfg.mode == SeedTpmModeCreate && !os.IsNotExist(statErr):
++		return fmt.Errorf("seed tpm: stat %s: %w", permall, statErr)
++	case cfg.mode == SeedTpmModeVerify && statErr != nil:
++		return fmt.Errorf("seed tpm: verify mode but cannot use %s: %w", permall, statErr)
++	}
++
++	// 3. swtpm
++	if err := s.launch(); err != nil {
++		return err
++	}
++
++	// 4. fingerprint
++	fp, err := swtpmFingerprint(ctx, cfg.socketPath, s.done)
++	if err != nil {
++		return fmt.Errorf("seed tpm: computing TPM fingerprint: %w%s", err, s.outputSuffix())
++	}
++	s.Fingerprint = fp
++
++	// 5. record / verify
++	switch cfg.mode {
++	case SeedTpmModeCreate:
++		if err := writeFileAtomic(filepath.Join(cfg.stateDir, swtpmFingerprintName), []byte(fp), 0644); err != nil {
++			return fmt.Errorf("seed tpm: writing fingerprint: %w", err)
++		}
++		s.Logger().WithField("fingerprint", fp).Info("created new TPM")
++	case SeedTpmModeVerify:
++		if fp != cfg.fingerprint {
++			return fmt.Errorf("seed tpm: TPM fingerprint mismatch for %s: expected %s (annotation), got %s (state on disk)", cfg.stateDir, cfg.fingerprint, fp)
++		}
++		s.Logger().WithField("fingerprint", fp).Info("verified TPM fingerprint")
++	}
++
++	return nil
++}
++
++func (s *swtpm) args() []string {
++	return []string{
++		"socket", "--tpm2",
++		"--tpmstate", "backend-uri=seed://" + s.cfg.stateDir,
++		"--ctrl", "type=unixio,path=" + s.cfg.socketPath,
++		"--flags", "startup-clear",
++	}
++}
++
++func (s *swtpm) env() []string {
++	env := []string{"SWTPM_SEED_VOLATILE_DIR=" + s.cfg.volatileDir}
++	if s.cfg.mode == SeedTpmModeCreate {
++		env = append(env, "SWTPM_SEED_ALLOW_CREATE=1")
++	}
++	return env
++}
++
++func (s *swtpm) launch() error {
++	cfg := &s.cfg
++
++	os.RemoveAll(cfg.volatileDir)
++	if err := os.MkdirAll(cfg.volatileDir, 0700); err != nil {
++		return fmt.Errorf("seed tpm: create volatile dir: %w", err)
++	}
++	os.Remove(cfg.socketPath)
++
++	s.output = &tailBuffer{logger: s.Logger()}
++	cmd := exec.Command(cfg.path, s.args()...)
++	cmd.Env = s.env()
++	cmd.Stdout = s.output
++	cmd.Stderr = s.output
++	// Share the session lock's open file description with swtpm (fd 3):
++	// flock is held until every holder closes it, so even if swtpm somehow
++	// outlived the shim the lock would stay held while it runs.
++	cmd.ExtraFiles = []*os.File{s.lockFile}
++	cmd.SysProcAttr = &syscall.SysProcAttr{
++		Setpgid:   true,
++		Pdeathsig: syscall.SIGTERM,
++	}
++	s.cmd = cmd
++	s.done = make(chan struct{})
++
++	s.Logger().WithFields(log.Fields{"path": cfg.path, "args": strings.Join(s.args(), " ")}).Info("starting swtpm")
++
++	started := make(chan error, 1)
++	go func() {
++		// Pdeathsig fires when the *thread* that forked the child exits,
++		// not the process. Pin this goroutine to its thread and never
++		// unlock it, so that thread lives until swtpm has exited.
++		runtime.LockOSThread()
++		if err := cmd.Start(); err != nil {
++			started <- err
++			return
++		}
++		started <- nil
++		s.waitErr = cmd.Wait()
++		close(s.done)
++		if s.stopping.Load() {
++			return
++		}
++		s.Logger().WithError(s.waitErr).WithField("output", s.output.String()).Error("swtpm exited unexpectedly")
++		if q, ok := s.onQuit.Load().(onQuitFunc); ok && q != nil {
++			go q()
++		}
++	}()
++	if err := <-started; err != nil {
++		s.done = nil
++		return fmt.Errorf("seed tpm: starting swtpm: %w", err)
++	}
++	s.pid = cmd.Process.Pid
++	s.Logger().WithField("pid", s.pid).Info("swtpm started")
++	return nil
++}
++
++func (s *swtpm) outputSuffix() string {
++	if s.output == nil {
++		return ""
++	}
++	if out := s.output.String(); out != "" {
++		return " (swtpm: " + strings.ReplaceAll(out, "\n", "; ") + ")"
++	}
++	return ""
++}
++
++// arm installs onQuit, called if swtpm dies on its own from now on. Called
++// once cloud-hypervisor is up: before that, a dying swtpm surfaces as a
++// Start error instead.
++func (s *swtpm) arm(onQuit onQuitFunc) {
++	s.onQuit.Store(onQuit)
++	if s.done != nil {
++		select {
++		case <-s.done:
++			if !s.stopping.Load() {
++				go onQuit()
++			}
++		default:
++		}
++	}
++}
++
++// Stop terminates swtpm, then releases the session lock and removes the
++// local files. Safe to call more than once.
++func (s *swtpm) Stop(ctx context.Context) error {
++	var err error
++	s.stopOnce.Do(func() { err = s.stop() })
++	return err
++}
++
++func (s *swtpm) stop() error {
++	s.stopping.Store(true)
++	var err error
++
++	if s.done != nil {
++		select {
++		case <-s.done:
++		default:
++			s.Logger().WithField("pid", s.pid).Info("stopping swtpm")
++			// Negative pid: the whole process group (Setpgid above).
++			syscall.Kill(-s.pid, syscall.SIGTERM)
++			select {
++			case <-s.done:
++			case <-time.After(swtpmStopTimeout):
++				s.Logger().WithField("pid", s.pid).Warn("swtpm did not exit after SIGTERM, sending SIGKILL")
++				syscall.Kill(-s.pid, syscall.SIGKILL)
++				select {
++				case <-s.done:
++				case <-time.After(swtpmStopTimeout):
++					err = fmt.Errorf("seed tpm: swtpm (pid %d) did not exit after SIGKILL", s.pid)
++				}
++			}
++		}
++	}
++
++	if s.lockFile != nil {
++		// Deliberately no LOCK_UN: that would drop the lock for swtpm too
++		// if it were still alive. Closing our descriptor releases the lock
++		// once swtpm (the other holder) has exited.
++		s.lockFile.Close()
++		s.lockFile = nil
++	}
++	if err == nil {
++		os.RemoveAll(s.cfg.volatileDir)
++		os.Remove(s.cfg.socketPath)
++	}
++	if err != nil {
++		s.Logger().WithError(err).Error("failed to stop swtpm")
++	} else {
++		s.Logger().Info("swtpm stopped, TPM session lock released")
++	}
++	return err
++}
++
++// -------------------------------------------------------------------------
++// swtpm control channel
++// -------------------------------------------------------------------------
++
++// swtpm control channel commands (swtpm's tpm_ioctl.h, socket encoding:
++// 4-byte big-endian command code, then the request body; responses start
++// with a 4-byte big-endian TPM result code).
++const (
++	swtpmCmdGetCapability = 1
++	swtpmCmdSetDatafd     = 16
++)
++
++type swtpmCtrl struct {
++	conn *net.UnixConn
++}
++
++// dialSwtpmCtrl waits for swtpm's control socket and connects to it.
++func dialSwtpmCtrl(ctx context.Context, path string, exited <-chan struct{}) (*swtpmCtrl, error) {
++	deadline := time.Now().Add(swtpmSocketWaitTimeout)
++	for {
++		conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
++		if err == nil {
++			return &swtpmCtrl{conn: conn}, nil
++		}
++		if time.Now().After(deadline) {
++			return nil, fmt.Errorf("swtpm control socket %s not ready after %s: %w", path, swtpmSocketWaitTimeout, err)
++		}
++		select {
++		case <-exited:
++			return nil, errors.New("swtpm exited during startup")
++		case <-ctx.Done():
++			return nil, ctx.Err()
++		case <-time.After(50 * time.Millisecond):
++		}
++	}
++}
++
++func (c *swtpmCtrl) Close() error { return c.conn.Close() }
++
++// command sends cmd with optional body and fd, and returns the response.
++func (c *swtpmCtrl) command(cmd uint32, body []byte, fd int, respLen int) ([]byte, error) {
++	req := make([]byte, 4, 4+len(body))
++	binary.BigEndian.PutUint32(req, cmd)
++	req = append(req, body...)
++	var oob []byte
++	if fd >= 0 {
++		oob = unix.UnixRights(fd)
++	}
++	c.conn.SetDeadline(time.Now().Add(swtpmIOTimeout))
++	defer c.conn.SetDeadline(time.Time{})
++	if _, _, err := c.conn.WriteMsgUnix(req, oob, nil); err != nil {
++		return nil, fmt.Errorf("swtpm ctrl cmd %d: write: %w", cmd, err)
++	}
++	resp := make([]byte, respLen)
++	if _, err := io.ReadFull(c.conn, resp); err != nil {
++		return nil, fmt.Errorf("swtpm ctrl cmd %d: read: %w", cmd, err)
++	}
++	if res := binary.BigEndian.Uint32(resp); res != 0 {
++		return nil, fmt.Errorf("swtpm ctrl cmd %d: result 0x%x", cmd, res)
++	}
++	return resp, nil
++}
++
++// setDataFd creates a socketpair, hands one end to swtpm with CMD_SET_DATAFD
++// (exactly what cloud-hypervisor does) and returns the other end.
++func (c *swtpmCtrl) setDataFd() (*net.UnixConn, error) {
++	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
++	if err != nil {
++		return nil, fmt.Errorf("socketpair: %w", err)
++	}
++	_, err = c.command(swtpmCmdSetDatafd, nil, fds[1], 4)
++	unix.Close(fds[1])
++	if err != nil {
++		unix.Close(fds[0])
++		return nil, err
++	}
++	f := os.NewFile(uintptr(fds[0]), "swtpm-data")
++	defer f.Close() // FileConn dups the fd
++	conn, err := net.FileConn(f)
++	if err != nil {
++		return nil, err
++	}
++	return conn.(*net.UnixConn), nil
++}
++
++// -------------------------------------------------------------------------
++// TPM 2.0 commands (just enough for CreatePrimary + FlushContext)
++// -------------------------------------------------------------------------
++
++const (
++	tpmStNoSessions = 0x8001
++	tpmStSessions   = 0x8002
++
++	tpmCcCreatePrimary = 0x00000131
++	tpmCcFlushContext  = 0x00000165
++	tpmCcStartup       = 0x00000144
++
++	tpmRhOwner = 0x40000001
++	tpmRsPw    = 0x40000009
++
++	tpmSuClear = 0x0000
++
++	tpmAlgAES    = 0x0006
++	tpmAlgSHA256 = 0x000B
++	tpmAlgNull   = 0x0010
++	tpmAlgECC    = 0x0023
++	tpmAlgCFB    = 0x0043
++
++	tpmEccNistP256 = 0x0003
++
++	tpmaObjectFixedTPM            = 1 << 1
++	tpmaObjectFixedParent         = 1 << 4
++	tpmaObjectSensitiveDataOrigin = 1 << 5
++	tpmaObjectUserWithAuth        = 1 << 6
++	tpmaObjectNoDA                = 1 << 10
++	tpmaObjectRestricted          = 1 << 16
++	tpmaObjectDecrypt             = 1 << 17
++
++	tpmRcSuccess    = 0x000
++	tpmRcInitialize = 0x100
++	tpmRcRetry      = 0x922
++	tpmRcYielded    = 0x908
++	tpmRcTesting    = 0x90A
++)
++
++// srkTemplate returns the marshaled TPMT_PUBLIC used as the CreatePrimary
++// template (TCG-style ECC P-256 storage root key):
++//
++//	0023                type       TPM_ALG_ECC
++//	000b                nameAlg    TPM_ALG_SHA256
++//	00030472            objectAttributes fixedTPM|fixedParent|
++//	                               sensitiveDataOrigin|userWithAuth|noDA|
++//	                               restricted|decrypt
++//	0000                authPolicy (empty TPM2B_DIGEST)
++//	0006 0080 0043      symmetric  AES, 128 bits, CFB
++//	0010                scheme     TPM_ALG_NULL
++//	0003                curveID    TPM_ECC_NIST_P256
++//	0010                kdf        TPM_ALG_NULL
++//	0020 00*32          unique.x   32 zero bytes
++//	0020 00*32          unique.y   32 zero bytes
++func srkTemplate() []byte {
++	var b bytes.Buffer
++	be16 := func(v uint16) { binary.Write(&b, binary.BigEndian, v) }
++	be32 := func(v uint32) { binary.Write(&b, binary.BigEndian, v) }
++
++	be16(tpmAlgECC)
++	be16(tpmAlgSHA256)
++	be32(tpmaObjectFixedTPM | tpmaObjectFixedParent | tpmaObjectSensitiveDataOrigin |
++		tpmaObjectUserWithAuth | tpmaObjectNoDA | tpmaObjectRestricted | tpmaObjectDecrypt)
++	be16(0) // authPolicy
++	be16(tpmAlgAES)
++	be16(128)
++	be16(tpmAlgCFB)
++	be16(tpmAlgNull)     // scheme
++	be16(tpmEccNistP256) // curveID
++	be16(tpmAlgNull)     // kdf
++	be16(32)
++	b.Write(make([]byte, 32)) // unique.x
++	be16(32)
++	b.Write(make([]byte, 32)) // unique.y
++	return b.Bytes()
++}
++
++// srkTemplatePrefixLen is the length of the part of TPMT_PUBLIC that the
++// TPM must echo back unchanged (everything before unique).
++const srkTemplatePrefixLen = 2 + 2 + 4 + 2 + 6 + 2 + 2 + 2
++
++func tpmCommand(tag uint16, cc uint32, body []byte) []byte {
++	cmd := make([]byte, 10, 10+len(body))
++	binary.BigEndian.PutUint16(cmd[0:], tag)
++	binary.BigEndian.PutUint32(cmd[2:], uint32(10+len(body)))
++	binary.BigEndian.PutUint32(cmd[6:], cc)
++	return append(cmd, body...)
++}
++
++// buildCreatePrimarySRK marshals TPM2_CreatePrimary(TPM_RH_OWNER, srkTemplate)
++// with an empty-password session for the owner hierarchy.
++func buildCreatePrimarySRK() []byte {
++	var b bytes.Buffer
++	be16 := func(v uint16) { binary.Write(&b, binary.BigEndian, v) }
++	be32 := func(v uint32) { binary.Write(&b, binary.BigEndian, v) }
++
++	be32(tpmRhOwner) // primaryHandle
++	// authorization area: one TPMS_AUTH_COMMAND for TPM_RS_PW, empty auth
++	be32(9)
++	be32(tpmRsPw)  // sessionHandle
++	be16(0)        // nonce
++	b.WriteByte(0) // sessionAttributes
++	be16(0)        // hmac (password)
++	// inSensitive: TPM2B_SENSITIVE_CREATE { userAuth = empty, data = empty }
++	be16(4)
++	be16(0)
++	be16(0)
++	// inPublic: TPM2B_PUBLIC
++	tmpl := srkTemplate()
++	be16(uint16(len(tmpl)))
++	b.Write(tmpl)
++	be16(0) // outsideInfo
++	be32(0) // creationPCR: TPML_PCR_SELECTION count 0
++	return tpmCommand(tpmStSessions, tpmCcCreatePrimary, b.Bytes())
++}
++
++func buildFlushContext(handle uint32) []byte {
++	body := make([]byte, 4)
++	binary.BigEndian.PutUint32(body, handle)
++	return tpmCommand(tpmStNoSessions, tpmCcFlushContext, body)
++}
++
++func buildStartupClear() []byte {
++	body := make([]byte, 2)
++	binary.BigEndian.PutUint16(body, tpmSuClear)
++	return tpmCommand(tpmStNoSessions, tpmCcStartup, body)
++}
++
++type tpmError uint32
++
++func (e tpmError) Error() string { return fmt.Sprintf("TPM error 0x%03x", uint32(e)) }
++
++// tpmResponseCode validates the response header and returns the TPM_RC.
++func tpmResponseCode(resp []byte) (uint32, error) {
++	if len(resp) < 10 {
++		return 0, fmt.Errorf("short TPM response (%d bytes)", len(resp))
++	}
++	if size := binary.BigEndian.Uint32(resp[2:]); int(size) != len(resp) {
++		return 0, fmt.Errorf("TPM response size %d does not match %d bytes read", size, len(resp))
++	}
++	return binary.BigEndian.Uint32(resp[6:]), nil
++}
++
++type tpmReader struct {
++	b   []byte
++	err error
++}
++
++func (r *tpmReader) take(n int) []byte {
++	if r.err != nil {
++		return nil
++	}
++	if n > len(r.b) {
++		r.err = errors.New("truncated TPM response")
++		return nil
++	}
++	v := r.b[:n]
++	r.b = r.b[n:]
++	return v
++}
++
++func (r *tpmReader) u16() uint16 {
++	if v := r.take(2); v != nil {
++		return binary.BigEndian.Uint16(v)
++	}
++	return 0
++}
++
++func (r *tpmReader) u32() uint32 {
++	if v := r.take(4); v != nil {
++		return binary.BigEndian.Uint32(v)
++	}
++	return 0
++}
++
++func (r *tpmReader) tpm2b() []byte { return r.take(int(r.u16())) }
++
++// parseCreatePrimaryResponse returns the object handle and the marshaled
++// TPMT_PUBLIC of outPublic (without its TPM2B size prefix). It also checks
++// that the TPM echoed the template and that the returned name is
++// nameAlg || SHA256(publicArea).
++func parseCreatePrimaryResponse(resp []byte) (uint32, []byte, error) {
++	rc, err := tpmResponseCode(resp)
++	if err != nil {
++		return 0, nil, err
++	}
++	if rc != tpmRcSuccess {
++		return 0, nil, tpmError(rc)
++	}
++	r := &tpmReader{b: resp[10:]}
++	handle := r.u32()
++	paramSize := r.u32()
++	params := r.take(int(paramSize))
++	if r.err != nil {
++		return 0, nil, r.err
++	}
++	p := &tpmReader{b: params}
++	pub := p.tpm2b()
++	p.tpm2b() // creationData
++	p.tpm2b() // creationHash
++	p.u16()   // creationTicket.tag
++	p.u32()   // creationTicket.hierarchy
++	p.tpm2b() // creationTicket.digest
++	name := p.tpm2b()
++	if p.err != nil {
++		return 0, nil, p.err
++	}
++
++	tmpl := srkTemplate()
++	if len(pub) < srkTemplatePrefixLen || !bytes.Equal(pub[:srkTemplatePrefixLen], tmpl[:srkTemplatePrefixLen]) {
++		return 0, nil, fmt.Errorf("TPM returned a public area that does not match the SRK template: %x", pub)
++	}
++	digest := sha256.Sum256(pub)
++	wantName := append([]byte{0x00, 0x0b}, digest[:]...)
++	if !bytes.Equal(name, wantName) {
++		return 0, nil, fmt.Errorf("TPM returned name %x, expected %x", name, wantName)
++	}
++	out := make([]byte, len(pub))
++	copy(out, pub)
++	return handle, out, nil
++}
++
++// fingerprintFromPublic is the TPM fingerprint: lowercase hex SHA-256 of the
++// marshaled TPMT_PUBLIC of the SRK, exactly as returned by CreatePrimary in
++// outPublic, without the 2-byte TPM2B_PUBLIC size prefix.
++func fingerprintFromPublic(pub []byte) string {
++	sum := sha256.Sum256(pub)
++	return hex.EncodeToString(sum[:])
++}
++
++// tpmTransact sends one TPM command on the data channel and reads one
++// complete response.
++func tpmTransact(conn net.Conn, cmd []byte) ([]byte, error) {
++	conn.SetDeadline(time.Now().Add(swtpmIOTimeout))
++	defer conn.SetDeadline(time.Time{})
++	if _, err := conn.Write(cmd); err != nil {
++		return nil, fmt.Errorf("TPM write: %w", err)
++	}
++	hdr := make([]byte, 10)
++	if _, err := io.ReadFull(conn, hdr); err != nil {
++		return nil, fmt.Errorf("TPM read: %w", err)
++	}
++	size := binary.BigEndian.Uint32(hdr[2:])
++	if size < 10 || size > 1<<16 {
++		return nil, fmt.Errorf("bad TPM response size %d", size)
++	}
++	resp := make([]byte, size)
++	copy(resp, hdr)
++	if _, err := io.ReadFull(conn, resp[10:]); err != nil {
++		return nil, fmt.Errorf("TPM read: %w", err)
++	}
++	return resp, nil
++}
++
++// tpmTransactRetry retries on TPM_RC_RETRY/YIELDED/TESTING, and issues
++// TPM2_Startup(CLEAR) once if the TPM reports it is not started.
++func tpmTransactRetry(conn net.Conn, cmd []byte) ([]byte, error) {
++	startupSent := false
++	for attempt := 0; attempt < 20; attempt++ {
++		resp, err := tpmTransact(conn, cmd)
++		if err != nil {
++			return nil, err
++		}
++		rc, err := tpmResponseCode(resp)
++		if err != nil {
++			return nil, err
++		}
++		switch rc {
++		case tpmRcRetry, tpmRcYielded, tpmRcTesting:
++			time.Sleep(50 * time.Millisecond)
++			continue
++		case tpmRcInitialize:
++			if startupSent {
++				return resp, nil
++			}
++			startupSent = true
++			sresp, err := tpmTransact(conn, buildStartupClear())
++			if err != nil {
++				return nil, err
++			}
++			if src, err := tpmResponseCode(sresp); err != nil {
++				return nil, err
++			} else if src != tpmRcSuccess && src != tpmRcInitialize {
++				return nil, fmt.Errorf("TPM2_Startup: %w", tpmError(src))
++			}
++			continue
++		}
++		return resp, nil
++	}
++	return nil, errors.New("TPM kept asking to retry")
++}
++
++// computeSrkFingerprint runs CreatePrimary + FlushContext on an open data
++// channel and returns the fingerprint.
++func computeSrkFingerprint(conn net.Conn) (string, error) {
++	resp, err := tpmTransactRetry(conn, buildCreatePrimarySRK())
++	if err != nil {
++		return "", fmt.Errorf("TPM2_CreatePrimary: %w", err)
++	}
++	handle, pub, err := parseCreatePrimaryResponse(resp)
++	if err != nil {
++		return "", fmt.Errorf("TPM2_CreatePrimary: %w", err)
++	}
++	fresp, err := tpmTransactRetry(conn, buildFlushContext(handle))
++	if err != nil {
++		return "", fmt.Errorf("TPM2_FlushContext: %w", err)
++	}
++	if rc, err := tpmResponseCode(fresp); err != nil {
++		return "", fmt.Errorf("TPM2_FlushContext: %w", err)
++	} else if rc != tpmRcSuccess {
++		return "", fmt.Errorf("TPM2_FlushContext: %w", tpmError(rc))
++	}
++	return fingerprintFromPublic(pub), nil
++}
++
++// swtpmFingerprint connects to swtpm's control socket, sets up a data
++// channel, computes the SRK fingerprint and hands the TPM back in a state
++// cloud-hypervisor can attach to: the data channel is closed and swtpm is
++// known to have processed that (so its next CMD_SET_DATAFD succeeds).
++func swtpmFingerprint(ctx context.Context, ctrlPath string, exited <-chan struct{}) (string, error) {
++	ctrl, err := dialSwtpmCtrl(ctx, ctrlPath, exited)
++	if err != nil {
++		return "", err
++	}
++	defer ctrl.Close()
++
++	data, err := ctrl.setDataFd()
++	if err != nil {
++		return "", err
++	}
++	fp, err := computeSrkFingerprint(data)
++	data.Close()
++	if err != nil {
++		return "", err
++	}
++
++	// swtpm accepts only one data fd at a time and forgets it when it sees
++	// the hangup. It polls the data and control fds together and handles a
++	// data hangup before control input within the same poll round, so once
++	// this control round trip completes the hangup has been processed.
++	if _, err := ctrl.command(swtpmCmdGetCapability, nil, -1, 8); err != nil {
++		return "", fmt.Errorf("swtpm handoff sync: %w", err)
++	}
++	return fp, nil
++}
+diff --git a/virtcontainers/swtpm_test.go b/virtcontainers/swtpm_test.go
+new file mode 100644
+index 000000000..c75d06cdf
+--- /dev/null
++++ b/virtcontainers/swtpm_test.go
+@@ -0,0 +1,719 @@
++// Copyright (c) 2026 Seed contributors
++//
++// SPDX-License-Identifier: Apache-2.0
++//
++
++package virtcontainers
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/binary"
++	"encoding/hex"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"syscall"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++	"golang.org/x/sys/unix"
++)
++
++// Minimal stand-in for testify/require (not vendored in kata).
++type requireT struct{}
++
++var require requireT
++
++func (requireT) NoError(t *testing.T, err error, msg ...interface{}) {
++	t.Helper()
++	if !assert.NoError(t, err, msg...) {
++		t.FailNow()
++	}
++}
++
++func (requireT) Error(t *testing.T, err error, msg ...interface{}) {
++	t.Helper()
++	if !assert.Error(t, err, msg...) {
++		t.FailNow()
++	}
++}
++
++func (requireT) True(t *testing.T, v bool, msg ...interface{}) {
++	t.Helper()
++	if !assert.True(t, v, msg...) {
++		t.FailNow()
++	}
++}
++
++// Golden bytes of the SRK template; the controller's offline backfill tool
++// and tpm2-tools must produce a TPM key from exactly this template.
++const srkTemplateHex = "0023" + "000b" + "00030472" + "0000" +
++	"0006" + "0080" + "0043" + "0010" + "0003" + "0010" +
++	"0020" + "0000000000000000000000000000000000000000000000000000000000000000" +
++	"0020" + "0000000000000000000000000000000000000000000000000000000000000000"
++
++func TestSrkTemplateBytes(t *testing.T) {
++	assert.Equal(t, srkTemplateHex, hex.EncodeToString(srkTemplate()))
++	assert.Equal(t, srkTemplateHex[:srkTemplatePrefixLen*2], hex.EncodeToString(srkTemplate()[:srkTemplatePrefixLen]))
++}
++
++func TestBuildCreatePrimarySRK(t *testing.T) {
++	cmd := buildCreatePrimarySRK()
++	want := "8002" + "%08x" + "00000131" + // header
++		"40000001" + // TPM_RH_OWNER
++		"00000009" + "40000009" + "0000" + "00" + "0000" + // password session
++		"0004" + "0000" + "0000" + // inSensitive
++		"%04x" + srkTemplateHex + // inPublic
++		"0000" + // outsideInfo
++		"00000000" // creationPCR
++	tmplLen := len(srkTemplateHex) / 2
++	want = strings.Replace(want, "%04x", hex.EncodeToString([]byte{byte(tmplLen >> 8), byte(tmplLen)}), 1)
++	size := make([]byte, 4)
++	binary.BigEndian.PutUint32(size, uint32(len(cmd)))
++	want = strings.Replace(want, "%08x", hex.EncodeToString(size), 1)
++	assert.Equal(t, want, hex.EncodeToString(cmd))
++}
++
++func TestBuildFlushContext(t *testing.T) {
++	assert.Equal(t, "80010000000e0000016580000000", hex.EncodeToString(buildFlushContext(0x80000000)))
++}
++
++// fakeCreatePrimaryResponse builds a CreatePrimary response around pub.
++func fakeCreatePrimaryResponse(handle uint32, pub, name []byte) []byte {
++	var params []byte
++	tpm2b := func(b []byte) {
++		params = binary.BigEndian.AppendUint16(params, uint16(len(b)))
++		params = append(params, b...)
++	}
++	tpm2b(pub)
++	tpm2b([]byte{1, 2, 3})                             // creationData
++	tpm2b(make([]byte, 32))                            // creationHash
++	params = append(params, 0x80, 0x21, 0x40, 0, 0, 1) // ticket tag + hierarchy
++	tpm2b(make([]byte, 32))                            // ticket digest
++	tpm2b(name)
++
++	body := binary.BigEndian.AppendUint32(nil, handle)
++	body = binary.BigEndian.AppendUint32(body, uint32(len(params)))
++	body = append(body, params...)
++	body = append(body, 0, 0, 1, 0, 0) // response auth area
++	resp := []byte{0x80, 0x02, 0, 0, 0, 0, 0, 0, 0, 0}
++	resp = append(resp, body...)
++	binary.BigEndian.PutUint32(resp[2:], uint32(len(resp)))
++	return resp
++}
++
++func fakeSrkPublic() []byte {
++	pub := srkTemplate()[:srkTemplatePrefixLen]
++	pub = append([]byte{}, pub...)
++	pub = append(pub, 0, 32)
++	pub = append(pub, []byte(strings.Repeat("x", 32))...)
++	pub = append(pub, 0, 32)
++	pub = append(pub, []byte(strings.Repeat("y", 32))...)
++	return pub
++}
++
++func TestParseCreatePrimaryResponse(t *testing.T) {
++	pub := fakeSrkPublic()
++	d := sha256.Sum256(pub)
++	name := append([]byte{0, 0x0b}, d[:]...)
++
++	h, got, err := parseCreatePrimaryResponse(fakeCreatePrimaryResponse(0x80000000, pub, name))
++	require.NoError(t, err)
++	assert.Equal(t, uint32(0x80000000), h)
++	assert.Equal(t, pub, got)
++	assert.Equal(t, hex.EncodeToString(d[:]), fingerprintFromPublic(got))
++
++	// name that does not match the public area
++	bad := append([]byte{}, name...)
++	bad[5] ^= 1
++	_, _, err = parseCreatePrimaryResponse(fakeCreatePrimaryResponse(0x80000000, pub, bad))
++	assert.ErrorContains(t, err, "name")
++
++	// public area that does not match the template
++	pub2 := append([]byte{}, pub...)
++	pub2[5] ^= 1 // objectAttributes
++	d2 := sha256.Sum256(pub2)
++	_, _, err = parseCreatePrimaryResponse(fakeCreatePrimaryResponse(0x80000000, pub2, append([]byte{0, 0x0b}, d2[:]...)))
++	assert.ErrorContains(t, err, "template")
++
++	// TPM error
++	_, _, err = parseCreatePrimaryResponse([]byte{0x80, 0x01, 0, 0, 0, 10, 0, 0, 0x09, 0x8e})
++	assert.ErrorContains(t, err, "0x98e")
++
++	// truncated
++	r := fakeCreatePrimaryResponse(0x80000000, pub, name)
++	r = r[:40]
++	binary.BigEndian.PutUint32(r[2:], 40)
++	_, _, err = parseCreatePrimaryResponse(r)
++	assert.Error(t, err)
++}
++
++func TestIsSha256Hex(t *testing.T) {
++	assert.True(t, isSha256Hex(strings.Repeat("a0", 32)))
++	assert.False(t, isSha256Hex(strings.Repeat("A0", 32)))
++	assert.False(t, isSha256Hex(strings.Repeat("a0", 31)))
++	assert.False(t, isSha256Hex(strings.Repeat("g0", 32)))
++}
++
++func TestCheckSentinel(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, ".seed-fs")
++
++	err := checkSentinel(p, "fsid")
++	assert.ErrorContains(t, err, "cannot read sentinel")
++
++	require.NoError(t, os.WriteFile(p, []byte("  58ec6b96-5df6-49f2-86c3-182501b0602d\n"), 0644))
++	assert.NoError(t, checkSentinel(p, "58ec6b96-5df6-49f2-86c3-182501b0602d"))
++	err = checkSentinel(p, "00000000-0000-0000-0000-000000000000")
++	assert.ErrorContains(t, err, "expected fsid")
++}
++
++func testSwtpmConfig(root string) swtpmConfig {
++	return swtpmConfig{
++		path:         "/bin/swtpm",
++		sentinelPath: filepath.Join(root, ".seed-fs"),
++		expectedFsid: "fsid",
++		lockTimeout:  time.Second,
++		mode:         SeedTpmModeCreate,
++		stateDir:     filepath.Join(root, "s-ns-inst"),
++		socketPath:   "/run/vc/vm/x/swtpm.sock",
++		volatileDir:  "/run/vc/vm/x/swtpm-volatile",
++	}
++}
++
++func TestSwtpmConfigValidate(t *testing.T) {
++	root := "/var/lib/seed-controller/tpm"
++	ok := testSwtpmConfig(root)
++	assert.NoError(t, ok.validate())
++
++	fp := strings.Repeat("ab", 32)
++	cases := map[string]func(c *swtpmConfig){
++		"bad mode":           func(c *swtpmConfig) { c.mode = "maybe" },
++		"no swtpm path":      func(c *swtpmConfig) { c.path = "" },
++		"no fsid":            func(c *swtpmConfig) { c.expectedFsid = "" },
++		"relative state dir": func(c *swtpmConfig) { c.stateDir = "tpm/x" },
++		"unclean state dir":  func(c *swtpmConfig) { c.stateDir = root + "/a/../../../etc" },
++		"outside root":       func(c *swtpmConfig) { c.stateDir = "/etc/x" },
++		"root itself":        func(c *swtpmConfig) { c.stateDir = root },
++		"prefix trick":       func(c *swtpmConfig) { c.stateDir = root + "x/y" },
++		"verify no fp":       func(c *swtpmConfig) { c.mode = SeedTpmModeVerify },
++		"verify upper fp":    func(c *swtpmConfig) { c.mode = SeedTpmModeVerify; c.fingerprint = strings.ToUpper(fp) },
++		"zero timeout":       func(c *swtpmConfig) { c.lockTimeout = 0 },
++	}
++	for name, mutate := range cases {
++		c := testSwtpmConfig(root)
++		mutate(&c)
++		assert.Error(t, c.validate(), name)
++	}
++
++	v := testSwtpmConfig(root)
++	v.mode = SeedTpmModeVerify
++	v.fingerprint = fp
++	assert.NoError(t, v.validate())
++}
++
++func TestNewSwtpmConfigDefaults(t *testing.T) {
++	hc := &HypervisorConfig{SwtpmPath: "/x/swtpm", SeedTpmMode: "create", SeedTpmStateDir: "/var/lib/seed-controller/tpm/a"}
++	c := newSwtpmConfig(hc, "/run/vc/vm/abc")
++	assert.Equal(t, DefaultSwtpmSentinelPath, c.sentinelPath)
++	assert.Equal(t, DefaultSwtpmLockTimeout*time.Second, c.lockTimeout)
++	assert.Equal(t, "/run/vc/vm/abc/swtpm.sock", c.socketPath)
++	assert.Equal(t, "/run/vc/vm/abc/swtpm-volatile", c.volatileDir)
++}
++
++func TestAcquireSessionLock(t *testing.T) {
++	old := swtpmLockPollInterval
++	swtpmLockPollInterval = 10 * time.Millisecond
++	defer func() { swtpmLockPollInterval = old }()
++
++	dir := t.TempDir()
++	ctx := context.Background()
++
++	f1, err := acquireSessionLock(ctx, dir, time.Second)
++	require.NoError(t, err)
++
++	// flock conflicts between separate open file descriptions, even in
++	// one process.
++	start := time.Now()
++	_, err = acquireSessionLock(ctx, dir, 200*time.Millisecond)
++	assert.ErrorContains(t, err, "timed out")
++	assert.GreaterOrEqual(t, time.Since(start), 200*time.Millisecond)
++
++	cctx, cancel := context.WithCancel(ctx)
++	cancel()
++	_, err = acquireSessionLock(cctx, dir, time.Minute)
++	assert.ErrorIs(t, err, context.Canceled)
++
++	// released when the holder closes
++	go func() {
++		time.Sleep(100 * time.Millisecond)
++		f1.Close()
++	}()
++	f2, err := acquireSessionLock(ctx, dir, 5*time.Second)
++	require.NoError(t, err)
++	f2.Close()
++}
++
++func TestWriteFileAtomic(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "tpm-fingerprint")
++	require.NoError(t, writeFileAtomic(p, []byte("one"), 0644))
++	require.NoError(t, writeFileAtomic(p, []byte("two"), 0644))
++	b, err := os.ReadFile(p)
++	require.NoError(t, err)
++	assert.Equal(t, "two", string(b))
++	ents, _ := os.ReadDir(dir)
++	assert.Len(t, ents, 1, "no temp files left behind")
++}
++
++func TestSwtpmStopNotStarted(t *testing.T) {
++	s := newSwtpm(testSwtpmConfig(t.TempDir()))
++	assert.NoError(t, s.Stop(context.Background()))
++	assert.NoError(t, s.Stop(context.Background()))
++}
++
++// ---------------------------------------------------------------------------
++// Integration tests against a real swtpm built with the seed:// backend.
++// SEED_TEST_SWTPM=/path/to/swtpm go test ./virtcontainers/ -run Swtpm
++// ---------------------------------------------------------------------------
++
++type swtpmEnv struct {
++	root    string // stands in for /var/lib/seed-controller/tpm
++	runDir  string // stands in for /run/vc/vm/<id>; short, for socket paths
++	swtpm   string
++	fsid    string
++	timeout time.Duration
++}
++
++func newSwtpmEnv(t *testing.T) *swtpmEnv {
++	bin := os.Getenv("SEED_TEST_SWTPM")
++	if bin == "" {
++		t.Skip("SEED_TEST_SWTPM not set")
++	}
++	root := t.TempDir()
++	run, err := os.MkdirTemp("", "sw")
++	require.NoError(t, err)
++	t.Cleanup(func() { os.RemoveAll(run) })
++	e := &swtpmEnv{root: root, runDir: run, swtpm: bin, fsid: "58ec6b96-5df6-49f2-86c3-182501b0602d", timeout: time.Second}
++	require.NoError(t, os.WriteFile(filepath.Join(root, ".seed-fs"), []byte(e.fsid+"\n"), 0644))
++	return e
++}
++
++func (e *swtpmEnv) cfg(mode, inst, fp string) swtpmConfig {
++	return swtpmConfig{
++		path:         e.swtpm,
++		sentinelPath: filepath.Join(e.root, ".seed-fs"),
++		expectedFsid: e.fsid,
++		lockTimeout:  e.timeout,
++		mode:         mode,
++		stateDir:     filepath.Join(e.root, inst),
++		fingerprint:  fp,
++		socketPath:   filepath.Join(e.runDir, "swtpm.sock"),
++		volatileDir:  filepath.Join(e.runDir, "swtpm-volatile"),
++	}
++}
++
++func pidAlive(pid int) bool { return syscall.Kill(pid, 0) == nil }
++
++func TestSwtpmIntegrationLifecycle(t *testing.T) {
++	e := newSwtpmEnv(t)
++	ctx := context.Background()
++
++	// create: manufactures a TPM, records the fingerprint
++	s := newSwtpm(e.cfg(SeedTpmModeCreate, "s-ns-web", ""))
++	require.NoError(t, s.Start(ctx))
++	fp := s.Fingerprint
++	require.True(t, isSha256Hex(fp), fp)
++	pid := s.pid
++	assert.True(t, pidAlive(pid))
++	b, err := os.ReadFile(filepath.Join(e.root, "s-ns-web", "tpm-fingerprint"))
++	require.NoError(t, err)
++	assert.Equal(t, fp, string(b))
++	assert.FileExists(t, filepath.Join(e.root, "s-ns-web", "tpm2-00.permall"))
++
++	// while running, nobody else gets the session lock
++	_, err = acquireSessionLock(ctx, filepath.Join(e.root, "s-ns-web"), 300*time.Millisecond)
++	assert.ErrorContains(t, err, "timed out")
++
++	require.NoError(t, s.Stop(ctx))
++	assert.False(t, pidAlive(pid), "swtpm still running after Stop")
++	assert.NoDirExists(t, filepath.Join(e.runDir, "swtpm-volatile"))
++	assert.NoFileExists(t, filepath.Join(e.runDir, "swtpm.sock"))
++	l, err := acquireSessionLock(ctx, filepath.Join(e.root, "s-ns-web"), 300*time.Millisecond)
++	require.NoError(t, err, "lock not released after Stop")
++	l.Close()
++
++	// verify with the right fingerprint: same TPM across restarts
++	v := newSwtpm(e.cfg(SeedTpmModeVerify, "s-ns-web", fp))
++	require.NoError(t, v.Start(ctx))
++	assert.Equal(t, fp, v.Fingerprint)
++	require.NoError(t, v.Stop(ctx))
++
++	// verify with a wrong fingerprint: fails, swtpm gone, lock released
++	wrong := strings.Repeat("0", 64)
++	w := newSwtpm(e.cfg(SeedTpmModeVerify, "s-ns-web", wrong))
++	err = w.Start(ctx)
++	require.Error(t, err)
++	assert.Contains(t, err.Error(), wrong)
++	assert.Contains(t, err.Error(), fp)
++	assert.False(t, pidAlive(w.pid))
++	l, err = acquireSessionLock(ctx, filepath.Join(e.root, "s-ns-web"), 300*time.Millisecond)
++	require.NoError(t, err, "lock not released after failed verify")
++	l.Close()
++
++	// create over an existing TPM is refused
++	c2 := newSwtpm(e.cfg(SeedTpmModeCreate, "s-ns-web", ""))
++	assert.ErrorContains(t, c2.Start(ctx), "already exists")
++
++	// a second created TPM is a different TPM
++	o := newSwtpm(e.cfg(SeedTpmModeCreate, "s-ns-other", ""))
++	require.NoError(t, o.Start(ctx))
++	assert.NotEqual(t, fp, o.Fingerprint)
++	require.NoError(t, o.Stop(ctx))
++}
++
++func TestSwtpmIntegrationRefusals(t *testing.T) {
++	e := newSwtpmEnv(t)
++	ctx := context.Background()
++
++	// wrong sentinel content
++	c := e.cfg(SeedTpmModeCreate, "s-ns-a", "")
++	c.expectedFsid = "11111111-1111-1111-1111-111111111111"
++	err := newSwtpm(c).Start(ctx)
++	assert.ErrorContains(t, err, "expected fsid")
++	assert.NoDirExists(t, c.stateDir, "state dir must not be created before the sentinel check")
++
++	// missing sentinel
++	c = e.cfg(SeedTpmModeCreate, "s-ns-a", "")
++	c.sentinelPath = filepath.Join(e.root, ".missing")
++	assert.ErrorContains(t, newSwtpm(c).Start(ctx), "cannot read sentinel")
++
++	// verify without a permall (never manufacture in verify mode)
++	require.NoError(t, os.Mkdir(filepath.Join(e.root, "s-ns-b"), 0755))
++	c = e.cfg(SeedTpmModeVerify, "s-ns-b", strings.Repeat("a", 64))
++	assert.ErrorContains(t, newSwtpm(c).Start(ctx), "verify mode but")
++	assert.NoFileExists(t, filepath.Join(e.root, "s-ns-b", "tpm2-00.permall"))
++
++	// verify against a missing state dir
++	c = e.cfg(SeedTpmModeVerify, "s-ns-missing", strings.Repeat("a", 64))
++	assert.ErrorContains(t, newSwtpm(c).Start(ctx), "state dir")
++	assert.NoDirExists(t, c.stateDir)
++
++	// lock held elsewhere -> timeout, swtpm never started
++	require.NoError(t, os.Mkdir(filepath.Join(e.root, "s-ns-c"), 0755))
++	held, err := acquireSessionLock(ctx, filepath.Join(e.root, "s-ns-c"), time.Second)
++	require.NoError(t, err)
++	c = e.cfg(SeedTpmModeCreate, "s-ns-c", "")
++	c.lockTimeout = 500 * time.Millisecond
++	s := newSwtpm(c)
++	assert.ErrorContains(t, s.Start(ctx), "timed out")
++	assert.Nil(t, s.cmd)
++	held.Close()
++
++	// swtpm that cannot start (bad binary) surfaces as an error
++	c = e.cfg(SeedTpmModeCreate, "s-ns-d", "")
++	c.path = "/nonexistent/swtpm"
++	assert.ErrorContains(t, newSwtpm(c).Start(ctx), "starting swtpm")
++	l, err := acquireSessionLock(ctx, c.stateDir, 300*time.Millisecond)
++	require.NoError(t, err)
++	l.Close()
++
++	// state dir on a different filesystem than the sentinel
++	if st, err := os.Stat("/dev/shm"); err == nil && st.IsDir() {
++		other, err := os.MkdirTemp("/dev/shm", "seedtpm")
++		require.NoError(t, err)
++		defer os.RemoveAll(other)
++		require.NoError(t, os.WriteFile(filepath.Join(other, ".seed-fs"), []byte(e.fsid), 0644))
++		c = e.cfg(SeedTpmModeCreate, "x", "")
++		c.sentinelPath = filepath.Join(other, ".seed-fs")
++		// state dir is below the sentinel dir but is a mount of another fs:
++		// simulate with a symlink to the test root, which Lstat rejects.
++		require.NoError(t, os.Symlink(e.root, filepath.Join(other, "x")))
++		c.stateDir = filepath.Join(other, "x")
++		assert.Error(t, newSwtpm(c).Start(ctx))
++	}
++}
++
++// TestSwtpmIntegrationHandoff replays cloud-hypervisor's exact control
++// channel sequence (cloud-hypervisor tpm/src/emulator.rs + devices/src/tpm.rs,
++// v49/v50) after the shim has used the TPM, then acts like the guest kernel.
++func TestSwtpmIntegrationHandoff(t *testing.T) {
++	e := newSwtpmEnv(t)
++	ctx := context.Background()
++
++	s := newSwtpm(e.cfg(SeedTpmModeCreate, "s-ns-h", ""))
++	require.NoError(t, s.Start(ctx))
++	defer s.Stop(ctx)
++
++	quit := make(chan struct{})
++	s.arm(func() { close(quit) })
++
++	clhAttachAndCheck := func() {
++		ctrl, err := dialSwtpmCtrl(ctx, s.cfg.socketPath, s.done)
++		require.NoError(t, err)
++		defer ctrl.Close()
++
++		// Emulator::new: prepare_data_fd, probe_caps, get_established_flag
++		data, err := ctrl.setDataFd()
++		require.NoError(t, err, "CMD_SET_DATAFD after the shim's session")
++		defer data.Close()
++		_, err = ctrl.command(1, nil, -1, 8) // CMD_GET_CAPABILITY
++		require.NoError(t, err)
++		_, err = ctrl.command(4, nil, -1, 8) // CMD_GET_TPMESTABLISHED (needs a running TPM)
++		require.NoError(t, err)
++		// Tpm::reset: get_buffer_size -> set_buffer_size(0) (CMD_STOP first)
++		_, err = ctrl.command(14, nil, -1, 4) // CMD_STOP
++		require.NoError(t, err)
++		_, err = ctrl.command(17, []byte{0, 0, 0, 0}, -1, 16) // CMD_SET_BUFFERSIZE 0
++		require.NoError(t, err)
++		// startup_tpm: set_buffer_size(n) (CMD_STOP first), CMD_INIT
++		_, err = ctrl.command(14, nil, -1, 4)
++		require.NoError(t, err)
++		_, err = ctrl.command(17, []byte{0, 0, 0x0f, 0x80}, -1, 16) // 3968
++		require.NoError(t, err)
++		_, err = ctrl.command(2, []byte{0, 0, 0, 0}, -1, 4) // CMD_INIT flags=0
++		require.NoError(t, err)
++
++		// Guest kernel: TPM2_Startup(CLEAR) must succeed (TPM_RC_INITIALIZE
++		// would mean the TPM was not freshly initialized).
++		resp, err := tpmTransact(data, buildStartupClear())
++		require.NoError(t, err)
++		rc, err := tpmResponseCode(resp)
++		require.NoError(t, err)
++		assert.Equal(t, uint32(tpmRcSuccess), rc, "TPM2_Startup after CLH init")
++
++		// Same TPM identity as the shim saw.
++		fp, err := computeSrkFingerprint(data)
++		require.NoError(t, err)
++		assert.Equal(t, s.Fingerprint, fp)
++	}
++
++	clhAttachAndCheck()
++
++	// swtpm dying after handoff fires onQuit exactly like virtiofsd.
++	syscall.Kill(s.pid, syscall.SIGKILL)
++	select {
++	case <-quit:
++	case <-time.After(5 * time.Second):
++		t.Fatal("onQuit not called after swtpm died")
++	}
++	require.NoError(t, s.Stop(ctx))
++	l, err := acquireSessionLock(ctx, s.cfg.stateDir, 300*time.Millisecond)
++	require.NoError(t, err)
++	l.Close()
++}
++
++// TestSwtpmIntegrationLockSharedWithChild: the session lock stays held as
++// long as swtpm lives, even if the shim's own descriptor is gone.
++func TestSwtpmIntegrationLockSharedWithChild(t *testing.T) {
++	e := newSwtpmEnv(t)
++	ctx := context.Background()
++
++	s := newSwtpm(e.cfg(SeedTpmModeCreate, "s-ns-l", ""))
++	require.NoError(t, s.Start(ctx))
++	s.lockFile.Close() // as if the shim had dropped its fd
++	s.lockFile = nil
++
++	_, err := acquireSessionLock(ctx, s.cfg.stateDir, 300*time.Millisecond)
++	assert.ErrorContains(t, err, "timed out", "swtpm must keep the lock")
++
++	require.NoError(t, s.Stop(ctx))
++	l, err := acquireSessionLock(ctx, s.cfg.stateDir, time.Second)
++	require.NoError(t, err)
++	l.Close()
++}
++
++// TestSwtpmIntegrationHandoffNeedsHangup is the negative control for the
++// handoff: while the shim's data channel is still open, swtpm refuses a
++// second CMD_SET_DATAFD, i.e. cloud-hypervisor could not attach.
++func TestSwtpmIntegrationHandoffNeedsHangup(t *testing.T) {
++	e := newSwtpmEnv(t)
++	ctx := context.Background()
++
++	s := newSwtpm(e.cfg(SeedTpmModeCreate, "s-ns-n", ""))
++	require.NoError(t, s.Start(ctx))
++	defer s.Stop(ctx)
++
++	ctrl1, err := dialSwtpmCtrl(ctx, s.cfg.socketPath, s.done)
++	require.NoError(t, err)
++	data1, err := ctrl1.setDataFd()
++	require.NoError(t, err)
++	ctrl1.Close() // control closed, data channel still open
++
++	ctrl2, err := dialSwtpmCtrl(ctx, s.cfg.socketPath, s.done)
++	require.NoError(t, err)
++	_, err = ctrl2.setDataFd()
++	assert.Error(t, err, "second CMD_SET_DATAFD must fail while the first data fd is open")
++	ctrl2.Close()
++
++	data1.Close()
++	ctrl3, err := dialSwtpmCtrl(ctx, s.cfg.socketPath, s.done)
++	require.NoError(t, err)
++	defer ctrl3.Close()
++	// sync on the control channel, as swtpmFingerprint does
++	_, err = ctrl3.command(swtpmCmdGetCapability, nil, -1, 8)
++	require.NoError(t, err)
++	d3, err := ctrl3.setDataFd()
++	require.NoError(t, err, "CMD_SET_DATAFD after hangup")
++	d3.Close()
++}
++
++func TestCheckSameFilesystem(t *testing.T) {
++	dir := t.TempDir()
++	sentinel := filepath.Join(dir, ".seed-fs")
++	require.NoError(t, os.WriteFile(sentinel, []byte("x"), 0644))
++	require.NoError(t, os.Mkdir(filepath.Join(dir, "a"), 0755))
++	assert.NoError(t, checkSameFilesystem(sentinel, filepath.Join(dir, "a")))
++
++	var a, b unix.Stat_t
++	if unix.Stat(dir, &a) != nil || unix.Stat("/dev/shm", &b) != nil || a.Dev == b.Dev {
++		t.Skip("no second filesystem available")
++	}
++	assert.ErrorContains(t, checkSameFilesystem(sentinel, "/dev/shm"), "not on the same filesystem")
++}
++
++// TestSwtpmIntegrationShimKilled: SIGKILL the process that owns swtpm (a
++// child running TestSwtpmHelperShim). Pdeathsig must take swtpm down and
++// the session lock must then be free.
++func TestSwtpmIntegrationShimKilled(t *testing.T) {
++	e := newSwtpmEnv(t)
++	stateDir := filepath.Join(e.root, "s-ns-k")
++
++	cmd := exec.Command(os.Args[0], "-test.run=^TestSwtpmHelperShim$", "-test.v")
++	cmd.Env = append(os.Environ(),
++		"SEED_SWTPM_HELPER=1",
++		"SEED_SWTPM_HELPER_ROOT="+e.root,
++		"SEED_SWTPM_HELPER_RUN="+e.runDir)
++	out, err := cmd.StdoutPipe()
++	require.NoError(t, err)
++	require.NoError(t, cmd.Start())
++
++	var swtpmPid int
++	var buf []byte
++	deadline := time.Now().Add(20 * time.Second)
++	for swtpmPid == 0 && time.Now().Before(deadline) {
++		chunk := make([]byte, 512)
++		n, err := out.Read(chunk)
++		buf = append(buf, chunk[:n]...)
++		for _, line := range strings.Split(string(buf), "\n") {
++			if strings.HasPrefix(line, "SWTPM_PID=") {
++				fmt.Sscanf(line, "SWTPM_PID=%d", &swtpmPid)
++			}
++		}
++		if err != nil {
++			break
++		}
++	}
++	require.True(t, swtpmPid > 0, "helper did not report a swtpm pid: %s", string(buf))
++	assert.True(t, pidAlive(swtpmPid))
++
++	// the "shim" dies hard
++	cmd.Process.Kill()
++	cmd.Wait()
++
++	gone := false
++	for i := 0; i < 100; i++ {
++		if !pidAlive(swtpmPid) {
++			gone = true
++			break
++		}
++		time.Sleep(50 * time.Millisecond)
++	}
++	assert.True(t, gone, "swtpm outlived its shim")
++
++	l, err := acquireSessionLock(context.Background(), stateDir, 5*time.Second)
++	require.NoError(t, err, "session lock not released after shim + swtpm died")
++	l.Close()
++}
++
++// TestSwtpmPrintFingerprint prints the shim fingerprint of an existing TPM
++// state dir (use a copy). Used to cross-check against tpm2-tools:
++// SEED_FP_STATE_DIR=/copy/of/state go test -run TestSwtpmPrintFingerprint -v
++func TestSwtpmPrintFingerprint(t *testing.T) {
++	dir := os.Getenv("SEED_FP_STATE_DIR")
++	bin := os.Getenv("SEED_TEST_SWTPM")
++	if dir == "" || bin == "" {
++		t.Skip("SEED_FP_STATE_DIR / SEED_TEST_SWTPM not set")
++	}
++	run, err := os.MkdirTemp("", "fp")
++	require.NoError(t, err)
++	defer os.RemoveAll(run)
++	s := newSwtpm(swtpmConfig{
++		path:        bin,
++		mode:        SeedTpmModeVerify,
++		stateDir:    dir,
++		socketPath:  filepath.Join(run, "swtpm.sock"),
++		volatileDir: filepath.Join(run, "vol"),
++	})
++	require.NoError(t, s.launch())
++	defer s.Stop(context.Background())
++	fp, err := swtpmFingerprint(context.Background(), s.cfg.socketPath, s.done)
++	require.NoError(t, err)
++	fmt.Printf("SHIM_FINGERPRINT=%s\n", fp)
++}
++
++// TestSwtpmHoldForCLH runs the shim side (Start) and keeps swtpm up until
++// <run>/release exists, so a real cloud-hypervisor can attach in between.
++// Manual end-to-end helper; skipped unless SEED_HOLD_ROOT is set.
++func TestSwtpmHoldForCLH(t *testing.T) {
++	root := os.Getenv("SEED_HOLD_ROOT")
++	if root == "" {
++		t.Skip("SEED_HOLD_ROOT not set")
++	}
++	e := &swtpmEnv{
++		root:    root,
++		runDir:  os.Getenv("SEED_HOLD_RUN"),
++		swtpm:   os.Getenv("SEED_TEST_SWTPM"),
++		fsid:    "58ec6b96-5df6-49f2-86c3-182501b0602d",
++		timeout: 5 * time.Second,
++	}
++	s := newSwtpm(e.cfg(os.Getenv("SEED_HOLD_MODE"), "s-ns-clh", os.Getenv("SEED_HOLD_FP")))
++	require.NoError(t, s.Start(context.Background()))
++	fmt.Printf("SHIM_FINGERPRINT=%s\nSOCKET=%s\n", s.Fingerprint, s.cfg.socketPath)
++	os.Stdout.Sync()
++	quit := make(chan struct{})
++	s.arm(func() { close(quit) })
++	for {
++		if _, err := os.Stat(filepath.Join(e.runDir, "release")); err == nil {
++			break
++		}
++		select {
++		case <-quit:
++			t.Fatal("swtpm died while held")
++		case <-time.After(100 * time.Millisecond):
++		}
++	}
++	require.NoError(t, s.Stop(context.Background()))
++	fmt.Println("STOPPED")
++}
++
++// TestSwtpmHelperShim is not a real test: it is the child process for
++// TestSwtpmIntegrationShimKilled.
++func TestSwtpmHelperShim(t *testing.T) {
++	if os.Getenv("SEED_SWTPM_HELPER") != "1" {
++		t.Skip("helper process only")
++	}
++	e := &swtpmEnv{
++		root:    os.Getenv("SEED_SWTPM_HELPER_ROOT"),
++		runDir:  os.Getenv("SEED_SWTPM_HELPER_RUN"),
++		swtpm:   os.Getenv("SEED_TEST_SWTPM"),
++		fsid:    "58ec6b96-5df6-49f2-86c3-182501b0602d",
++		timeout: time.Second,
++	}
++	s := newSwtpm(e.cfg(SeedTpmModeCreate, "s-ns-k", ""))
++	if err := s.Start(context.Background()); err != nil {
++		fmt.Printf("START_ERROR=%v\n", err)
++		os.Exit(1)
++	}
++	// Extra goroutines so the runtime has several threads around.
++	for i := 0; i < 8; i++ {
++		go func() { time.Sleep(time.Hour) }()
++	}
++	fmt.Printf("SWTPM_PID=%d\n", s.pid)
++	os.Stdout.Sync()
++	select {}
++}
+-- 
+2.54.0
+
