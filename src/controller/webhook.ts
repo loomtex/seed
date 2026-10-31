@@ -154,6 +154,26 @@ export async function startWebhookServer(
 
   const server = createHttpsServer({ key, cert }, handler);
 
+  // cert-manager renews the secret in place (kubelet swaps the mounted files),
+  // but node:https only reads them at startup. Poll and hot-swap the context so
+  // a long-lived pod doesn't keep serving an expired cert. Polling, not fs.watch:
+  // secret volumes update via a symlink swap that inotify watchers miss.
+  let currentCert = cert;
+  setInterval(async () => {
+    try {
+      const [newCert, newKey] = await Promise.all([
+        readFile(tls.certFile),
+        readFile(tls.keyFile),
+      ]);
+      if (newCert.equals(currentCert)) return;
+      server.setSecureContext({ key: newKey, cert: newCert });
+      currentCert = newCert;
+      log("webhook", `reloaded TLS cert from ${tls.certFile}`);
+    } catch (err) {
+      log("webhook", `TLS cert reload failed: ${err}`);
+    }
+  }, 5 * 60 * 1000).unref();
+
   server.listen(port, "0.0.0.0", () => {
     log("webhook", `listening on 0.0.0.0:${port} (https)`);
   });
