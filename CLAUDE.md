@@ -215,7 +215,7 @@ seed.loom.farm/generation: <hash>
 
 **Reaping**: after applying all instances, Deployments/Services/SeedHostTasks with a non-matching generation hash are deleted. PVCs are exempt to protect persistent data.
 
-**Event-driven reconciliation**: the controller does NOT poll. It runs one reconciliation on startup, then waits for webhook events. The webhook callback resolves a Promise that wakes the main loop immediately — zero latency between GitHub push and reconciliation start.
+**Event-driven reconciliation**: the controller does NOT poll. It runs one reconciliation on startup, then waits for webhook events. Triggers (webhooks, plant/replant, retry timers) go into a per-flake work queue (`src/controller/reconcile-queue.ts`) that runs up to `SEED_RECONCILE_CONCURRENCY` (`seed.controller.reconcileConcurrency`, default 3) flakes at once. A flake never has two reconciles in flight; a trigger that lands mid-reconcile coalesces into exactly one re-run afterwards. Startup reconciles go through the same queue.
 
 **Self-heal**: runs on a 60s timer independent of reconciliation. Checks that expected Deployments, Services, and SeedHostTasks exist and recreates any missing ones.
 

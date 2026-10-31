@@ -28,6 +28,7 @@ import { initEst, updateEstNamespaces } from "./est.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
+import { ReconcileQueue, parseConcurrency, type ReconcileJob } from "./reconcile-queue.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1769,16 +1770,24 @@ async function main(): Promise<void> {
   const validNamespaces = new Set([...flakeStates.values()].map((fs) => fs.namespace));
   initApi(clients, kc, validNamespaces);
 
-  // Webhook signaling: per-flake refresh tracking.
-  const pendingRefresh = new Set<string>(); // flakePaths waiting to reconcile
-  let webhookResolve: (() => void) | null = null;
+  // Reconcile work queue: one entry per flake, up to SEED_RECONCILE_CONCURRENCY
+  // flakes at once, never two runs of the same flake. A trigger for a flake
+  // that is mid-reconcile coalesces into exactly one re-run afterwards.
+  // Starts paused so triggers that arrive during startup (webhooks, plant)
+  // are held until the startup reconciles are queued below.
+  const reconcileConcurrency = parseConcurrency(process.env["SEED_RECONCILE_CONCURRENCY"], 3);
+  log("controller", `reconcile concurrency: ${reconcileConcurrency}`);
+  const reconcileQueue = new ReconcileQueue<ReconcileJob>({
+    concurrency: reconcileConcurrency,
+    paused: true,
+    run: (flakePath, job) => runReconcileJob(flakePath, job),
+    merge: (a, b) => ({ startup: a.startup || b.startup, refresh: a.refresh || b.refresh }),
+    onError: (flakePath, err) => log("controller", `reconcile job crashed: ${err}`, flakePath),
+  });
 
+  /** Queue a webhook-style (--refresh) reconcile of one flake. */
   function triggerReconcile(flakePath: string): void {
-    pendingRefresh.add(flakePath);
-    if (webhookResolve) {
-      webhookResolve();
-      webhookResolve = null;
-    }
+    reconcileQueue.enqueue(flakePath, { startup: false, refresh: true });
   }
 
   if (config.webhookSecretFile || process.env["SEED_WEBHOOK_PORT"]) {
@@ -1799,14 +1808,6 @@ async function main(): Promise<void> {
   setReplantHandler(async (identity, newFlakeUri, keyBlob) => {
     return handleReplant(clients, config, flakeStates, namespaceToFlake, triggerReconcile, identity, newFlakeUri, keyBlob);
   });
-
-  /** Wait for a webhook event. Returns immediately if one is already queued. */
-  function waitForWebhook(): Promise<void> {
-    if (pendingRefresh.size > 0) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      webhookResolve = resolve;
-    });
-  }
 
   /** Run a full reconciliation cycle for a single flake. */
   async function reconcile(flakePath: string, namespace: string, useRefresh: boolean): Promise<void> {
@@ -2096,23 +2097,75 @@ async function main(): Promise<void> {
     }, delay);
   }
 
+  // Key index rebuilds after webhook-triggered reconciles (keys may have
+  // changed). Debounced so a burst of concurrent reconciles finishing close
+  // together costs one rebuild; the single-slot queue coalesces a request that
+  // lands mid-rebuild into one more rebuild afterwards.
+  const keyIndexQueue = new ReconcileQueue<null>({
+    concurrency: 1,
+    merge: () => null,
+    run: async () => {
+      const index = await buildKeyIndex(flakeStates, true);
+      updateKeyIndex({ keys: index.keys });
+    },
+    onError: (_key, err) => log("controller", `key index rebuild failed: ${err}`),
+  });
+  let keyIndexTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleKeyIndexRebuild(): void {
+    if (keyIndexTimer) clearTimeout(keyIndexTimer);
+    keyIndexTimer = setTimeout(() => {
+      keyIndexTimer = null;
+      keyIndexQueue.enqueue("key-index", null);
+    }, 2_000);
+  }
+
   // Startup: always reconcile all flakes to ensure desired state is correct.
-  // Errors in one flake must not prevent other flakes from reconciling.
-  for (const [flakePath, fs] of flakeStates) {
+  // Startup jobs go through the queue like everything else (so they run up to
+  // reconcileConcurrency at a time and never overlap a webhook run of the same
+  // flake). Errors in one flake don't affect the others.
+  let startupRemaining = flakeStates.size;
+  let startupResolve: () => void = () => {};
+  const startupDone = new Promise<void>((resolve) => { startupResolve = resolve; });
+  if (startupRemaining === 0) startupResolve();
+
+  /** One queued reconcile of one flake. Never throws. */
+  async function runReconcileJob(flakePath: string, job: ReconcileJob): Promise<void> {
     try {
-      await prefetchFlake(flakePath);
-    } catch (err) {
-      log("controller", `flake fetch failed, retrying in 30s: ${err}`, flakePath);
-      retryFetch(flakePath, 30_000);
-      continue;
-    }
-    try {
-      await reconcile(flakePath, fs.namespace, false);
-      handleReconcileResult(flakePath);
-    } catch (err) {
-      handleReconcileResult(flakePath, err);
+      const fs = flakeStates.get(flakePath);
+      if (!fs) {
+        log("controller", `webhook for unknown flake ${flakePath}, skipping`);
+        return;
+      }
+      if (job.startup) {
+        // A fetch failure at boot (e.g. silo not up yet) is retried until the
+        // source is reachable; retryFetch then queues a normal trigger.
+        try {
+          await prefetchFlake(flakePath);
+        } catch (err) {
+          log("controller", `flake fetch failed, retrying in 30s: ${err}`, flakePath);
+          retryFetch(flakePath, 30_000);
+          return;
+        }
+      } else {
+        log("controller", `webhook triggered reconciliation`, flakePath);
+      }
+      try {
+        await reconcile(flakePath, fs.namespace, job.refresh);
+        handleReconcileResult(flakePath);
+      } catch (err) {
+        handleReconcileResult(flakePath, err);
+      }
+    } finally {
+      if (job.refresh) scheduleKeyIndexRebuild();
+      if (job.startup && --startupRemaining === 0) startupResolve();
     }
   }
+
+  for (const flakePath of flakeStates.keys()) {
+    reconcileQueue.enqueue(flakePath, { startup: true, refresh: false });
+  }
+  reconcileQueue.resume();
+  await startupDone;
 
   // Start k8s API watches for drift correction (cluster-wide).
   startWatches(kc, clients, flakeStates, namespaceToFlake);
@@ -2124,37 +2177,8 @@ async function main(): Promise<void> {
     startDomainController(kc, clients.core, clients.custom, config.pdnsApiUrl, pdnsApiKey, config.namesiloApiKeyFile);
   }
 
-  // Event-driven loop: wait for webhook, then reconcile only affected flakes.
-  // Crashes on failure — k8s restart gives free backoff and retry.
-  while (true) {
-    await waitForWebhook();
-    // Drain all pending flakes
-    const toReconcile = [...pendingRefresh];
-    pendingRefresh.clear();
-
-    for (const flakePath of toReconcile) {
-      const fs = flakeStates.get(flakePath);
-      if (!fs) {
-        log("controller", `webhook for unknown flake ${flakePath}, skipping`);
-        continue;
-      }
-      log("controller", `webhook triggered reconciliation`, flakePath);
-      try {
-        await reconcile(flakePath, fs.namespace, true);
-        handleReconcileResult(flakePath);
-      } catch (err) {
-        handleReconcileResult(flakePath, err);
-      }
-    }
-
-    // Rebuild key index after reconciliation (keys may have changed)
-    try {
-      const index = await buildKeyIndex(flakeStates, true);
-      updateKeyIndex({ keys: index.keys });
-    } catch (err) {
-      log("controller", `key index rebuild failed: ${err}`);
-    }
-  }
+  // From here on the controller is event-driven: webhooks, plant/replant and
+  // retry timers call triggerReconcile(), and the queue does the rest.
 }
 
 // Only run main() when this file is the entry point, not when imported for testing.
