@@ -153,17 +153,27 @@
         # 2. Copy Mount.Target field for subdirectory bind mount resolution
         # 3. Use recursive bind (MS_BIND|MS_REC) so sub-mounts propagate
         #    through virtiofs into the guest VM
+        # 4. Shim-owned swtpm: for pods annotated seed.loom.farm/tpm-mode the
+        #    shim checks the CephFS sentinel, takes the per-TPM session
+        #    flock, runs swtpm and verifies the TPM fingerprint before CLH
+        #    starts (kata-shim-swtpm.patch, virtcontainers/swtpm.go)
         patches = (old.patches or []) ++ [
           ./patches/kata-multi-mount-rootfs.patch
           ./patches/kata-tpm-socket.patch
+          ./patches/kata-shim-swtpm.patch
         ];
 
-        # Fix CLH paths and use TPM-enabled guest kernel
+        # Fix CLH paths, use TPM-enabled guest kernel, point the shim at
+        # the seed:// swtpm build. swtpm_expected_fsid is cluster-specific
+        # and set by module.nix (seed.tpm.expectedFsid).
         postInstall = (old.postInstall or "") + ''
           sed -i \
             -e 's!path = ".*cloud-hypervisor"!path = "${final.cloud-hypervisor}/bin/cloud-hypervisor"!' \
             -e 's!valid_hypervisor_paths = \[".*cloud-hypervisor"\]!valid_hypervisor_paths = ["${final.cloud-hypervisor}/bin/cloud-hypervisor"]!' \
             -e 's!kernel = ".*vmlinux.container"!kernel = "${final.kata-guest-kernel-tpm}/vmlinux"!' \
+            -e 's!^#swtpm_path = ""!swtpm_path = "${final.swtpm-seed}/bin/swtpm"!' \
+            "$out/share/defaults/kata-containers/configuration-clh.toml"
+          grep -q '^swtpm_path = "${final.swtpm-seed}/bin/swtpm"' \
             "$out/share/defaults/kata-containers/configuration-clh.toml"
         '';
       });
@@ -376,6 +386,10 @@
 
       # Zitadel v4 (nixpkgs only has v2.71.7)
       zitadel = pkgs.zitadel;
+
+      # Patched runtime pieces (exposed for building/testing the patches)
+      swtpm-seed = pkgs.swtpm-seed;
+      kata-runtime = pkgs.kata-runtime;
 
       # Bundled TypeScript
       controller = seedController;
