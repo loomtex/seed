@@ -36,6 +36,10 @@
         type = "bm";
         plan = "vbm-6c-32gb";
         vpcIp = "10.0.0.10";
+        # /etc/ssh/ssh_host_ed25519_key.pub (also the source of the node's sops
+        # age recipient). Pinned in known_hosts for the nix build pool, so it
+        # must be updated whenever the node is reprovisioned with a new host key.
+        sshHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOzJ+UhlD7jy1CClHQGJq1SL749py9PAkarrlC5iSUDl";
         vpcIpv6 = "fd02::10";  # ULA on VPC interface — must not overlap fd00::/56 pod CIDR
         publicIp = "96.30.205.16";
         publicIpv6 = "2001:19f0:5401:05cd:3eec:efff:feb9:888e";
@@ -46,6 +50,7 @@
       seed-atl1-2 = {
         type = "bm"; plan = "vbm-6c-32gb";
         vpcIp = "10.0.0.11";
+        sshHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINP5XgWqIf/gHu321MPL/uPYskVany0K3tvazGjsJH4V";
         vpcIpv6 = "fd02::11";
         publicIp = "144.202.24.202";
         publicIpv6 = "2001:19f0:5400:14fc:3eec:efff:feb9:ef16";
@@ -54,6 +59,7 @@
       seed-atl1-3 = {
         type = "bm"; plan = "vbm-6c-32gb";
         vpcIp = "10.0.0.12";
+        sshHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIJMIm0e1MBAogdHi3/GfWtPW6R7NOwpTIE2HVx8yEla";
         vpcIpv6 = "fd02::12";
         publicIp = "155.138.232.75";
         publicIpv6 = "2001:19f0:5400:2052:3eec:efff:feb9:897e";
