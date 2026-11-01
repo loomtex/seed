@@ -369,6 +369,8 @@ export function handlePodDelete(pod: k8s.V1Pod): void {
 const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const reconcileLocks = new Map<string, Promise<void>>();
 const reconcilePending = new Set<string>();
+// Consecutive failures per namespace, for retry backoff.
+const reconcileFailures = new Map<string, number>();
 
 function scheduleReconcile(ns: string): void {
   const existing = reconcileTimers.get(ns);
@@ -394,8 +396,18 @@ function runReconcile(ns: string): void {
   }
 
   const p = reconcileNamespace(ns)
+    .then(() => {
+      reconcileFailures.delete(ns);
+    })
     .catch((err) => {
-      log(COMPONENT, `reconcile error for ${ns}: ${err instanceof Error ? err.message : String(err)}`);
+      // Retry with backoff: without this a failed reconcile (e.g. a chain
+      // removed underneath us) leaves the namespace unenforced until its next
+      // pod event, which can be days away.
+      const failures = (reconcileFailures.get(ns) ?? 0) + 1;
+      reconcileFailures.set(ns, failures);
+      const delay = Math.min(5_000 * 2 ** (failures - 1), 60_000);
+      log(COMPONENT, `reconcile error for ${ns} (attempt ${failures}), retrying in ${delay / 1000}s: ${err instanceof Error ? err.message : String(err)}`);
+      setTimeout(() => scheduleReconcile(ns), delay);
     })
     .finally(() => {
       reconcileLocks.delete(ns);
