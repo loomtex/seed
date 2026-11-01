@@ -28,6 +28,8 @@ export const UPGRADE_ANNOTATIONS = {
   CORDONED: `${LABEL_DOMAIN}/upgrade-cordoned`,
   /** Node: "true" = run the upgrade flow once, now (still Lease-gated) */
   UPGRADE_NOW: `${LABEL_DOMAIN}/upgrade-now`,
+  /** Node: "true" with upgrade-now = reboot this time even if the kernel didn't change */
+  UPGRADE_REBOOT: `${LABEL_DOMAIN}/upgrade-reboot`,
 } as const;
 
 export type Phase = "upgrading" | "rebooting" | "held";
