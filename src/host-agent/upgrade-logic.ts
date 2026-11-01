@@ -22,6 +22,8 @@ export const UPGRADE_ANNOTATIONS = {
   REBOOT_ATTEMPTS: `${LABEL_DOMAIN}/upgrade-reboot-attempts`,
   /** Lease: ISO time phase=upgrading was entered (validates the state file) */
   STARTED: `${LABEL_DOMAIN}/upgrade-started`,
+  /** Lease: CRUSH host bucket the holder set `ceph osd set-group noout` on (cleared after recovery) */
+  CEPH_NOOUT: `${LABEL_DOMAIN}/upgrade-ceph-noout`,
   /** Lease: why the holder is holding (phase=held) */
   HOLD_REASON: `${LABEL_DOMAIN}/upgrade-hold-reason`,
   /** Node: set by the agent iff it did the cordon (so it may uncordon) */

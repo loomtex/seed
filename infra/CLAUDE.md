@@ -58,7 +58,7 @@ infra/
 │       └── seed-tang-1/   # Tang server (DFW, legacy)
 ├── profiles/
 │   ├── server.nix         # Base server (nix flakes, common packages)
-│   ├── seed-ceph.nix      # Ceph MON + MGR + OSD (dmcrypt) per node
+│   ├── seed-ceph.nix      # Ceph MON + MGR + OSD (dmcrypt) per node; ceph CLI on PATH (upgrade agent)
 │   ├── seed-cache.nix     # S3 binary cache (substituter + post-build-hook)
 │   ├── seed-build-pool.nix# Nodes are each other's ssh-ng remote builders
 │   ├── seed-luks.nix      # LUKS + Clevis/Tang auto-unlock
@@ -233,6 +233,26 @@ sops --set '["ceph"] {"mon-key": "<mon-key>", "admin-key": "<admin-key>"}' \
 
 The fsid is in `cluster.nix` (`ceph.fsid`). Per-node OSD config (osdId, osdDevice)
 is also in `cluster.nix` and passed to the profile via `specialArgs`.
+
+### Node Upgrades and Ceph
+
+Node upgrades are run by the upgrade agent in the host-agent DaemonSet
+(see the root CLAUDE.md, "Node upgrades"), one node at a time under the
+Lease `seed-system/node-upgrade`. It handles Ceph itself: it won't start
+unless Ceph can lose the node (full MON quorum, all OSDs up/in, all PGs
+active+clean), sets `ceph osd set-group noout <node>` only around a
+reboot (recorded in the Lease annotation `seed.loom.farm/upgrade-ceph-noout`),
+and unsets it once the node's OSDs are back and PGs are clean (20 min,
+else it holds the Lease with noout still set). Don't set cluster-wide
+`noout` by hand for routine upgrades anymore.
+
+- `ceph` is on the nodes' PATH (`/run/current-system/sw/bin/ceph`, from
+  `profiles/seed-ceph.nix`); run it as root (`sudo ceph ...`), the admin
+  keyring is in `/etc/ceph`.
+- Check flags: `sudo ceph osd dump -f json | jq .crush_node_flags`
+- Resolving a held upgrade: fix the node, `sudo ceph osd unset-group noout <node>`
+  if the Lease carries `upgrade-ceph-noout`, `kubectl uncordon <node>` if
+  needed, then `kubectl delete lease node-upgrade -n seed-system`.
 
 ### k3s Cluster Join
 
