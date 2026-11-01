@@ -36,7 +36,9 @@ seed/
 ├── build.mjs              # esbuild bundler script
 ├── patches/
 │   ├── kata-multi-mount-rootfs.patch  # Kata shim: multi-mount rootfs + recursive bind
-│   └── kata-tpm-socket.patch          # Kata shim: TPM socket annotation for CLH vTPM
+│   ├── kata-tpm-socket.patch          # Kata shim: TPM socket annotation for CLH vTPM
+│   ├── kata-shim-swtpm.patch          # Kata shim: shim-owned swtpm (seed.loom.farm/tpm-*)
+│   └── swtpm-seed-backend.patch       # swtpm seed:// backend (CephFS permall, create-gate)
 ├── lib/
 │   ├── mkInstance.nix     # Build a Seed instance from a NixOS module
 │   └── mkImage.nix        # OCI image from a Seed instance (nix-snapshotter)
@@ -328,6 +330,25 @@ Each instance gets a vTPM device (`/dev/tpm0`) backed by swtpm on the host, enab
 ```
 
 **NixOS option**: `seed.controller.swtpmImage` — set to the swtpm image store path to enable vTPM for all instances.
+
+### Shim-owned swtpm (replacing host-agent swtpm)
+
+`patches/kata-shim-swtpm.patch` (kata fork branch `seed-shim-swtpm`, code in `virtcontainers/swtpm.go`) makes the Kata shim own one swtpm per sandbox, like virtiofsd. Pod annotations (passed through by containerd `pod_annotations = [..., "seed.loom.farm/tpm-*"]`):
+
+- `seed.loom.farm/tpm-mode`: `create` | `verify` (absent → legacy `tpm_socket` path)
+- `seed.loom.farm/tpm-state-dir`: e.g. `/var/lib/seed-controller/tpm/<ns>-<instance>`
+- `seed.loom.farm/tpm-fingerprint`: lowercase hex SHA-256 (verify mode)
+
+Before CLH starts, the shim: checks the sentinel (`seed.tpm.sentinelPath`, default `/var/lib/seed-controller/tpm/.seed-fs`) contains `seed.tpm.expectedFsid` (null → tpm-mode pods fail closed); takes an exclusive CephFS flock on `<state-dir>/.session-lock` (`seed.tpm.lockTimeout`, 120s; the fd is shared with swtpm so the lock lives as long as swtpm); starts swtpm (`SWTPM_SEED_ALLOW_CREATE=1` only in create mode; create refuses an existing permall); computes the fingerprint; writes `<state-dir>/tpm-fingerprint` (create, 64 hex chars, no newline) or compares with the annotation (verify). CLH then attaches to `/run/vc/vm/<sandbox>/swtpm.sock` and power-cycles the TPM itself (CMD_STOP + CMD_INIT). swtpm death after boot stops the VM.
+
+**Fingerprint** = SHA-256 of the marshaled TPMT_PUBLIC (no TPM2B size prefix) of the owner-hierarchy SRK: ECC NIST P-256, SHA-256, `fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda|restricted|decrypt`, AES-128-CFB, scheme/kdf NULL, unique x/y = 32 zero bytes each. Reproduce with tpm2-tools (unique **must** come from stdin; `-u <file>` loads the raw C union and yields a zero-length unique):
+```
+head -c 64 /dev/zero | tpm2_createprimary -Q -C o -g sha256 -G ecc256:null:aes128cfb \
+  -a 'fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda|restricted|decrypt' -u - -c srk.ctx
+tpm2_readpublic -Q -c srk.ctx -o srk.pub && tail -c +3 srk.pub | sha256sum
+```
+
+**swtpm create-gate**: the `seed://` backend fails to load when `tpm2-00.permall` is missing unless `SWTPM_SEED_ALLOW_CREATE=1` (prevents silently manufacturing a TPM when CephFS is not mounted). The legacy host-agent must set it until retired.
 
 ### Dual-stack networking
 

@@ -19,10 +19,22 @@ let
   }.${cfg.hypervisor};
 
   # Upstream kata config with enable_annotations expanded to allow
-  # per-pod VM sizing via annotations (vCPUs, memory)
+  # per-pod VM sizing via annotations (vCPUs, memory), plus the shim-owned
+  # swtpm settings (the seed.loom.farm/tpm-* annotations themselves are not
+  # io.katacontainers.* keys, so enable_annotations does not apply to them).
   kataConfig = builtins.replaceStrings
-    [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params"]'' ]
-    [ ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory", "tpm_socket"]'' ]
+    [
+      ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params"]''
+      ''#swtpm_sentinel_path = "/var/lib/seed-controller/tpm/.seed-fs"''
+      ''#swtpm_expected_fsid = ""''
+      ''#swtpm_lock_timeout = 120''
+    ]
+    [
+      ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory", "tpm_socket"]''
+      ''swtpm_sentinel_path = "${cfg.tpm.sentinelPath}"''
+      (if cfg.tpm.expectedFsid == null then ''#swtpm_expected_fsid = ""'' else ''swtpm_expected_fsid = "${cfg.tpm.expectedFsid}"'')
+      ''swtpm_lock_timeout = ${toString cfg.tpm.lockTimeout}''
+    ]
     (builtins.readFile "${pkgs.kata-runtime}/share/defaults/kata-containers/${hypervisorConfigFile}");
 
   # MetalLB: bare-metal LoadBalancer implementation (L2/BGP)
@@ -144,6 +156,30 @@ in {
       };
     };
 
+    # Shim-owned swtpm (patches/kata-shim-swtpm.patch). Pods annotated with
+    # seed.loom.farm/tpm-mode get a swtpm owned by the Kata shim. The shim
+    # refuses to run unless the sentinel file contains expectedFsid.
+    tpm = {
+      expectedFsid = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "58ec6b96-5df6-49f2-86c3-182501b0602d";
+        description = "Ceph fsid of the shared TPM state filesystem. The Kata shim only starts swtpm for tpm-mode pods if the sentinel contains exactly this. When null, tpm-mode pods fail to start (fail closed).";
+      };
+
+      sentinelPath = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/seed-controller/tpm/.seed-fs";
+        description = "Sentinel file on the shared TPM filesystem holding its fsid. TPM state dirs must be below its directory, on the same filesystem.";
+      };
+
+      lockTimeout = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 120;
+        description = "Seconds the Kata shim waits for a TPM's session lock (held cluster-wide via CephFS flock by whichever sandbox runs that TPM).";
+      };
+    };
+
     persistence = {
       enable = lib.mkEnableOption "Persist /var/lib/rancher across reboots (for impermanence systems)";
 
@@ -255,7 +291,7 @@ in {
         [plugins."io.containerd.grpc.v1.cri".containerd.runtimes."kata"]
           runtime_type = "${hypervisorRuntime}"
           privileged_without_host_devices = true
-          pod_annotations = ["io.katacontainers.*"]
+          pod_annotations = ["io.katacontainers.*", "seed.loom.farm/tpm-*"]
           container_annotations = ["io.katacontainers.*"]
       '';
     };
