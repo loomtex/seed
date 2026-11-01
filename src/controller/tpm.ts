@@ -4,22 +4,20 @@
 // the cluster side:
 //   - reading SeedTPM records before rendering (mode = create | verify);
 //   - recording the fingerprint the shim wrote after a create-mode boot;
-//   - re-rendering that instance's Deployment in verify mode (rolls it once);
-//   - deleting leftover SeedHostTasks of opted-in instances so the host agent
-//     stops its swtpm before the shim starts one on the same state.
+//   - re-rendering that instance's Deployment in verify mode (rolls it once).
 
 import * as k8s from "@kubernetes/client-node";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  type KubeClients, log, getOrNull, ignoreNotFound, withApiRetry,
+  type KubeClients, log, getOrNull, withApiRetry,
   applyDeployment, recordEvent,
 } from "../shared/kube.js";
 import { ANNOTATIONS, LABELS, MANAGED_SELECTOR } from "../shared/labels.js";
-import type { DesiredState, SeedHostTask, SeedTPM, SeedTPMCondition, SeedTPMStatus, ShimTpmMode } from "../shared/types.js";
+import type { DesiredState, SeedTPM, SeedTPMCondition, SeedTPMStatus, ShimTpmMode } from "../shared/types.js";
 import {
-  FINGERPRINT_FILE, decideTpmFlip, effectiveShimOptIn, isValidFingerprint, tpmStateDir,
-  type ShimSwtpmOptIn, type ShimTpmRenderContext, type TpmFlipDecision,
+  FINGERPRINT_FILE, decideTpmFlip, isValidFingerprint, tpmStateDir,
+  type ShimTpmRenderContext, type TpmFlipDecision,
 } from "../shared/tpm.js";
 import { applyShimTpm, generateSeedTPM } from "./manifests.js";
 
@@ -70,8 +68,8 @@ async function exists(path: string): Promise<boolean> {
 /**
  * True if the state dir holds a TPM the shim didn't create: tpm2-00.permall
  * exists but tpm-fingerprint doesn't (host-agent-era state). A shim-created
- * TPM whose fingerprint isn't recorded yet has both files and stays on the
- * shim path so the flip controller can record it.
+ * TPM whose fingerprint isn't recorded yet has both files and can be
+ * rendered in create mode so the flip controller records it.
  */
 export async function legacyStateExists(stateDir: string): Promise<boolean> {
   return await exists(join(stateDir, "tpm2-00.permall")) &&
@@ -79,30 +77,29 @@ export async function legacyStateExists(stateDir: string): Promise<boolean> {
 }
 
 /**
- * Load everything renderDesiredState needs for shim-owned swtpm in one
- * namespace: SeedTPM records, and the effective opt-in (opted-in instances
- * with host-agent-era TPM state but no record are held back on the legacy path).
+ * Load what renderDesiredState needs for instance TPMs in one namespace.
+ * An instance with host-agent-era TPM state and no SeedTPM record can't be
+ * rendered: create mode would ask the shim to create a TPM over a live one,
+ * and there is no legacy path left. That fails the reconcile (leaving the
+ * running Deployments alone) until tpm-backfill records it.
  */
 export async function loadShimTpmContext(
   clients: KubeClients,
   namespace: string,
-  optIn: ShimSwtpmOptIn,
   instanceNames: Iterable<string>,
   hasLegacyState: (stateDir: string) => Promise<boolean> = legacyStateExists,
 ): Promise<ShimTpmRenderContext> {
-  const names = [...instanceNames].filter((n) => optIn.matches(namespace, n));
-  if (names.length === 0) return { optIn, records: new Map() };
   const records = await readSeedTPMRecords(clients, namespace);
-  const unrecordedWithState = new Set<string>();
-  for (const name of names) {
-    if (!records.has(name) && await hasLegacyState(tpmStateDir(namespace, name))) unrecordedWithState.add(name);
+  const unbackfilled: string[] = [];
+  for (const name of instanceNames) {
+    if (!records.has(name) && await hasLegacyState(tpmStateDir(namespace, name))) unbackfilled.push(name);
   }
-  const eff = effectiveShimOptIn(optIn, namespace, records, unrecordedWithState);
-  for (const name of eff.heldBack) {
-    log(COMPONENT, `WARNING: opted in to shim-owned swtpm but has TPM state and no SeedTPM record; ` +
-      `keeping it on the host-agent path. Run tpm-backfill for ${namespace}/${name} first.`, `${namespace}/${name}`);
+  if (unbackfilled.length > 0) {
+    throw new Error(
+      `TPM state without a SeedTPM record for ${unbackfilled.map((n) => `${namespace}/${n}`).join(", ")}: ` +
+      `run tpm-backfill --write-status first (refusing to render create mode over an existing TPM)`);
   }
-  return { optIn: eff.optIn, records };
+  return { records };
 }
 
 async function getSeedTPM(clients: KubeClients, namespace: string, name: string): Promise<SeedTPM | null> {
@@ -200,35 +197,6 @@ async function setMismatchCondition(
   });
 }
 
-// --- SeedHostTask hand-off ---
-
-/**
- * Delete SeedHostTasks of instances that are now on the shim path, before
- * their Deployments are applied. The host agent stops its swtpm on delete, so
- * the legacy swtpm is gone before the Recreate rollout starts the shim's
- * swtpm on the same state (the reap after apply would be too late).
- */
-export async function deleteShimHostTasks(
-  clients: KubeClients,
-  desired: DesiredState,
-): Promise<void> {
-  const { namespace } = desired;
-  for (const [name, instance] of desired.instances) {
-    if (!instance.shimTpm) continue;
-    const taskName = `swtpm-${name}`;
-    await withApiRetry(`delete SeedHostTask ${namespace}/${taskName}`, async () => {
-      const task = await getOrNull(() => clients.custom.getNamespacedCustomObject({
-        group: GROUP, version: VERSION, namespace, plural: "seedhosttasks", name: taskName,
-      }) as Promise<SeedHostTask>);
-      if (!task) return;
-      log(COMPONENT, `deleting SeedHostTask ${taskName}: instance moved to shim-owned swtpm`, name);
-      await clients.custom.deleteNamespacedCustomObject({
-        group: GROUP, version: VERSION, namespace, plural: "seedhosttasks", name: taskName,
-      }).catch(ignoreNotFound);
-    });
-  }
-}
-
 // --- Create → verify flip ---
 
 /** What the flip controller needs from the reconciler's per-flake state. */
@@ -244,7 +212,6 @@ export interface FlipStateAccess {
 export interface FlipControllerOptions {
   kc: k8s.KubeConfig;
   clients: KubeClients;
-  optIn: ShimSwtpmOptIn;
   state: FlipStateAccess;
   sweepIntervalMs?: number;
   /** Override for tests. */
@@ -301,7 +268,7 @@ export function currentInstancePod(pods: k8s.V1Pod[]): k8s.V1Pod | null {
  * errors or a concurrent reconcile, and re-checks for mismatches).
  */
 export function startTpmFlipController(opts: FlipControllerOptions): void {
-  const { kc, clients, optIn, state } = opts;
+  const { kc, clients, state } = opts;
   const readFp = opts.readFingerprintFile ?? readFingerprintFile;
   const inFlight = new Set<string>();
   const warned = new Map<string, string>(); // key → last warning (dedupe log + events)
@@ -392,7 +359,6 @@ export function startTpmFlipController(opts: FlipControllerOptions): void {
     if (inFlight.has(key)) return;
     inFlight.add(key);
     try {
-      if (!optIn.matches(namespace, name)) return;
       const instance = state.desired(namespace)?.instances.get(name);
       if (!instance?.shimTpm) return;
 

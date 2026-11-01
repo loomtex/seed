@@ -13,7 +13,7 @@ import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, makeClients, deriveNamespace, deriveNamespaceFromIdentity, computeGeneration, log, sleep, applyResource, applyDeployment, getOrNull, ignoreNotFound, withApiRetry, TransientApiError } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, MANAGED_SELECTOR, ANNOTATIONS, seedLabels } from "../shared/labels.js";
 import type { ControllerConfig, DesiredState, InstanceState, IPv4Config, IPv6Config, SeedHostTask, SeedFlake, BuildResult, SeedDNSRecord, SeedDomain, CombineConfig, CombineDomainConfig } from "../shared/types.js";
-import { generateDeployment, generatePVC, generateService, generateIngressService, generateHostTask, generateInstanceDNSRecords, generateDomainCRD } from "./manifests.js";
+import { generateDeployment, generatePVC, generateService, generateIngressService, generateInstanceDNSRecords, generateDomainCRD } from "./manifests.js";
 import { generateIPv4Services, generateIPv6Services } from "./routes.js";
 import { configureMetalLB, readBGPConfig } from "./metallb.js";
 import { runBuilders, captureBuilderLogs } from "./builder.js";
@@ -25,8 +25,8 @@ import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
 import { startDomainController } from "./domains.js";
 import { initAcme, updateAcmeNamespaces, updateAcmeValidZones } from "./acme.js";
 import { initEst, updateEstNamespaces } from "./est.js";
-import { loadShimTpmContext, deleteShimHostTasks, startTpmFlipController } from "./tpm.js";
-import { parseShimSwtpmOptIn, shimTpmModeFor, type ShimSwtpmOptIn, type ShimTpmRenderContext } from "../shared/tpm.js";
+import { loadShimTpmContext, startTpmFlipController } from "./tpm.js";
+import { shimTpmModeFor, type ShimTpmRenderContext } from "../shared/tpm.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -57,7 +57,6 @@ function loadConfig(): ControllerConfig {
     builderImage: process.env["SEED_BUILDER_IMAGE"] || "",
     poolManagerUrl: process.env["SEED_POOL_MANAGER_URL"] || "",
     swtpmEnabled: !!process.env["SEED_SWTPM_ENABLED"],
-    shimSwtpm: process.env["SEED_SHIM_SWTPM"] || "",
     pdnsApiUrl: process.env["SEED_PDNS_API_URL"] || "",
     pdnsApiKeyFile: process.env["SEED_PDNS_API_KEY_FILE"] || "",
     pdnsZone: process.env["SEED_PDNS_ZONE"] || "loom.farm.",
@@ -271,7 +270,6 @@ export function renderDesiredState(
   buildResults: Map<string, BuildResult>,
   ipv4Config: IPv4Config | null,
   ipv6Config: IPv6Config | null,
-  hostTaskStatuses: Map<string, { ready: boolean; socketPath: string }>,
   acmeUrl?: string,
   instanceDomain?: string,
   domains?: Record<string, CombineDomainConfig>,
@@ -287,19 +285,10 @@ export function renderDesiredState(
     const imageRef = `nix:0${result.imagePath}`;
     const { meta } = result;
 
-    // Shim-owned swtpm (opted in): mode from the SeedTPM record, no host task.
-    const shimTpmMode = swtpmEnabled && shimTpm?.optIn.matches(namespace, name)
-      ? shimTpmModeFor(shimTpm.records.get(name))
+    // vTPM: the Kata shim owns swtpm; mode from the SeedTPM record.
+    const shimTpmMode = swtpmEnabled
+      ? shimTpmModeFor(shimTpm?.records.get(name))
       : undefined;
-
-    // Check for TPM socket from host agent
-    let tpmSocketPath: string | undefined;
-    if (swtpmEnabled && !shimTpmMode) {
-      const status = hostTaskStatuses.get(name);
-      if (status?.ready) {
-        tpmSocketPath = status.socketPath;
-      }
-    }
 
     const webhookPort = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
     const estUrl = `https://seed-controller.seed-system.svc.cluster.local:${webhookPort}`;
@@ -310,12 +299,11 @@ export function renderDesiredState(
       generation,
       namespace,
       meta,
-      tpmSocketPath,
+      shimTpmMode,
       poolManagerUrl || undefined,
       acmeUrl,
       estUrl,
       instanceDomain,
-      shimTpmMode,
     );
 
     const services: k8s.V1Service[] = [];
@@ -329,10 +317,6 @@ export function renderDesiredState(
 
     const ingressService = generateIngressService(name, generation, namespace, meta);
 
-    const hostTask = swtpmEnabled && !shimTpmMode
-      ? generateHostTask(name, namespace, generation)
-      : null;
-
     const dnsRecords = generateInstanceDNSRecords(
       name,
       generation,
@@ -343,7 +327,7 @@ export function renderDesiredState(
     );
 
     instances.set(name, {
-      imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, hostTask, dnsRecords,
+      imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, dnsRecords,
       ...(shimTpmMode ? { shimTpm: shimTpmMode } : {}),
     });
   }
@@ -371,103 +355,6 @@ export function renderDesiredState(
     routes: { ipv4: ipv4Services, ipv6: ipv6Services },
     domains: domainCRDs,
   };
-}
-
-/** Build results minus instances on the shim-owned swtpm path (no SeedHostTask for those). */
-function withoutShimTpm(
-  buildResults: Map<string, BuildResult>,
-  namespace: string,
-  optIn: ShimSwtpmOptIn,
-): Map<string, BuildResult> {
-  return new Map([...buildResults].filter(([name]) => !optIn.matches(namespace, name)));
-}
-
-/**
- * Apply SeedHostTasks for all instances.
- * Called before rendering deployments so the host-agent can start swtpm processes.
- */
-async function applySeedHostTasks(
-  clients: ReturnType<typeof makeClients>,
-  namespace: string,
-  buildResults: Map<string, BuildResult>,
-  generation: string,
-): Promise<void> {
-  for (const [name] of buildResults) {
-    const hostTask = generateHostTask(name, namespace, generation);
-    try {
-      const existing = await clients.custom.getNamespacedCustomObject({
-        group: "seed.loom.farm",
-        version: "v1alpha1",
-        namespace,
-        plural: "seedhosttasks",
-        name: hostTask.metadata!.name!,
-      }) as SeedHostTask;
-      const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
-      if (existingGen !== generation) {
-        existing.metadata = existing.metadata || {};
-        existing.metadata.labels = {
-          ...existing.metadata.labels,
-          [LABELS.GENERATION]: generation,
-        };
-        await clients.custom.replaceNamespacedCustomObject({
-          group: "seed.loom.farm",
-          version: "v1alpha1",
-          namespace,
-          plural: "seedhosttasks",
-          name: hostTask.metadata!.name!,
-          body: existing,
-        });
-        log("controller", `updated SeedHostTask swtpm-${name} generation`, name);
-      } else {
-        log("controller", `SeedHostTask swtpm-${name} up to date`, name);
-      }
-    } catch {
-      await clients.custom.createNamespacedCustomObject({
-        group: "seed.loom.farm",
-        version: "v1alpha1",
-        namespace,
-        plural: "seedhosttasks",
-        body: hostTask,
-      });
-      log("controller", `created SeedHostTask swtpm-${name}`, name);
-    }
-  }
-}
-
-/**
- * Wait for all SeedHostTasks to become ready.
- * Polls every 2s, up to 60s total. Logs progress.
- */
-async function waitForHostTasks(
-  clients: ReturnType<typeof makeClients>,
-  namespace: string,
-  buildResults: Map<string, BuildResult>,
-  generation: string,
-): Promise<void> {
-  const expectedTasks = new Set([...buildResults.keys()].map((n) => `swtpm-${n}`));
-  const maxWait = 60_000;
-  const pollInterval = 2_000;
-  const start = Date.now();
-
-  while (Date.now() - start < maxWait) {
-    const statuses = await readHostTaskStatuses(clients, namespace);
-    let allReady = true;
-    for (const name of buildResults.keys()) {
-      const status = statuses.get(name);
-      if (!status?.ready) {
-        allReady = false;
-        break;
-      }
-    }
-    if (allReady) {
-      log("controller", "all SeedHostTasks ready");
-      return;
-    }
-    await sleep(pollInterval);
-  }
-
-  // Not all ready after timeout — proceed anyway (deployments will lack TPM)
-  log("controller", "warning: some SeedHostTasks not ready after 60s, proceeding without TPM");
 }
 
 /**
@@ -521,55 +408,6 @@ async function applyDesiredState(
     await withApiRetry(`seed-ca ConfigMap in ${namespace}`, () =>
       ensureSeedCAConfigMap(clients.core, namespace, platformCACert));
   }
-
-  // Apply SeedHostTasks first (swtpm must be running before pods start)
-  for (const [name, instance] of desired.instances) {
-    if (!instance.hostTask) continue;
-    const taskName = instance.hostTask.metadata!.name!;
-    await withApiRetry(`SeedHostTask ${taskName}`, async () => {
-      const existing = await getOrNull(() => clients.custom.getNamespacedCustomObject({
-        group: "seed.loom.farm",
-        version: "v1alpha1",
-        namespace,
-        plural: "seedhosttasks",
-        name: taskName,
-      })) as SeedHostTask | null;
-      if (!existing) {
-        await clients.custom.createNamespacedCustomObject({
-          group: "seed.loom.farm",
-          version: "v1alpha1",
-          namespace,
-          plural: "seedhosttasks",
-          body: instance.hostTask,
-        });
-        log("controller", `created SeedHostTask swtpm-${name}`, name);
-        return;
-      }
-      // Update generation label if changed
-      const existingGen = existing.metadata?.labels?.[LABELS.GENERATION];
-      if (existingGen !== desired.generation) {
-        existing.metadata = existing.metadata || {};
-        existing.metadata.labels = {
-          ...existing.metadata.labels,
-          [LABELS.GENERATION]: desired.generation,
-        };
-        await clients.custom.replaceNamespacedCustomObject({
-          group: "seed.loom.farm",
-          version: "v1alpha1",
-          namespace,
-          plural: "seedhosttasks",
-          name: taskName,
-          body: existing,
-        });
-        log("controller", `updated SeedHostTask swtpm-${name} generation`, name);
-      } else {
-        log("controller", `SeedHostTask swtpm-${name} up to date`, name);
-      }
-    });
-  }
-
-  // Instances moved to shim-owned swtpm: stop the host agent's swtpm first
-  await deleteShimHostTasks(clients, desired);
 
   // Apply PVCs (before deployments, so volumes are available)
   for (const [name, instance] of desired.instances) {
@@ -715,7 +553,6 @@ async function reapOldResources(
   // Build sets of desired resource names
   const desiredDeployments = new Set<string>();
   const desiredServices = new Set<string>();
-  const desiredHostTasks = new Set<string>();
   const desiredDNSRecords = new Set<string>();
   const desiredDomains = new Set<string>();
 
@@ -734,10 +571,6 @@ async function reapOldResources(
     if (instance.ingressService) {
       const name = instance.ingressService.metadata?.name;
       if (name) desiredServices.add(name);
-    }
-    if (instance.hostTask) {
-      const name = instance.hostTask.metadata?.name;
-      if (name) desiredHostTasks.add(name);
     }
     for (const dnsRecord of instance.dnsRecords) {
       const name = dnsRecord.metadata?.name;
@@ -779,17 +612,18 @@ async function reapOldResources(
     }
   });
 
-  // Reap SeedHostTasks not in desired state
+  // Reap leftover SeedHostTasks (the host agent no longer runs swtpm).
+  // Kept until the SeedHostTask CRD itself is removed; 404 = CRD gone.
   await withApiRetry(`reap SeedHostTasks in ${namespace}`, async () => {
-    const tasks = await clients.custom.listNamespacedCustomObject({
+    const tasks = await getOrNull(() => clients.custom.listNamespacedCustomObject({
       group: "seed.loom.farm",
       version: "v1alpha1",
       namespace,
       plural: "seedhosttasks",
-    }) as { items: SeedHostTask[] };
-    for (const task of tasks.items) {
+    }) as Promise<{ items: SeedHostTask[] }>);
+    for (const task of tasks?.items ?? []) {
       const name = task.metadata?.name;
-      if (name && !desiredHostTasks.has(name)) {
+      if (name) {
         log("controller", `reaping SeedHostTask: ${name}`);
         await clients.custom.deleteNamespacedCustomObject({
           group: "seed.loom.farm",
@@ -852,36 +686,6 @@ async function reapOldResources(
 }
 
 /**
- * Read SeedHostTask statuses from the cluster.
- */
-async function readHostTaskStatuses(
-  clients: ReturnType<typeof makeClients>,
-  namespace: string,
-): Promise<Map<string, { ready: boolean; socketPath: string }>> {
-  const statuses = new Map<string, { ready: boolean; socketPath: string }>();
-  try {
-    const result = await clients.custom.listNamespacedCustomObject({
-      group: "seed.loom.farm",
-      version: "v1alpha1",
-      namespace,
-      plural: "seedhosttasks",
-    }) as { items: SeedHostTask[] };
-
-    for (const task of result.items) {
-      if (task.status && task.spec.instance) {
-        statuses.set(task.spec.instance, {
-          ready: task.status.ready,
-          socketPath: task.status.socketPath,
-        });
-      }
-    }
-  } catch {
-    // CRD might not exist yet
-  }
-  return statuses;
-}
-
-/**
  * Get the generation currently deployed (from any seed-managed Deployment).
  */
 async function deployedGeneration(
@@ -933,7 +737,6 @@ async function loadExistingDesired(
         services: [],
         ingressService: null,
         pvcs: [],
-        hostTask: null,
         dnsRecords: [],
       });
     }
@@ -1614,12 +1417,6 @@ async function main(): Promise<void> {
 
   log("controller", `starting (flakes=${config.flakePaths.join(", ")})`);
 
-  const shimOptIn = parseShimSwtpmOptIn(config.shimSwtpm);
-  if (shimOptIn.invalid.length > 0) {
-    log("controller", `warning: ignoring invalid SEED_SHIM_SWTPM entries: ${shimOptIn.invalid.join(", ")}`);
-  }
-  if (config.shimSwtpm) log("controller", `shim-owned swtpm opt-in: ${config.shimSwtpm}`);
-
   // Gate everything below on the k8s API being reachable. loadSeedFlakes issues
   // the first API call; if it runs before the connection is ready, listSeedFlakes
   // silently returns [] and flakeStates (plus the key index) stays empty until the
@@ -1976,18 +1773,10 @@ async function main(): Promise<void> {
         log("controller", `deploying generation ${generation} (was: ${deployed || "none"})`, flakePath);
       }
 
-      // Shim-owned swtpm: SeedTPM records (create vs verify) + effective opt-in
-      const shimTpm = await loadShimTpmContext(clients, namespace, shimOptIn, buildResults.keys());
-
-      // Apply SeedHostTasks first and wait for readiness
-      if (config.swtpmEnabled) {
-        const legacyTpm = withoutShimTpm(buildResults, namespace, shimTpm.optIn);
-        await applySeedHostTasks(clients, namespace, legacyTpm, generation);
-        await waitForHostTasks(clients, namespace, legacyTpm, generation);
-      }
-
-      // Read host task statuses (now includes newly-ready tasks)
-      const hostTaskStatuses = await readHostTaskStatuses(clients, namespace);
+      // vTPM: SeedTPM records decide create vs verify
+      const shimTpm: ShimTpmRenderContext = config.swtpmEnabled
+        ? await loadShimTpmContext(clients, namespace, buildResults.keys())
+        : { records: new Map() };
 
       // Render desired state
       const webhookPort = parseInt(process.env["SEED_WEBHOOK_PORT"] || "9876", 10);
@@ -2003,14 +1792,13 @@ async function main(): Promise<void> {
         buildResults,
         ipv4Config,
         ipv6Config,
-        hostTaskStatuses,
         acmeUrl,
         config.instanceDomain,
         combineConfig?.domains,
         shimTpm,
       );
 
-      // Apply desired state (SeedHostTasks already applied, skipped inside)
+      // Apply desired state
       await applyDesiredState(clients, desired, platformCACert);
 
       // Reap resources not in desired state
@@ -2154,9 +1942,9 @@ async function main(): Promise<void> {
   startWatches(kc, clients, flakeStates, namespaceToFlake);
 
   // Shim-owned swtpm: record fingerprints after create-mode boots, flip to verify.
-  if (config.swtpmEnabled && config.shimSwtpm) {
+  if (config.swtpmEnabled) {
     startTpmFlipController({
-      kc, clients, optIn: shimOptIn,
+      kc, clients,
       state: {
         namespaces: () => [...namespaceToFlake.keys()],
         desired: (ns) => flakeStates.get(namespaceToFlake.get(ns) ?? "")?.desired ?? null,

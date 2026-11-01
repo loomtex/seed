@@ -2,7 +2,7 @@
 
 import type * as k8s from "@kubernetes/client-node";
 
-// --- SeedHostTask CRD ---
+// --- SeedHostTask CRD (retired: only listed to reap leftovers) ---
 
 export interface SeedHostTaskSpec {
   type: "swtpm";
@@ -147,9 +147,8 @@ export interface InstanceState {
   services: k8s.V1Service[];
   ingressService: k8s.V1Service | null;
   pvcs: k8s.V1PersistentVolumeClaim[];
-  hostTask: SeedHostTask | null;
   dnsRecords: SeedDNSRecord[];
-  /** Set when the instance's swtpm is owned by the Kata shim (opted in). */
+  /** vTPM render mode (swtpm owned by the Kata shim); unset = no TPM. */
   shimTpm?: ShimTpmMode;
 }
 
@@ -282,8 +281,6 @@ export interface ControllerConfig {
   builderImage: string;
   poolManagerUrl: string;
   swtpmEnabled: boolean;
-  /** SEED_SHIM_SWTPM: instances whose swtpm the Kata shim owns. */
-  shimSwtpm: string;
   pdnsApiUrl: string;
   pdnsApiKeyFile: string;
   pdnsZone: string;
