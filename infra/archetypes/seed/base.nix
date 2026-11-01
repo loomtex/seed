@@ -72,9 +72,7 @@ in
   seed.tpm.expectedFsid = clusterCeph.fsid;
 
   system.autoUpgrade = {
-    # Disabled 2026-10-31 while the build pool and shim-owned swtpm work is
-    # deployed from branches; master would otherwise roll out unreviewed state.
-    enable = false;
+    enable = true;
     dates = upgradeTime;
     flake = "github:loomtex/seed?dir=infra";
     allowReboot = false;
