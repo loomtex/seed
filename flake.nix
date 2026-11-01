@@ -444,6 +444,8 @@
           cp -r ${seedController}/app/node_modules $out/app/
           ln -s ${pkgs.iptables}/bin/iptables $out/usr/bin/iptables
           ln -s ${pkgs.iptables}/bin/ip6tables $out/usr/bin/ip6tables
+          ln -s ${pkgs.iptables}/bin/iptables-restore $out/usr/bin/iptables-restore
+          ln -s ${pkgs.iptables}/bin/ip6tables-restore $out/usr/bin/ip6tables-restore
           # upgrade agent: run host systemctl/cat in the host namespaces
           ln -s ${pkgs.util-linux}/bin/nsenter $out/usr/bin/nsenter
         '';

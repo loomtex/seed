@@ -87,6 +87,42 @@ function ipt(args: string[], ipv6 = false): Promise<{ stdout: string; stderr: st
   });
 }
 
+/**
+ * Apply rule lines to the filter table in one iptables-restore transaction.
+ * --noflush keeps every chain not mentioned; declaring a chain (":NAME - [0:0]")
+ * flushes just that chain. The kernel swaps the whole batch in atomically or
+ * rejects it, so packets never see a half-built chain.
+ */
+function iptRestore(lines: string[], ipv6 = false): Promise<void> {
+  const bin = ipv6 ? "/usr/bin/ip6tables-restore" : "/usr/bin/iptables-restore";
+  const input = ["*filter", ...lines, "COMMIT", ""].join("\n");
+  return new Promise((resolve, reject) => {
+    const child = execFile(bin, ["--noflush", "--wait", "5"], (err, _stdout, stderr) => {
+      if (err) reject(new Error(`${bin}: ${stderr || err.message}\n${input}`));
+      else resolve();
+    });
+    child.stdin?.end(input);
+  });
+}
+
+/** Quote one iptables-restore argument (needed for e.g. --log-prefix with spaces). */
+function restoreArg(a: string): string {
+  return /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a;
+}
+
+/** Current SEED-FWD rules jumping to a chain, as -D lines for iptables-restore. */
+async function jumpDeletes(chain: string, ipv6 = false): Promise<string[]> {
+  try {
+    const { stdout } = await ipt(["-S", MAIN_CHAIN], ipv6);
+    return stdout
+      .split("\n")
+      .filter((l) => l.startsWith(`-A ${MAIN_CHAIN} `) && l.endsWith(` -j ${chain}`))
+      .map((l) => "-D" + l.slice(2));
+  } catch {
+    return []; // SEED-FWD may not exist yet
+  }
+}
+
 /** Check if a chain exists. */
 async function chainExists(chain: string, ipv6 = false): Promise<boolean> {
   try {
@@ -215,34 +251,40 @@ async function reconcileNamespace(ns: string): Promise<void> {
   for (const v6 of [false, true]) {
     const ips = allIps.filter((ip) => v6 ? ip.includes(":") : !ip.includes(":"));
 
-    // If no pods for this IP family, clean up chain
+    // Remove existing jumps to this chain in the same transaction as the
+    // rebuild. If another writer (e.g. the previous host-agent pod during a
+    // roll) changed them since we read, a -D fails, the whole transaction is
+    // rejected, and the retry re-reads: no duplicates, no half-applied state.
+    const deletes = await jumpDeletes(chain, v6);
+
+    // If no pods for this IP family, remove the chain
     if (ips.length === 0) {
-      await removeNsChain(chain, v6);
+      if (deletes.length > 0 || await chainExists(chain, v6)) {
+        await iptRestore([`:${chain} - [0:0]`, ...deletes, `-X ${chain}`], v6);
+      }
       continue;
     }
 
-    // Ensure namespace chain exists
-    await ensureChain(chain, v6);
-    await ipt(["-F", chain], v6);
-
+    const rules: string[][] = [];
     const dnsIp = config.dnsIp;
     const dnsMatch = v6 ? dnsIp.includes(":") : !dnsIp.includes(":");
+    const svcCidrsForFamily = v6
+      ? config.serviceCidrs.filter(c => c.includes(":"))
+      : config.serviceCidrs.filter(c => !c.includes(":"));
 
     for (const ip of ips) {
       // 1. DNS egress — match on original destination (pre-DNAT) since kube-proxy
       // DNATs service IP to real coredns pod IP before the FORWARD chain
       if (dnsMatch) {
-        await ipt(["-A", chain, "-s", ip, "-p", "udp", "--dport", "53",
-          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"], v6);
-        await ipt(["-A", chain, "-s", ip, "-p", "tcp", "--dport", "53",
-          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"], v6);
+        rules.push(["-s", ip, "-p", "udp", "--dport", "53",
+          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"]);
+        rules.push(["-s", ip, "-p", "tcp", "--dport", "53",
+          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"]);
       }
 
       // 2. Intra-namespace (src=this pod, dst=any pod in namespace)
       for (const dstIp of ips) {
-        if (dstIp !== ip) {
-          await ipt(["-A", chain, "-s", ip, "-d", dstIp, "-j", "ACCEPT"], v6);
-        }
+        if (dstIp !== ip) rules.push(["-s", ip, "-d", dstIp, "-j", "ACCEPT"]);
       }
 
       // 3. Exposed port ingress
@@ -251,7 +293,7 @@ async function reconcileNamespace(ns: string): Promise<void> {
           if (!pod.ips.includes(ip)) continue;
           for (const ep of pod.exposePorts) {
             for (const proto of ep.protocols) {
-              await ipt(["-A", chain, "-d", ip, "-p", proto, "--dport", String(ep.port), "-j", "ACCEPT"], v6);
+              rules.push(["-d", ip, "-p", proto, "--dport", String(ep.port), "-j", "ACCEPT"]);
             }
           }
         }
@@ -261,36 +303,32 @@ async function reconcileNamespace(ns: string): Promise<void> {
       // This permits reaching services in other namespaces (e.g. seed-system controller)
       // while still blocking direct pod-to-pod cross-namespace traffic.
       // Uses conntrack original dst since kube-proxy DNATs before FORWARD.
-      const svcCidrsForFamily = v6
-        ? config.serviceCidrs.filter(c => c.includes(":"))
-        : config.serviceCidrs.filter(c => !c.includes(":"));
       for (const cidr of svcCidrsForFamily) {
-        await ipt(["-A", chain, "-s", ip,
-          "-m", "conntrack", "--ctorigdst", cidr, "-j", "ACCEPT"], v6);
+        rules.push(["-s", ip, "-m", "conntrack", "--ctorigdst", cidr, "-j", "ACCEPT"]);
       }
 
       // 5. Internet egress
-      await ipt(["-A", chain, "-s", ip, "-j", EGRESS_CHAIN], v6);
+      rules.push(["-s", ip, "-j", EGRESS_CHAIN]);
     }
 
     // 6. LOG + DROP (default deny)
-    await ipt([
-      "-A", chain,
-      "-j", "LOG",
-      "--log-prefix", `SEED-DROP ${ns.slice(0, 12)}: `,
-      "-m", "limit", "--limit", "10/min",
-    ], v6);
-    await ipt(["-A", chain, "-j", "DROP"], v6);
+    rules.push(["-j", "LOG", "--log-prefix", `SEED-DROP ${ns.slice(0, 12)}: `,
+      "-m", "limit", "--limit", "10/min"]);
+    rules.push(["-j", "DROP"]);
 
-    // Update SEED-FWD: remove old jumps for this chain, then add new per-IP jumps
-    // (jumps must reference specific pod IPs so non-seed traffic passes through)
-    await removeJumps(chain, v6);
-
-    // Add per-IP jumps: traffic from OR to a seed pod goes to its namespace chain
+    // One transaction: declare (create or flush) the chain, fill it, swap the
+    // SEED-FWD jumps (jumps reference specific pod IPs so non-seed traffic
+    // passes through). Traffic from OR to a seed pod goes to its namespace chain.
+    const jumps: string[][] = [];
     for (const ip of ips) {
-      await ipt(["-A", MAIN_CHAIN, "-s", ip, "-j", chain], v6);
-      await ipt(["-A", MAIN_CHAIN, "-d", ip, "-j", chain], v6);
+      jumps.push(["-s", ip, "-j", chain], ["-d", ip, "-j", chain]);
     }
+    await iptRestore([
+      `:${chain} - [0:0]`,
+      ...rules.map((r) => [`-A ${chain}`, ...r.map(restoreArg)].join(" ")),
+      ...deletes,
+      ...jumps.map((j) => [`-A ${MAIN_CHAIN}`, ...j].join(" ")),
+    ], v6);
   }
 
   const podCount = state?.pods.size ?? 0;
