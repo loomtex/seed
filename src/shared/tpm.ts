@@ -1,4 +1,4 @@
-// Shim-owned swtpm: pure helpers shared by the controller and host agent.
+// Shim-owned swtpm: pure helpers for the controller.
 //
 // On the shim path the Kata shim (not the host agent) runs swtpm for an
 // instance. The controller tells it what to do via pod annotations:
@@ -33,79 +33,10 @@ export function tpmGuestDir(namespace: string, instance: string): string {
   return `${tpmStateDir(namespace, instance)}/${GUEST_SUBDIR}`;
 }
 
-// --- Opt-in (SEED_SHIM_SWTPM) ---
-
-export interface ShimSwtpmOptIn {
-  /** True if this instance's swtpm is owned by the shim. */
-  matches(namespace: string, instance: string): boolean;
-  /** Entries that didn't parse (reported once at startup). */
-  invalid: string[];
-}
-
-/**
- * Parse SEED_SHIM_SWTPM: comma-separated `<namespace>/<instance>`,
- * `<namespace>/*`, or `*`. Empty/unset opts nobody in.
- */
-export function parseShimSwtpmOptIn(raw: string | undefined): ShimSwtpmOptIn {
-  let all = false;
-  const namespaces = new Set<string>();
-  const instances = new Set<string>();
-  const invalid: string[] = [];
-  const nameRe = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-
-  for (const entry of (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
-    if (entry === "*") {
-      all = true;
-      continue;
-    }
-    const parts = entry.split("/");
-    if (parts.length !== 2 || !nameRe.test(parts[0])) {
-      invalid.push(entry);
-      continue;
-    }
-    const [ns, inst] = parts;
-    if (inst === "*") namespaces.add(ns);
-    else if (nameRe.test(inst)) instances.add(`${ns}/${inst}`);
-    else invalid.push(entry);
-  }
-
-  return {
-    matches: (ns, inst) => all || namespaces.has(ns) || instances.has(`${ns}/${inst}`),
-    invalid,
-  };
-}
-
-/** Inputs for rendering shim-owned swtpm instances in one namespace. */
+/** Inputs for rendering instance TPMs in one namespace. */
 export interface ShimTpmRenderContext {
-  /** Effective opt-in (see effectiveShimOptIn). */
-  optIn: ShimSwtpmOptIn;
   /** Recorded SeedTPM fingerprints by instance name. */
   records: Map<string, string>;
-}
-
-/**
- * Narrow the configured opt-in for one namespace: an opted-in instance with
- * no recorded fingerprint but an existing TPM state (permall) is held back on
- * the legacy path. Rendering it in create mode would ask the shim to create a
- * TPM over a live one; it needs `tpm-backfill` first. Returns the effective
- * opt-in plus the held-back instance names (for logging).
- */
-export function effectiveShimOptIn(
-  optIn: ShimSwtpmOptIn,
-  namespace: string,
-  records: Map<string, string>,
-  unrecordedWithState: Set<string>,
-): { optIn: ShimSwtpmOptIn; heldBack: string[] } {
-  const heldBack = [...unrecordedWithState].filter(
-    (name) => optIn.matches(namespace, name) && !records.has(name)).sort();
-  const blocked = new Set(heldBack);
-  return {
-    optIn: {
-      matches: (ns, inst) => optIn.matches(ns, inst) && !(ns === namespace && blocked.has(inst)),
-      invalid: optIn.invalid,
-    },
-    heldBack,
-  };
 }
 
 // --- Fingerprints ---

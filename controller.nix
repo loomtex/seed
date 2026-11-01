@@ -2,7 +2,7 @@
 #
 # Deploys as k8s-native components:
 #   - seed-controller: Deployment pod (reconciliation engine + webhook)
-#   - seed-host-agent: DaemonSet pod (privileged, manages swtpm on host)
+#   - seed-host-agent: DaemonSet pod (privileged, per-node network policy)
 #   - seed-builder: Jobs created by controller for nix build/eval
 #
 # The controller runs inside the cluster with proper RBAC, communicates
@@ -12,7 +12,8 @@
 let
   cfg = config.seed.controller;
 
-  # SeedHostTask CRD definition
+  # SeedHostTask CRD definition (retired: the Kata shim owns swtpm now; kept
+  # only so the controller can reap leftover objects — drop in a later release)
   seedHostTaskCRD = pkgs.writeText "seed-hosttask-crd.yaml" (builtins.toJSON {
     apiVersion = "apiextensions.k8s.io/v1";
     kind = "CustomResourceDefinition";
@@ -500,7 +501,6 @@ let
               { name = "SEED_FLAKE_PATHS"; value = builtins.concatStringsSep "," cfg.flakePaths; }
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
-              { name = "SEED_SHIM_SWTPM"; value = builtins.concatStringsSep "," cfg.shimSwtpm; }
               # Ceph fsid the TPM state tree's .seed-fs sentinel must hold; the
               # controller refuses TPM decisions and EST reads off anything else.
               { name = "SEED_TPM_EXPECTED_FSID"; value = if config.seed.tpm.expectedFsid == null then "" else config.seed.tpm.expectedFsid; }
@@ -596,7 +596,7 @@ let
     };
   });
 
-  # Host agent DaemonSet (privileged — manages swtpm on host)
+  # Host agent DaemonSet (privileged — network policy enforcement)
   hostAgentDaemonSet = pkgs.writeText "seed-host-agent-daemonset.yaml" (builtins.toJSON {
     apiVersion = "apps/v1";
     kind = "DaemonSet";
@@ -607,11 +607,9 @@ let
     };
     spec = {
       selector.matchLabels."app.kubernetes.io/name" = "seed-host-agent";
-      # OnDelete while the host agent still owns swtpms: a restart kills every
-      # swtpm on the node and cloud-hypervisor never reconnects, breaking guest
-      # TPMs. Template changes (e.g. SEED_SHIM_SWTPM) apply only when a pod is
-      # deleted by hand. Switch to RollingUpdate once swtpm moves to the shim.
-      updateStrategy.type = "OnDelete";
+      # Declared explicitly to replace the OnDelete hold from the swtpm era: the
+      # host agent no longer runs swtpm, so restarting it is safe.
+      updateStrategy.type = "RollingUpdate";
       template = {
         metadata.labels = systemLabels "host-agent";
         spec = {
@@ -626,7 +624,6 @@ let
             securityContext.privileged = true;
             env = [
               { name = "SEED_NETPOL_ENABLED"; value = if cfg.netpol.enable then "1" else ""; }
-              { name = "SEED_SHIM_SWTPM"; value = builtins.concatStringsSep "," cfg.shimSwtpm; }
               { name = "SEED_CLUSTER_CIDR"; value = "10.42.0.0/16,fd00::/56"; }
               { name = "SEED_SERVICE_CIDR"; value = "10.43.0.0/16,fd01::/108"; }
               { name = "SEED_DNS_IP"; value = "10.43.0.10"; }
@@ -635,15 +632,7 @@ let
                 valueFrom.fieldRef.fieldPath = "spec.nodeName";
               }
             ];
-            volumeMounts = [
-              { name = "tpm-state"; mountPath = "/var/lib/seed-controller/tpm"; }
-              { name = "swtpm-sockets"; mountPath = "/run/swtpm"; }
-            ];
           }];
-          volumes = [
-            { name = "tpm-state"; hostPath = { path = "/var/lib/seed-controller/tpm"; type = "DirectoryOrCreate"; }; }
-            { name = "swtpm-sockets"; hostPath = { path = "/run/swtpm"; type = "DirectoryOrCreate"; }; }
-          ];
         };
       };
     };
@@ -803,7 +792,7 @@ let
       { name = "05-controller-deployment.json"; path = controllerDeployment; }
       { name = "05-controller-service.json"; path = controllerService; }
     ]
-    ++ lib.optional cfg.swtpmEnabled
+    ++ lib.optional cfg.netpol.enable
       { name = "05-host-agent-daemonset.json"; path = hostAgentDaemonSet; }
     ++ lib.optionals cfg.poolManager.enable [
       { name = "05-pool-manager-daemonset.json"; path = poolManagerDaemonSet; }
@@ -811,6 +800,11 @@ let
     ]
   );
 in {
+  imports = [
+    (lib.mkRemovedOptionModule [ "seed" "controller" "shimSwtpm" ]
+      "All TPM instances use shim-owned swtpm now; remove seed.controller.shimSwtpm.")
+  ];
+
   options.seed.controller = {
     enable = lib.mkEnableOption "Seed instance controller";
 
@@ -896,22 +890,7 @@ in {
     swtpmEnabled = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Enable vTPM (swtpm) for all instances via SeedHostTask CRDs.";
-    };
-
-    shimSwtpm = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [];
-      example = [ "s-gaydazldmnsg/dns" "s-gaydazldmnsg/*" "*" ];
-      description = ''
-        Instances whose swtpm is owned by the Kata shim instead of the host
-        agent (rollout flag for migrating one instance at a time). Entries are
-        `<namespace>/<instance>`, `<namespace>/*`, or `*`. Opted-in instances
-        get tpm-mode/tpm-state-dir/tpm-fingerprint pod annotations, no
-        SeedHostTask, and no tpm_socket annotation. Record existing TPMs'
-        fingerprints with `nix run .#tpm-backfill` before opting them in,
-        otherwise they boot in create mode.
-      '';
+      description = "Enable a vTPM for all instances (swtpm run by the Kata shim; fingerprints recorded in SeedTPM).";
     };
 
     registrar = {

@@ -3,15 +3,15 @@
 
 import type * as k8s from "@kubernetes/client-node";
 import { seedLabels, LABELS, MANAGED_BY_VALUE, ANNOTATIONS } from "../shared/labels.js";
-import type { SeedMeta, SeedHostTask, SeedHostTaskSpec, SeedDNSRecord, SeedDNSRecordSpec, SeedDomain, SeedDomainSpec, CombineDomainConfig, SeedTPM, ShimTpmMode } from "../shared/types.js";
+import type { SeedMeta, SeedDNSRecord, SeedDNSRecordSpec, SeedDomain, SeedDomainSpec, CombineDomainConfig, SeedTPM, ShimTpmMode } from "../shared/types.js";
 import { tpmGuestDir, tpmStateDir } from "../shared/tpm.js";
 
 /**
  * Generate a Deployment manifest for a seed instance.
  *
- * TPM: `tpmSocketPath` is the legacy host-agent path (socket annotation).
- * `shimTpm` is the shim-owned swtpm path and takes precedence: the pod gets
- * the tpm-mode/state-dir/fingerprint annotations and no socket annotation.
+ * TPM: `tpm` puts the pod on the shim-owned swtpm path (tpm-mode /
+ * tpm-state-dir / tpm-fingerprint annotations + state dir mount); without it
+ * the instance has no TPM.
  */
 export function generateDeployment(
   name: string,
@@ -19,19 +19,18 @@ export function generateDeployment(
   generation: string,
   namespace: string,
   meta: SeedMeta,
-  tpmSocketPath?: string,
+  tpm?: ShimTpmMode,
   poolManagerUrl?: string,
   acmeUrl?: string,
   estUrl?: string,
   instanceDomain?: string,
-  shimTpm?: ShimTpmMode,
 ): k8s.V1Deployment {
-  if (shimTpm) {
+  if (tpm) {
     const base = generateDeployment(
       name, imageRef, generation, namespace, meta, undefined,
       poolManagerUrl, acmeUrl, estUrl, instanceDomain,
     );
-    return applyShimTpm(base, namespace, name, shimTpm);
+    return applyShimTpm(base, namespace, name, tpm);
   }
 
   const podAnnotations: Record<string, string> = {
@@ -39,9 +38,6 @@ export function generateDeployment(
     [ANNOTATIONS.KATA_MEMORY]: String(meta.resources.memory),
     [ANNOTATIONS.EXPOSE]: JSON.stringify(meta.expose),
   };
-  if (tpmSocketPath) {
-    podAnnotations[ANNOTATIONS.KATA_TPM_SOCKET] = tpmSocketPath;
-  }
 
   // Readiness probe: TCP check on first exposed port for rolling rollouts
   const probePort = meta.rollout === "rolling"
@@ -76,21 +72,6 @@ export function generateDeployment(
     mountPath: "/etc/seed/ca",
     readOnly: true,
   });
-
-  // TPM state volume (CephFS-backed hostPath)
-  if (tpmSocketPath) {
-    volumes.push({
-      name: "tpm",
-      hostPath: {
-        path: `/var/lib/seed-controller/tpm/${namespace}-${name}`,
-        type: "DirectoryOrCreate",
-      },
-    });
-    mounts.push({
-      name: "tpm",
-      mountPath: "/seed/tpm",
-    });
-  }
 
   return {
     apiVersion: "apps/v1",
@@ -183,7 +164,7 @@ export function generateDeployment(
  * two must stay byte-identical — only pod template annotations and the tpm
  * volume change, so only this instance's pod rolls.
  *
- *  - removes the legacy tpm_socket annotation;
+ *  - removes the legacy host-agent tpm_socket annotation, if present;
  *  - sets tpm-mode + tpm-state-dir, and tpm-fingerprint in verify mode;
  *  - mounts only <state-dir>/guest at /seed/tpm, where the guest keeps its age
  *    identity. Never the state dir itself: tpm2-00.permall is the TPM's
@@ -338,28 +319,6 @@ export function generateIngressService(
       selector: { [LABELS.INSTANCE]: instance },
       ports,
     },
-  };
-}
-
-/** Generate a SeedHostTask CRD manifest. */
-export function generateHostTask(
-  instance: string,
-  namespace: string,
-  generation: string,
-): SeedHostTask {
-  return {
-    apiVersion: "seed.loom.farm/v1alpha1",
-    kind: "SeedHostTask",
-    metadata: {
-      name: `swtpm-${instance}`,
-      namespace,
-      labels: seedLabels(instance, generation),
-    },
-    spec: {
-      type: "swtpm",
-      instance,
-      namespace,
-    } satisfies SeedHostTaskSpec,
   };
 }
 

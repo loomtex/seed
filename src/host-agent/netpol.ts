@@ -450,8 +450,13 @@ export async function startPodWatcher(
   informer.on("add", handlePodEvent);
   informer.on("update", handlePodEvent);
   informer.on("delete", handlePodDelete);
+  // client-node informers stop on a watch error (e.g. "Premature close" when
+  // k3s restarts) and never resume on their own; without this, pods created
+  // afterwards silently get no netpol rules. start() re-lists, replaying
+  // "add" for every pod, so rules missed while down are applied.
   informer.on("error", (err) => {
-    log(COMPONENT, `pod informer error: ${err}`);
+    log(COMPONENT, `pod informer error, restarting in 5s: ${err}`);
+    setTimeout(() => informer.start(), 5_000);
   });
 
   await informer.start();

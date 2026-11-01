@@ -6,7 +6,6 @@ import {
   generateDeployment,
   generatePVC,
   generateService,
-  generateHostTask,
   findProbePort,
 } from "../controller/manifests.js";
 import type { SeedMeta } from "../shared/types.js";
@@ -143,28 +142,25 @@ describe("generateDeployment", () => {
     assert.equal(dep.spec?.strategy?.rollingUpdate?.maxUnavailable, 0);
   });
 
-  it("adds TPM socket annotation when provided", () => {
+  it("adds shim TPM annotations (no tpm_socket) when a TPM mode is given", () => {
     const meta = makeMeta();
-    const socketPath = "/run/swtpm/s-gaydazldmnsg-web/swtpm-sock";
-    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, { mode: "create" });
 
-    assert.equal(
-      dep.spec?.template?.metadata?.annotations?.[
-        "io.katacontainers.config.hypervisor.tpm_socket"
-      ],
-      socketPath,
-    );
+    const ann = dep.spec?.template?.metadata?.annotations ?? {};
+    assert.equal(ann["seed.loom.farm/tpm-mode"], "create");
+    assert.equal(ann["seed.loom.farm/tpm-state-dir"], `/var/lib/seed-controller/tpm/${ns}-web`);
+    assert.equal(ann["io.katacontainers.config.hypervisor.tpm_socket"], undefined);
   });
 
-  it("adds TPM volume as hostPath when TPM socket provided", () => {
+  it("adds TPM volume as hostPath when a TPM mode is given", () => {
     const meta = makeMeta();
-    const socketPath = "/run/swtpm/s-gaydazldmnsg-web/swtpm-sock";
-    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, { mode: "create" });
 
     const tmpl = dep.spec?.template?.spec;
     const tpmVol = tmpl?.volumes?.find((v) => v.name === "tpm");
     assert.ok(tpmVol, "tpm volume should exist");
-    assert.equal(tpmVol?.hostPath?.path, `/var/lib/seed-controller/tpm/${ns}-web`);
+    // Guests get only the guest subdir, never the TPM state dir itself.
+    assert.equal(tpmVol?.hostPath?.path, `/var/lib/seed-controller/tpm/${ns}-web/guest`);
     assert.equal(tpmVol?.hostPath?.type, "DirectoryOrCreate");
 
     const tpmMount = tmpl?.containers[0].volumeMounts?.find(
@@ -223,8 +219,7 @@ describe("generateDeployment", () => {
     const meta = makeMeta({
       storage: { data: { size: "1Gi", mountPoint: "/seed/storage/data" } },
     });
-    const socketPath = "/run/swtpm/ns-web/swtpm-sock";
-    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, socketPath);
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, { mode: "create" });
 
     const tmpl = dep.spec?.template?.spec;
     assert.equal(tmpl?.volumes?.length, 2);
@@ -346,27 +341,5 @@ describe("generateService", () => {
     assert.ok(svc);
     // dns produces 2 ports (TCP + UDP), http produces 1
     assert.equal(svc.spec?.ports?.length, 3);
-  });
-});
-
-describe("generateHostTask", () => {
-  it("generates a valid SeedHostTask CRD manifest", () => {
-    const ht = generateHostTask("dns", "s-gaydazldmnsg", "gen123");
-
-    assert.equal(ht.apiVersion, "seed.loom.farm/v1alpha1");
-    assert.equal(ht.kind, "SeedHostTask");
-    assert.equal(ht.metadata.name, "swtpm-dns");
-    assert.equal(ht.metadata.namespace, "s-gaydazldmnsg");
-    assert.equal(ht.spec.type, "swtpm");
-    assert.equal(ht.spec.instance, "dns");
-    assert.equal(ht.spec.namespace, "s-gaydazldmnsg");
-  });
-
-  it("includes seed labels", () => {
-    const ht = generateHostTask("web", "s-test", "gen456");
-
-    assert.equal(ht.metadata.labels?.["seed.loom.farm/managed-by"], "seed");
-    assert.equal(ht.metadata.labels?.["seed.loom.farm/instance"], "web");
-    assert.equal(ht.metadata.labels?.["seed.loom.farm/generation"], "gen456");
   });
 });
