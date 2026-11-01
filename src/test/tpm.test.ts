@@ -1,12 +1,12 @@
-// Tests for shim-owned swtpm: opt-in parsing, fingerprint validation, the
-// create → verify flip decision, and Deployment rendering.
+// Tests for shim-owned swtpm: fingerprint validation, the create → verify
+// flip decision, and Deployment rendering.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type * as k8s from "@kubernetes/client-node";
 import {
-  parseShimSwtpmOptIn, parseFingerprintFile, isValidFingerprint, shimTpmModeFor,
-  decideTpmFlip, effectiveShimOptIn, tpmGuestDir, tpmStateDir, FINGERPRINT_MTIME_SLACK_MS,
+  parseFingerprintFile, isValidFingerprint, shimTpmModeFor,
+  decideTpmFlip, tpmGuestDir, tpmStateDir, FINGERPRINT_MTIME_SLACK_MS,
   type TpmFlipInput,
 } from "../shared/tpm.js";
 import { generateDeployment, applyShimTpm, generateSeedTPM } from "../controller/manifests.js";
@@ -40,61 +40,6 @@ function tpmVolume(dep: k8s.V1Deployment): k8s.V1Volume | undefined {
 function tpmMounts(dep: k8s.V1Deployment): k8s.V1VolumeMount[] {
   return dep.spec!.template.spec!.containers[0].volumeMounts?.filter((m) => m.name === "tpm") ?? [];
 }
-
-// --- opt-in ---
-
-describe("parseShimSwtpmOptIn", () => {
-  it("empty / unset opts nobody in", () => {
-    for (const raw of [undefined, "", " , "]) {
-      const o = parseShimSwtpmOptIn(raw);
-      assert.equal(o.matches(NS, "dns"), false);
-      assert.deepEqual(o.invalid, []);
-    }
-  });
-
-  it("matches exact namespace/instance keys only", () => {
-    const o = parseShimSwtpmOptIn(`${NS}/dns, ${NS}/web`);
-    assert.equal(o.matches(NS, "dns"), true);
-    assert.equal(o.matches(NS, "web"), true);
-    assert.equal(o.matches(NS, "silo"), false);
-    assert.equal(o.matches("s-other", "dns"), false);
-  });
-
-  it("supports * and namespace/*", () => {
-    assert.equal(parseShimSwtpmOptIn("*").matches("s-x", "anything"), true);
-    const o = parseShimSwtpmOptIn(`${NS}/*`);
-    assert.equal(o.matches(NS, "silo"), true);
-    assert.equal(o.matches("s-other", "silo"), false);
-  });
-
-  it("reports malformed entries and ignores them", () => {
-    const o = parseShimSwtpmOptIn(`dns,${NS}/dns,a/b/c,${NS}/Bad,/x`);
-    assert.deepEqual(o.invalid, ["dns", "a/b/c", `${NS}/Bad`, "/x"]);
-    assert.equal(o.matches(NS, "dns"), true);
-  });
-});
-
-describe("effectiveShimOptIn", () => {
-  const optIn = parseShimSwtpmOptIn(`${NS}/*`);
-
-  it("holds back opted-in instances with legacy state and no record", () => {
-    const eff = effectiveShimOptIn(optIn, NS, new Map(), new Set(["dns"]));
-    assert.deepEqual(eff.heldBack, ["dns"]);
-    assert.equal(eff.optIn.matches(NS, "dns"), false);
-    assert.equal(eff.optIn.matches(NS, "web"), true);
-  });
-
-  it("does not hold back recorded instances", () => {
-    const eff = effectiveShimOptIn(optIn, NS, new Map([["dns", FP]]), new Set(["dns"]));
-    assert.deepEqual(eff.heldBack, []);
-    assert.equal(eff.optIn.matches(NS, "dns"), true);
-  });
-
-  it("ignores instances that are not opted in", () => {
-    const eff = effectiveShimOptIn(parseShimSwtpmOptIn(`${NS}/web`), NS, new Map(), new Set(["dns"]));
-    assert.deepEqual(eff.heldBack, []);
-  });
-});
 
 // --- fingerprints ---
 
@@ -182,7 +127,7 @@ describe("generateDeployment with shim-owned swtpm", () => {
 
   it("create mode: mode + state dir annotations, no socket, no fingerprint", () => {
     const dep = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, meta("dns"),
-      "/run/swtpm/sock-ignored", undefined, undefined, undefined, undefined, { mode: "create" });
+      { mode: "create" });
     const ann = podAnn(dep);
     assert.equal(ann[ANNOTATIONS.TPM_MODE], "create");
     assert.equal(ann[ANNOTATIONS.TPM_STATE_DIR], `/var/lib/seed-controller/tpm/${NS}-dns`);
@@ -197,7 +142,7 @@ describe("generateDeployment with shim-owned swtpm", () => {
 
   it("verify mode: fingerprint annotation, state dir must exist", () => {
     const dep = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, meta("dns"),
-      undefined, undefined, undefined, undefined, undefined, { mode: "verify", fingerprint: FP });
+      { mode: "verify", fingerprint: FP });
     const ann = podAnn(dep);
     assert.equal(ann[ANNOTATIONS.TPM_MODE], "verify");
     assert.equal(ann[ANNOTATIONS.TPM_FINGERPRINT], FP);
@@ -206,20 +151,12 @@ describe("generateDeployment with shim-owned swtpm", () => {
     assert.equal(tpmVolume(dep)?.hostPath?.path, tpmGuestDir(NS, "dns"));
   });
 
-  it("legacy path is unchanged when not opted in", () => {
-    const dep = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, meta("dns"), "/run/swtpm/s/swtpm-sock");
-    const ann = podAnn(dep);
-    assert.equal(ann[ANNOTATIONS.KATA_TPM_SOCKET], "/run/swtpm/s/swtpm-sock");
-    assert.equal(ann[ANNOTATIONS.TPM_MODE], undefined);
-    assert.equal(tpmVolume(dep)?.hostPath?.type, "DirectoryOrCreate");
-  });
-
   it("flip (applyShimTpm on the create deployment) equals rendering verify directly", () => {
     const m = meta("dns", { storage: { data: { size: "1Gi", mountPoint: "/data" } } });
     const create = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, m,
-      undefined, undefined, undefined, undefined, undefined, { mode: "create" });
+      { mode: "create" });
     const verify = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, m,
-      undefined, undefined, undefined, undefined, undefined, { mode: "verify", fingerprint: FP });
+      { mode: "verify", fingerprint: FP });
     const flipped = applyShimTpm(create, NS, "dns", { mode: "verify", fingerprint: FP });
     assert.deepEqual(flipped, verify);
     // input untouched
@@ -227,7 +164,10 @@ describe("generateDeployment with shim-owned swtpm", () => {
   });
 
   it("applyShimTpm migrates a legacy deployment and keeps one tpm volume/mount", () => {
-    const legacy = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, meta("dns"), "/run/swtpm/s/swtpm-sock");
+    const legacy = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, meta("dns"));
+    legacy.spec!.template.metadata!.annotations![ANNOTATIONS.KATA_TPM_SOCKET] = "/run/swtpm/s/swtpm-sock";
+    legacy.spec!.template.spec!.volumes!.push({ name: "tpm", hostPath: { path: tpmStateDir(NS, "dns"), type: "DirectoryOrCreate" } });
+    legacy.spec!.template.spec!.containers[0].volumeMounts!.push({ name: "tpm", mountPath: "/seed/tpm" });
     const dep = applyShimTpm(legacy, NS, "dns", { mode: "create" });
     assert.equal(podAnn(dep)[ANNOTATIONS.KATA_TPM_SOCKET], undefined);
     assert.equal(dep.spec!.template.spec!.volumes!.filter((v) => v.name === "tpm").length, 1);
@@ -239,7 +179,7 @@ describe("generateDeployment with shim-owned swtpm", () => {
 
   it("only annotations/volume differ between modes (pod template labels stable)", () => {
     const a = generateDeployment("dns", "nix:0/nix/store/x", gen, NS, meta("dns"),
-      undefined, undefined, undefined, undefined, undefined, { mode: "create" });
+      { mode: "create" });
     const b = applyShimTpm(a, NS, "dns", { mode: "verify", fingerprint: FP });
     assert.deepEqual(b.spec!.template.metadata!.labels, a.spec!.template.metadata!.labels);
     assert.deepEqual(b.metadata, a.metadata);
@@ -258,57 +198,37 @@ describe("renderDesiredState with shim-owned swtpm", () => {
   const results: Map<string, BuildResult> = new Map([
     ["dns", { imagePath: "/nix/store/a-seed-dns", meta: meta("dns") }],
     ["web", { imagePath: "/nix/store/b-seed-web", meta: meta("web") }],
-    ["silo", { imagePath: "/nix/store/c-seed-silo", meta: meta("silo") }],
   ]);
-  const hostTasks = new Map([
-    ["dns", { ready: true, socketPath: "/run/swtpm/dns/swtpm-sock" }],
-    ["web", { ready: true, socketPath: "/run/swtpm/web/swtpm-sock" }],
-    ["silo", { ready: true, socketPath: "/run/swtpm/silo/swtpm-sock" }],
-  ]);
-  const render = (optIn: string, records: Map<string, string>, swtpm = true) =>
-    renderDesiredState(NS, swtpm, "", "", results, null, null, hostTasks,
-      undefined, undefined, undefined, { optIn: parseShimSwtpmOptIn(optIn), records });
+  const render = (records: Map<string, string>, swtpm = true) =>
+    renderDesiredState(NS, swtpm, "", "", results, null, null,
+      undefined, undefined, undefined, { records });
 
-  it("opted-in without record → create; with record → verify; others legacy", () => {
-    const state = render(`${NS}/dns,${NS}/web`, new Map([["web", FP]]));
+  it("no record → create; record → verify; never a tpm_socket", () => {
+    const state = render(new Map([["web", FP]]));
     const dns = state.instances.get("dns")!;
     const web = state.instances.get("web")!;
-    const silo = state.instances.get("silo")!;
 
     assert.deepEqual(dns.shimTpm, { mode: "create" });
-    assert.equal(dns.hostTask, null);
     assert.equal(podAnn(dns.deployment)[ANNOTATIONS.TPM_MODE], "create");
     assert.equal(podAnn(dns.deployment)[ANNOTATIONS.KATA_TPM_SOCKET], undefined);
 
     assert.deepEqual(web.shimTpm, { mode: "verify", fingerprint: FP });
-    assert.equal(web.hostTask, null);
     assert.equal(podAnn(web.deployment)[ANNOTATIONS.TPM_FINGERPRINT], FP);
-
-    assert.equal(silo.shimTpm, undefined);
-    assert.equal(silo.hostTask?.metadata?.name, "swtpm-silo");
-    assert.equal(podAnn(silo.deployment)[ANNOTATIONS.KATA_TPM_SOCKET], "/run/swtpm/silo/swtpm-sock");
-    assert.equal(podAnn(silo.deployment)[ANNOTATIONS.TPM_MODE], undefined);
+    assert.equal(podAnn(web.deployment)[ANNOTATIONS.KATA_TPM_SOCKET], undefined);
   });
 
-  it("opt-in doesn't change the generation or other instances' deployments", () => {
-    const before = render("", new Map());
-    const after = render(`${NS}/dns`, new Map());
+  it("recording one instance changes only that instance's deployment, not the generation", () => {
+    const before = render(new Map());
+    const after = render(new Map([["dns", FP]]));
     assert.equal(after.generation, before.generation);
-    assert.deepEqual(after.instances.get("silo")!.deployment, before.instances.get("silo")!.deployment);
     assert.deepEqual(after.instances.get("web")!.deployment, before.instances.get("web")!.deployment);
     assert.notDeepEqual(after.instances.get("dns")!.deployment, before.instances.get("dns")!.deployment);
   });
 
-  it("no context / no opt-in is identical to the legacy render", () => {
-    const legacy = renderDesiredState(NS, true, "", "", results, null, null, hostTasks);
-    assert.deepEqual(render("", new Map()), legacy);
-  });
-
-  it("swtpm disabled → no TPM at all, even if opted in", () => {
-    const state = render("*", new Map([["dns", FP]]), false);
+  it("swtpm disabled → no TPM at all", () => {
+    const state = render(new Map([["dns", FP]]), false);
     for (const inst of state.instances.values()) {
       assert.equal(inst.shimTpm, undefined);
-      assert.equal(inst.hostTask, null);
       assert.equal(podAnn(inst.deployment)[ANNOTATIONS.TPM_MODE], undefined);
       assert.equal(tpmVolume(inst.deployment), undefined);
     }
