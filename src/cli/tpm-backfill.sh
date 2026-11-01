@@ -95,7 +95,15 @@ broken() {
 [ -f "$state_dir/tpm2-00.permall" ] || die "no $state_dir/tpm2-00.permall"
 if [ "$fingerprint_only" = 0 ]; then
   [ "$(id -u)" = 0 ] || die "must run as root (tpm_vtpm_proxy + mount namespace); or use --fingerprint-only"
-  [ -f "$state_dir/age-identity" ] || broken "no age-identity in $state_dir"
+  # Shim-path instances keep it in guest/ (the only part their VM sees);
+  # host-agent instances still have it at the state dir root.
+  if [ -f "$state_dir/guest/age-identity" ]; then
+    identity="$state_dir/guest/age-identity"
+  elif [ -f "$state_dir/age-identity" ]; then
+    identity="$state_dir/age-identity"
+  else
+    broken "no age-identity in $state_dir or $state_dir/guest"
+  fi
 fi
 
 scratch="$(mktemp -d /tmp/tpm-backfill.XXXXXXXX)"
@@ -125,7 +133,7 @@ for _ in 1 2 3; do
 done
 [ -n "$copied" ] || die "permall kept changing while copying; is something writing it?"
 if [ "$fingerprint_only" = 0 ]; then
-  cp "$state_dir/age-identity" "$scratch/age-identity"
+  cp "$identity" "$scratch/age-identity"
 fi
 
 # --- 2. scratch swtpm ---
@@ -231,6 +239,18 @@ echo "$key OK $fingerprint"
 
 # --- 5. optional: record in SeedTPM ---
 [ "$write_status" = 1 ] || exit 0
+
+# --- 5a. prepare the guest dir for the shim path ---
+# On the shim path the VM mounts only <state-dir>/guest at /seed/tpm, never the
+# state dir (which holds the TPM's unencrypted state). Copy the verified
+# identity there so seed-tpm-init finds it instead of generating a new one; the
+# original stays at the root for rollback and for EST's fallback lookup.
+if [ ! -f "$state_dir/guest/age-identity" ]; then
+  install -d -m 0755 "$state_dir/guest"
+  cp -p "$state_dir/age-identity" "$state_dir/guest/age-identity"
+  log "copied age-identity into $state_dir/guest/ for the shim path"
+fi
+
 if [ -z "${KUBECONFIG:-}" ] && [ -r /etc/rancher/k3s/k3s.yaml ]; then
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 fi

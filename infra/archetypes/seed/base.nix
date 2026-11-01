@@ -1,7 +1,7 @@
 # Base configuration shared by all seed k3s nodes.
 # Host-specific settings (hostname, sopsFile, timeZone, hardware, controller)
 # are provided by the archetype functions in flake.nix.
-{ config, pkgs, lib, clusterNodes, ... }:
+{ config, pkgs, lib, clusterNodes, clusterCeph, ... }:
 
 let
   # Stagger auto-upgrades 30 minutes apart in node order (04:00, 04:30, ...),
@@ -66,6 +66,10 @@ in
     serviceConfig.CacheDirectory = "nix";
   };
   environment.variables.NIX_REMOTE = "daemon";
+
+  # The Kata shim (and the controller) check that the TPM state tree's
+  # .seed-fs sentinel holds this fsid before trusting anything in it.
+  seed.tpm.expectedFsid = clusterCeph.fsid;
 
   system.autoUpgrade = {
     # Disabled 2026-10-31 while the build pool and shim-owned swtpm work is

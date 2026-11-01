@@ -6,12 +6,15 @@ import assert from "node:assert/strict";
 import type * as k8s from "@kubernetes/client-node";
 import {
   parseShimSwtpmOptIn, parseFingerprintFile, isValidFingerprint, shimTpmModeFor,
-  decideTpmFlip, effectiveShimOptIn, tpmStateDir, FINGERPRINT_MTIME_SLACK_MS,
+  decideTpmFlip, effectiveShimOptIn, tpmGuestDir, tpmStateDir, FINGERPRINT_MTIME_SLACK_MS,
   type TpmFlipInput,
 } from "../shared/tpm.js";
 import { generateDeployment, applyShimTpm, generateSeedTPM } from "../controller/manifests.js";
 import { renderDesiredState } from "../controller/index.js";
-import { currentInstancePod } from "../controller/tpm.js";
+import { assertTpmStorage, currentInstancePod } from "../controller/tpm.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ANNOTATIONS, LABELS } from "../shared/labels.js";
 import type { BuildResult, SeedMeta } from "../shared/types.js";
 
@@ -185,7 +188,9 @@ describe("generateDeployment with shim-owned swtpm", () => {
     assert.equal(ann[ANNOTATIONS.TPM_STATE_DIR], `/var/lib/seed-controller/tpm/${NS}-dns`);
     assert.equal(ann[ANNOTATIONS.TPM_FINGERPRINT], undefined);
     assert.equal(ann[ANNOTATIONS.KATA_TPM_SOCKET], undefined);
-    assert.equal(tpmVolume(dep)?.hostPath?.path, tpmStateDir(NS, "dns"));
+    // Only the guest subdir is mounted: the VM must never see tpm2-00.permall.
+    assert.equal(tpmVolume(dep)?.hostPath?.path, tpmGuestDir(NS, "dns"));
+    assert.equal(tpmVolume(dep)?.hostPath?.path, `${tpmStateDir(NS, "dns")}/guest`);
     assert.equal(tpmVolume(dep)?.hostPath?.type, "DirectoryOrCreate");
     assert.deepEqual(tpmMounts(dep), [{ name: "tpm", mountPath: "/seed/tpm" }]);
   });
@@ -198,6 +203,7 @@ describe("generateDeployment with shim-owned swtpm", () => {
     assert.equal(ann[ANNOTATIONS.TPM_FINGERPRINT], FP);
     assert.equal(ann[ANNOTATIONS.KATA_TPM_SOCKET], undefined);
     assert.equal(tpmVolume(dep)?.hostPath?.type, "Directory");
+    assert.equal(tpmVolume(dep)?.hostPath?.path, tpmGuestDir(NS, "dns"));
   });
 
   it("legacy path is unchanged when not opted in", () => {
@@ -340,4 +346,31 @@ describe("currentInstancePod", () => {
     assert.equal(currentInstancePod([older, newer])?.metadata?.name, "newer");
     assert.equal(currentInstancePod([newer, older])?.metadata?.name, "newer");
   });
+});
+
+describe("assertTpmStorage (CephFS sentinel)", () => {
+  const FSID = "58ec6b96-5df6-49f2-86c3-182501b0602d";
+  async function withBase(fn: (base: string) => Promise<void>) {
+    const base = await mkdtemp(join(tmpdir(), "seed-tpm-"));
+    try { await fn(base); } finally { await rm(base, { recursive: true, force: true }); }
+  }
+
+  it("passes when the sentinel holds the expected fsid", () => withBase(async (base) => {
+    await writeFile(join(base, ".seed-fs"), `${FSID}\n`);
+    await assertTpmStorage(FSID, base);
+  }));
+
+  it("rejects a missing sentinel (unmounted CephFS looks like an empty dir)", () => withBase(async (base) => {
+    await assert.rejects(assertTpmStorage(FSID, base), /cannot read .*\.seed-fs/);
+  }));
+
+  it("rejects a different fsid", () => withBase(async (base) => {
+    await writeFile(join(base, ".seed-fs"), "some-other-fsid");
+    await assert.rejects(assertTpmStorage(FSID, base), /expected 58ec6b96/);
+  }));
+
+  it("rejects when no expected fsid is configured", () => withBase(async (base) => {
+    await writeFile(join(base, ".seed-fs"), FSID);
+    await assert.rejects(assertTpmStorage("", base), /not configured/);
+  }));
 });

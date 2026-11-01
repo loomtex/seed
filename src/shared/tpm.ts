@@ -13,10 +13,24 @@ import type { ShimTpmMode } from "./types.js";
 
 export const TPM_STATE_BASE = "/var/lib/seed-controller/tpm";
 export const FINGERPRINT_FILE = "tpm-fingerprint";
+/** Provisioning writes the Ceph fsid here; proves TPM_STATE_BASE is the real CephFS mount. */
+export const SENTINEL_FILE = ".seed-fs";
+/** The only part of a state dir a shim-path guest sees (at /seed/tpm): its age identity. */
+export const GUEST_SUBDIR = "guest";
 
 /** Host path of an instance's TPM state directory (CephFS). */
 export function tpmStateDir(namespace: string, instance: string): string {
   return `${TPM_STATE_BASE}/${namespace}-${instance}`;
+}
+
+/**
+ * Host path of the subdirectory mounted into a shim-path guest at /seed/tpm.
+ * The guest must never see the state dir itself: tpm2-00.permall is the TPM's
+ * unencrypted persistent state (seeds and keys), and tpm-fingerprint is what
+ * the controller trusts when it records the TPM's identity.
+ */
+export function tpmGuestDir(namespace: string, instance: string): string {
+  return `${tpmStateDir(namespace, instance)}/${GUEST_SUBDIR}`;
 }
 
 // --- Opt-in (SEED_SHIM_SWTPM) ---

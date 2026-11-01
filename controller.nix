@@ -501,6 +501,9 @@ let
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
               { name = "SEED_SHIM_SWTPM"; value = builtins.concatStringsSep "," cfg.shimSwtpm; }
+              # Ceph fsid the TPM state tree's .seed-fs sentinel must hold; the
+              # controller refuses TPM decisions and EST reads off anything else.
+              { name = "SEED_TPM_EXPECTED_FSID"; value = if config.seed.tpm.expectedFsid == null then "" else config.seed.tpm.expectedFsid; }
               { name = "SEED_BUILDER_IMAGE"; value = cfg.builderImage; }
               # nix needs flakes + nix-command enabled, and daemon mode (store is read-only mount)
               { name = "NIX_CONFIG"; value = "experimental-features = nix-command flakes"; }
