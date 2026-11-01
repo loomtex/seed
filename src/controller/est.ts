@@ -18,6 +18,8 @@
 
 import { randomBytes, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { tpmGuestDir, tpmStateDir } from "../shared/tpm.js";
+import { assertTpmStorage, expectedTpmFsid } from "./tpm.js";
 import { execFile } from "node:child_process";
 import * as k8s from "@kubernetes/client-node";
 import { loadKubeConfig, log } from "../shared/kube.js";
@@ -431,14 +433,28 @@ async function readAgeRecipient(
   namespace: string,
   instance: string,
 ): Promise<string | null> {
-  const identityPath = `/var/lib/seed-controller/tpm/${namespace}-${instance}/age-identity`;
-  try {
-    const content = await readFile(identityPath, "utf-8");
-    const match = content.match(/^#\s*(?:public key|Recipient):\s*(\S+)/m);
-    return match ? match[1] : null;
-  } catch {
-    return null;
+  // Once storage is configured, refuse to read identities off anything but
+  // the real CephFS (an unmounted node shows an empty or stale local tree).
+  if (expectedTpmFsid()) {
+    try {
+      await assertTpmStorage();
+    } catch (err) {
+      log("est", `refusing enrollment for ${namespace}/${instance}: ${err}`);
+      return null;
+    }
   }
+  // Shim-path instances keep their identity in the guest subdir; host-agent
+  // instances still have it at the state dir root.
+  for (const dir of [tpmGuestDir(namespace, instance), tpmStateDir(namespace, instance)]) {
+    try {
+      const content = await readFile(`${dir}/age-identity`, "utf-8");
+      const match = content.match(/^#\s*(?:public key|Recipient):\s*(\S+)/m);
+      return match ? match[1] : null;
+    } catch {
+      // try the next location
+    }
+  }
+  return null;
 }
 
 /**

@@ -4,7 +4,7 @@
 import type * as k8s from "@kubernetes/client-node";
 import { seedLabels, LABELS, MANAGED_BY_VALUE, ANNOTATIONS } from "../shared/labels.js";
 import type { SeedMeta, SeedHostTask, SeedHostTaskSpec, SeedDNSRecord, SeedDNSRecordSpec, SeedDomain, SeedDomainSpec, CombineDomainConfig, SeedTPM, ShimTpmMode } from "../shared/types.js";
-import { tpmStateDir } from "../shared/tpm.js";
+import { tpmGuestDir, tpmStateDir } from "../shared/tpm.js";
 
 /**
  * Generate a Deployment manifest for a seed instance.
@@ -185,9 +185,12 @@ export function generateDeployment(
  *
  *  - removes the legacy tpm_socket annotation;
  *  - sets tpm-mode + tpm-state-dir, and tpm-fingerprint in verify mode;
- *  - mounts the state dir at /seed/tpm (age identity lives there). In verify
- *    mode the hostPath must already exist (type Directory): a missing dir
- *    means CephFS isn't mounted, and an empty local dir must not be created.
+ *  - mounts only <state-dir>/guest at /seed/tpm, where the guest keeps its age
+ *    identity. Never the state dir itself: tpm2-00.permall is the TPM's
+ *    unencrypted state, and the guest must not read it or plant a
+ *    tpm-fingerprint. In verify mode the guest dir must already exist (type
+ *    Directory); create mode makes it (the shim's sentinel check refuses to
+ *    boot if that landed on the wrong filesystem).
  */
 export function applyShimTpm(
   deployment: k8s.V1Deployment,
@@ -211,7 +214,7 @@ export function applyShimTpm(
   const volume: k8s.V1Volume = {
     name: "tpm",
     hostPath: {
-      path: stateDir,
+      path: tpmGuestDir(namespace, name),
       type: tpm.mode === "verify" ? "Directory" : "DirectoryOrCreate",
     },
   };

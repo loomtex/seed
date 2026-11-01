@@ -18,7 +18,7 @@ import {
 import { ANNOTATIONS, LABELS, MANAGED_SELECTOR } from "../shared/labels.js";
 import type { DesiredState, SeedHostTask, SeedTPM, SeedTPMCondition, SeedTPMStatus, ShimTpmMode } from "../shared/types.js";
 import {
-  FINGERPRINT_FILE, decideTpmFlip, effectiveShimOptIn, isValidFingerprint, tpmStateDir,
+  FINGERPRINT_FILE, SENTINEL_FILE, TPM_STATE_BASE, decideTpmFlip, effectiveShimOptIn, isValidFingerprint, tpmStateDir,
   type ShimSwtpmOptIn, type ShimTpmRenderContext, type TpmFlipDecision,
 } from "../shared/tpm.js";
 import { applyShimTpm, generateSeedTPM } from "./manifests.js";
@@ -57,6 +57,32 @@ export async function readSeedTPMRecords(
   return records;
 }
 
+/** Expected Ceph fsid for TPM_STATE_BASE, from seed.tpm.expectedFsid ("" = not configured). */
+export function expectedTpmFsid(): string {
+  return (process.env["SEED_TPM_EXPECTED_FSID"] ?? "").trim();
+}
+
+/**
+ * Throw unless TPM_STATE_BASE is the expected CephFS: its sentinel file must
+ * hold the expected fsid. The mountpoint directory exists on every node, so
+ * an unmounted CephFS looks like an empty state tree; without this check the
+ * controller would read "no TPM state" and could render create mode over a
+ * live TPM. Same check the Kata shim makes before starting swtpm.
+ */
+export async function assertTpmStorage(expectedFsid = expectedTpmFsid(), base = TPM_STATE_BASE): Promise<void> {
+  if (!expectedFsid) throw new Error("TPM storage check: SEED_TPM_EXPECTED_FSID is not configured (seed.tpm.expectedFsid)");
+  const path = join(base, SENTINEL_FILE);
+  let content: string;
+  try {
+    content = await readFile(path, "utf-8");
+  } catch (err) {
+    throw new Error(`TPM storage check: cannot read ${path} (CephFS not mounted?): ${err}`);
+  }
+  if (content.trim() !== expectedFsid) {
+    throw new Error(`TPM storage check: ${path} holds ${JSON.stringify(content.trim())}, expected ${expectedFsid}`);
+  }
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -89,9 +115,13 @@ export async function loadShimTpmContext(
   optIn: ShimSwtpmOptIn,
   instanceNames: Iterable<string>,
   hasLegacyState: (stateDir: string) => Promise<boolean> = legacyStateExists,
+  checkStorage: () => Promise<void> = assertTpmStorage,
 ): Promise<ShimTpmRenderContext> {
   const names = [...instanceNames].filter((n) => optIn.matches(namespace, n));
   if (names.length === 0) return { optIn, records: new Map() };
+  // Create vs verify and the safety hold both read the state tree: refuse to
+  // decide anything (fail this reconcile) unless it's really CephFS.
+  await checkStorage();
   const records = await readSeedTPMRecords(clients, namespace);
   const unrecordedWithState = new Set<string>();
   for (const name of names) {
@@ -249,6 +279,8 @@ export interface FlipControllerOptions {
   sweepIntervalMs?: number;
   /** Override for tests. */
   readFingerprintFile?: (stateDir: string) => Promise<{ content: string; mtimeMs: number } | null>;
+  /** Override for tests (default: assertTpmStorage). */
+  checkStorage?: () => Promise<void>;
 }
 
 /** Read <state-dir>/tpm-fingerprint via the controller's read-only mount. */
@@ -303,6 +335,7 @@ export function currentInstancePod(pods: k8s.V1Pod[]): k8s.V1Pod | null {
 export function startTpmFlipController(opts: FlipControllerOptions): void {
   const { kc, clients, optIn, state } = opts;
   const readFp = opts.readFingerprintFile ?? readFingerprintFile;
+  const checkStorage = opts.checkStorage ?? (() => assertTpmStorage());
   const inFlight = new Set<string>();
   const warned = new Map<string, string>(); // key → last warning (dedupe log + events)
 
@@ -399,6 +432,7 @@ export function startTpmFlipController(opts: FlipControllerOptions): void {
       const tpm = await withApiRetry(`get SeedTPM ${key}`, () => getSeedTPM(clients, namespace, name));
       const recorded = isValidFingerprint(tpm?.status?.fingerprint) ? tpm!.status!.fingerprint : null;
       const pod = currentInstancePod(podsFor(namespace, name));
+      await checkStorage(); // never record a fingerprint read off the wrong filesystem
       const file = await readFp(tpmStateDir(namespace, name));
       const startTime = pod?.status?.startTime ? new Date(pod.status.startTime).getTime() : null;
 
