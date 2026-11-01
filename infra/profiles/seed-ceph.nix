@@ -18,6 +18,12 @@ let
     map (ip: "${ip}:6789") (lib.splitString "," clusterCeph.monHost)
   );
 in {
+  # The ceph CLI at a stable path (/run/current-system/sw/bin/ceph), same
+  # package the daemons run. The upgrade agent (host agent) calls it as host
+  # root via nsenter for its Ceph pre-check, host noout and recovery gate;
+  # /etc/ceph has the conf and the admin keyring.
+  environment.systemPackages = [ config.services.ceph.mon.package ];
+
   services.ceph = {
     enable = true;
     global = {
