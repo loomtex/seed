@@ -63,6 +63,11 @@
   # .seed-fs sentinel holds this fsid before trusting anything in it.
   seed.tpm.expectedFsid = clusterCeph.fsid;
 
+  # Node upgrades are driven by the upgrade agent in the host-agent (Lease
+  # seed-system/node-upgrade, one node at a time, cordon/drain/reboot as
+  # needed); this also turns off the host's own nixos-upgrade timer.
+  seed.upgradeAgent.mode = "active";
+
   # Disable IPv6 privacy extensions on the public NIC — 'all' and 'default'
   # sysctls don't affect interfaces that exist before sysctl runs. Per-interface
   # override is required for BGP source address to be the stable SLAAC EUI-64.
