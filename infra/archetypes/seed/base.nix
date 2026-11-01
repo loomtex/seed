@@ -4,12 +4,24 @@
 { config, pkgs, lib, clusterNodes, clusterCeph, ... }:
 
 let
-  # Stagger auto-upgrades 30 minutes apart in node order (04:00, 04:30, ...),
-  # so the nodes don't all rebuild at once and bounce the same derivations
-  # between each other through the build pool.
-  nodeIndex = lib.lists.findFirstIndex (n: n == config.networking.hostName) 0
-    (lib.sort lib.lessThan (lib.attrNames clusterNodes));
-  upgradeMinutes = 4 * 60 + 30 * nodeIndex;
+  # Auto-upgrade schedule: round-robin into a fixed set of 30-minute buckets
+  # from 04:00, so adding a node never means picking a slot by hand.
+  #
+  # k3s servers are ordered first and must each get their own bucket: an
+  # upgrade can restart k3s (e.g. a containerd config change), and two servers
+  # restarting together would drop etcd below quorum. Other nodes (k3sRole =
+  # "agent") fill the buckets round-robin after them. A small fixed per-host
+  # jitter keeps nodes sharing a bucket from hitting GitHub and the cache at
+  # the same second.
+  upgradeBuckets = 4;
+  bucketMinutes = 30;
+  firstUpgradeMinutes = 4 * 60;
+  isServer = node: (node.k3sRole or "server") == "server";
+  sortedNames = lib.sort lib.lessThan (lib.attrNames clusterNodes);
+  serverNames = lib.filter (n: isServer clusterNodes.${n}) sortedNames;
+  upgradeOrder = serverNames ++ lib.filter (n: !isServer clusterNodes.${n}) sortedNames;
+  nodeIndex = lib.lists.findFirstIndex (n: n == config.networking.hostName) 0 upgradeOrder;
+  upgradeMinutes = firstUpgradeMinutes + bucketMinutes * (lib.mod nodeIndex upgradeBuckets);
   upgradeTime = "${lib.fixedWidthNumber 2 (upgradeMinutes / 60)}:${lib.fixedWidthNumber 2 (lib.mod upgradeMinutes 60)}";
 in
 {
@@ -71,9 +83,16 @@ in
   # .seed-fs sentinel holds this fsid before trusting anything in it.
   seed.tpm.expectedFsid = clusterCeph.fsid;
 
+  assertions = [{
+    assertion = lib.length serverNames <= upgradeBuckets;
+    message = "seed auto-upgrade: ${toString (lib.length serverNames)} k3s servers but only ${toString upgradeBuckets} upgrade buckets; two servers would upgrade together and could drop etcd quorum. Raise upgradeBuckets in infra/archetypes/seed/base.nix.";
+  }];
+
   system.autoUpgrade = {
     enable = true;
     dates = upgradeTime;
+    randomizedDelaySec = "10min";
+    fixedRandomDelay = true;
     flake = "github:loomtex/seed?dir=infra";
     allowReboot = false;
   };
