@@ -21,6 +21,10 @@ export const ANNOTATIONS = {
   KATA_VCPUS: "io.katacontainers.config.hypervisor.default_vcpus",
   KATA_MEMORY: "io.katacontainers.config.hypervisor.default_memory",
   KATA_TPM_SOCKET: "io.katacontainers.config.hypervisor.tpm_socket",
+  // Shim-owned swtpm contract (read by the patched Kata shim).
+  TPM_MODE: `${LABEL_DOMAIN}/tpm-mode`,
+  TPM_STATE_DIR: `${LABEL_DOMAIN}/tpm-state-dir`,
+  TPM_FINGERPRINT: `${LABEL_DOMAIN}/tpm-fingerprint`,
 } as const;
 
 /** Build the standard seed label set for a resource. */

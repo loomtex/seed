@@ -57,6 +57,72 @@ let
     };
   });
 
+  # SeedTPM CRD definition — recorded TPM fingerprint per instance (shim-owned
+  # swtpm). Name = instance name. Written only by the controller (and the
+  # tpm-backfill operator tool). Never reaped. The transition rule makes a
+  # recorded fingerprint immutable: re-creating a TPM requires deleting the
+  # SeedTPM, an explicit operator action.
+  seedTPMCRD = pkgs.writeText "seed-tpm-crd.yaml" (builtins.toJSON {
+    apiVersion = "apiextensions.k8s.io/v1";
+    kind = "CustomResourceDefinition";
+    metadata.name = "seedtpms.seed.loom.farm";
+    spec = {
+      group = "seed.loom.farm";
+      versions = [{
+        name = "v1alpha1";
+        served = true;
+        storage = true;
+        schema.openAPIV3Schema = {
+          type = "object";
+          properties = {
+            spec = { type = "object"; };
+            status = {
+              type = "object";
+              properties = {
+                fingerprint = { type = "string"; pattern = "^[0-9a-f]{64}$"; };
+                createdAt = { type = "string"; format = "date-time"; };
+                stateDir = { type = "string"; };
+                source = { type = "string"; enum = [ "shim" "backfill" ]; };
+                conditions = {
+                  type = "array";
+                  items = {
+                    type = "object";
+                    properties = {
+                      type = { type = "string"; };
+                      status = { type = "string"; enum = [ "True" "False" "Unknown" ]; };
+                      reason = { type = "string"; };
+                      message = { type = "string"; };
+                      lastTransitionTime = { type = "string"; format = "date-time"; };
+                    };
+                    required = [ "type" "status" ];
+                  };
+                };
+              };
+              x-kubernetes-validations = [{
+                rule = "!has(oldSelf.fingerprint) || (has(self.fingerprint) && self.fingerprint == oldSelf.fingerprint)";
+                message = "status.fingerprint is immutable once recorded; delete the SeedTPM to authorize a new TPM";
+              }];
+            };
+          };
+        };
+        subresources.status = {};
+        additionalPrinterColumns = [
+          { name = "Fingerprint"; type = "string"; jsonPath = ".status.fingerprint"; }
+          { name = "Source"; type = "string"; jsonPath = ".status.source"; }
+          { name = "Created"; type = "date"; jsonPath = ".status.createdAt"; }
+          { name = "Age"; type = "date"; jsonPath = ".metadata.creationTimestamp"; }
+        ];
+      }];
+      scope = "Namespaced";
+      names = {
+        plural = "seedtpms";
+        singular = "seedtpm";
+        kind = "SeedTPM";
+        shortNames = [ "stpm" ];
+      };
+    };
+  });
+
   # SeedFlake CRD definition — dynamic flake registry with invite codes
   seedFlakeCRD = pkgs.writeText "seed-flake-crd.yaml" (builtins.toJSON {
     apiVersion = "apiextensions.k8s.io/v1";
@@ -335,6 +401,12 @@ let
         verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
       }
       {
+        # No delete: removing a SeedTPM authorizes a new TPM, operator-only.
+        apiGroups = [ "seed.loom.farm" ];
+        resources = [ "seedtpms" "seedtpms/status" ];
+        verbs = [ "get" "list" "watch" "create" "update" "patch" ];
+      }
+      {
         apiGroups = [ "cert-manager.io" ];
         resources = [ "certificaterequests" ];
         verbs = [ "get" "create" "delete" ];
@@ -428,6 +500,7 @@ let
               { name = "SEED_FLAKE_PATHS"; value = builtins.concatStringsSep "," cfg.flakePaths; }
               { name = "SEED_WEBHOOK_PORT"; value = toString cfg.webhook.port; }
               { name = "SEED_SWTPM_ENABLED"; value = if cfg.swtpmEnabled then "1" else ""; }
+              { name = "SEED_SHIM_SWTPM"; value = builtins.concatStringsSep "," cfg.shimSwtpm; }
               { name = "SEED_BUILDER_IMAGE"; value = cfg.builderImage; }
               # nix needs flakes + nix-command enabled, and daemon mode (store is read-only mount)
               { name = "NIX_CONFIG"; value = "experimental-features = nix-command flakes"; }
@@ -531,6 +604,11 @@ let
     };
     spec = {
       selector.matchLabels."app.kubernetes.io/name" = "seed-host-agent";
+      # OnDelete while the host agent still owns swtpms: a restart kills every
+      # swtpm on the node and cloud-hypervisor never reconnects, breaking guest
+      # TPMs. Template changes (e.g. SEED_SHIM_SWTPM) apply only when a pod is
+      # deleted by hand. Switch to RollingUpdate once swtpm moves to the shim.
+      updateStrategy.type = "OnDelete";
       template = {
         metadata.labels = systemLabels "host-agent";
         spec = {
@@ -545,6 +623,7 @@ let
             securityContext.privileged = true;
             env = [
               { name = "SEED_NETPOL_ENABLED"; value = if cfg.netpol.enable then "1" else ""; }
+              { name = "SEED_SHIM_SWTPM"; value = builtins.concatStringsSep "," cfg.shimSwtpm; }
               { name = "SEED_CLUSTER_CIDR"; value = "10.42.0.0/16,fd00::/56"; }
               { name = "SEED_SERVICE_CIDR"; value = "10.43.0.0/16,fd01::/108"; }
               { name = "SEED_DNS_IP"; value = "10.43.0.10"; }
@@ -710,6 +789,7 @@ let
       { name = "02-flake-crd.json"; path = seedFlakeCRD; }
       { name = "02-dnsrecord-crd.json"; path = seedDNSRecordCRD; }
       { name = "02-domain-crd.json"; path = seedDomainCRD; }
+      { name = "02-tpm-crd.json"; path = seedTPMCRD; }
       { name = "03-controller-sa.json"; path = controllerSA; }
       { name = "03-builder-sa.json"; path = builderSA; }
       { name = "04-controller-role.json"; path = controllerRole; }
@@ -814,6 +894,21 @@ in {
       type = lib.types.bool;
       default = true;
       description = "Enable vTPM (swtpm) for all instances via SeedHostTask CRDs.";
+    };
+
+    shimSwtpm = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      example = [ "s-gaydazldmnsg/dns" "s-gaydazldmnsg/*" "*" ];
+      description = ''
+        Instances whose swtpm is owned by the Kata shim instead of the host
+        agent (rollout flag for migrating one instance at a time). Entries are
+        `<namespace>/<instance>`, `<namespace>/*`, or `*`. Opted-in instances
+        get tpm-mode/tpm-state-dir/tpm-fingerprint pod annotations, no
+        SeedHostTask, and no tpm_socket annotation. Record existing TPMs'
+        fingerprints with `nix run .#tpm-backfill` before opting them in,
+        otherwise they boot in create mode.
+      '';
     };
 
     registrar = {

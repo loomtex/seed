@@ -3,9 +3,16 @@
 
 import type * as k8s from "@kubernetes/client-node";
 import { seedLabels, LABELS, MANAGED_BY_VALUE, ANNOTATIONS } from "../shared/labels.js";
-import type { SeedMeta, SeedHostTask, SeedHostTaskSpec, SeedDNSRecord, SeedDNSRecordSpec, SeedDomain, SeedDomainSpec, CombineDomainConfig } from "../shared/types.js";
+import type { SeedMeta, SeedHostTask, SeedHostTaskSpec, SeedDNSRecord, SeedDNSRecordSpec, SeedDomain, SeedDomainSpec, CombineDomainConfig, SeedTPM, ShimTpmMode } from "../shared/types.js";
+import { tpmStateDir } from "../shared/tpm.js";
 
-/** Generate a Deployment manifest for a seed instance. */
+/**
+ * Generate a Deployment manifest for a seed instance.
+ *
+ * TPM: `tpmSocketPath` is the legacy host-agent path (socket annotation).
+ * `shimTpm` is the shim-owned swtpm path and takes precedence: the pod gets
+ * the tpm-mode/state-dir/fingerprint annotations and no socket annotation.
+ */
 export function generateDeployment(
   name: string,
   imageRef: string,
@@ -17,7 +24,16 @@ export function generateDeployment(
   acmeUrl?: string,
   estUrl?: string,
   instanceDomain?: string,
+  shimTpm?: ShimTpmMode,
 ): k8s.V1Deployment {
+  if (shimTpm) {
+    const base = generateDeployment(
+      name, imageRef, generation, namespace, meta, undefined,
+      poolManagerUrl, acmeUrl, estUrl, instanceDomain,
+    );
+    return applyShimTpm(base, namespace, name, shimTpm);
+  }
+
   const podAnnotations: Record<string, string> = {
     [ANNOTATIONS.KATA_VCPUS]: String(meta.resources.vcpus),
     [ANNOTATIONS.KATA_MEMORY]: String(meta.resources.memory),
@@ -157,6 +173,78 @@ export function generateDeployment(
         },
       },
     },
+  };
+}
+
+/**
+ * Put a Deployment on the shim-owned swtpm path in the given mode. Returns a
+ * new object (input untouched). Used both by generateDeployment and by the
+ * create → verify flip, which rewrites the already-rendered Deployment, so the
+ * two must stay byte-identical — only pod template annotations and the tpm
+ * volume change, so only this instance's pod rolls.
+ *
+ *  - removes the legacy tpm_socket annotation;
+ *  - sets tpm-mode + tpm-state-dir, and tpm-fingerprint in verify mode;
+ *  - mounts the state dir at /seed/tpm (age identity lives there). In verify
+ *    mode the hostPath must already exist (type Directory): a missing dir
+ *    means CephFS isn't mounted, and an empty local dir must not be created.
+ */
+export function applyShimTpm(
+  deployment: k8s.V1Deployment,
+  namespace: string,
+  name: string,
+  tpm: ShimTpmMode,
+): k8s.V1Deployment {
+  const dep = structuredClone(deployment);
+  const template = dep.spec!.template;
+  const stateDir = tpmStateDir(namespace, name);
+
+  const annotations = { ...(template.metadata?.annotations ?? {}) };
+  delete annotations[ANNOTATIONS.KATA_TPM_SOCKET];
+  delete annotations[ANNOTATIONS.TPM_FINGERPRINT];
+  annotations[ANNOTATIONS.TPM_MODE] = tpm.mode;
+  annotations[ANNOTATIONS.TPM_STATE_DIR] = stateDir;
+  if (tpm.mode === "verify") annotations[ANNOTATIONS.TPM_FINGERPRINT] = tpm.fingerprint;
+  template.metadata = { ...template.metadata, annotations };
+
+  const podSpec = template.spec!;
+  const volume: k8s.V1Volume = {
+    name: "tpm",
+    hostPath: {
+      path: stateDir,
+      type: tpm.mode === "verify" ? "Directory" : "DirectoryOrCreate",
+    },
+  };
+  const volumes = (podSpec.volumes ?? []).filter((v) => v.name !== "tpm");
+  volumes.push(volume);
+  podSpec.volumes = volumes;
+
+  const container = podSpec.containers[0];
+  const mounts = (container.volumeMounts ?? []).filter((m) => m.name !== "tpm");
+  mounts.push({ name: "tpm", mountPath: "/seed/tpm" });
+  container.volumeMounts = mounts;
+
+  return dep;
+}
+
+/**
+ * Generate a SeedTPM (no status). Labels carry managed-by + instance but no
+ * generation: SeedTPMs are never reaped (like PVCs) — losing one would turn
+ * the next boot into a create-mode boot.
+ */
+export function generateSeedTPM(instance: string, namespace: string): SeedTPM {
+  return {
+    apiVersion: "seed.loom.farm/v1alpha1",
+    kind: "SeedTPM",
+    metadata: {
+      name: instance,
+      namespace,
+      labels: {
+        [LABELS.MANAGED_BY]: MANAGED_BY_VALUE,
+        [LABELS.INSTANCE]: instance,
+      },
+    },
+    spec: {},
   };
 }
 
