@@ -263,6 +263,13 @@
         '');
       };
 
+      # Record an instance's TPM fingerprint after verifying its age identity
+      # (root, on a seed node): nix run .#tpm-backfill -- [--write-status] <ns> <instance>
+      tpm-backfill = {
+        type = "app";
+        program = "${self.packages.${system}.tpm-backfill}/bin/tpm-backfill";
+      };
+
       # Sign a plant invite code with a seed identity key
       seed-sign = {
         type = "app";
@@ -389,6 +396,18 @@
         fi
         exec ${pkgs.nodejs_22}/bin/node ${seedController}/app/acceptance.mjs "$@"
       '';
+
+      # Record fingerprints of existing instance TPM states (shim-owned swtpm
+      # migration). Run as root on a node; see src/cli/tpm-backfill.sh.
+      # Plain pkgs.swtpm (dir backend on a scratch copy), not swtpm-seed.
+      tpm-backfill = pkgs.writeShellApplication {
+        name = "tpm-backfill";
+        runtimeInputs = with pkgs; [
+          swtpm tpm2-tools age age-plugin-tpm kubectl
+          coreutils gnused gawk diffutils util-linux kmod bash
+        ];
+        text = builtins.readFile ./src/cli/tpm-backfill.sh;
+      };
 
       # OCI images for k8s deployment
       controllerImage = pkgs.nix-snapshotter.buildImage {
@@ -681,6 +700,8 @@ INITEOF
       metadata = import ./tests/metadata.nix { inherit pkgs; };
       # silo behaviors relied on by loom enrollment, on silo-standalone (KVM)
       silo-enrollment = import ./tests/silo/enrollment.nix { inherit self pkgs; };
+      # tpm-backfill on throwaway TPM states: vtpm-proxy + identity check (KVM)
+      tpm-backfill = import ./tests/tpm-backfill.nix { inherit self pkgs; };
     };
 
     templates = {

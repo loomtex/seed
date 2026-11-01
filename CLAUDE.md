@@ -329,6 +329,16 @@ Each instance gets a vTPM device (`/dev/tpm0`) backed by swtpm on the host, enab
 
 **NixOS option**: `seed.controller.swtpmImage` — set to the swtpm image store path to enable vTPM for all instances.
 
+### Shim-owned swtpm (migration in progress)
+
+The host-agent swtpm path is being replaced: the Kata shim starts swtpm itself, and creating a TPM is an explicit, controller-authorized event, verified on every boot. Instances migrate one at a time via `seed.controller.shimSwtpm` (env `SEED_SHIM_SWTPM`; `<ns>/<instance>`, `<ns>/*`, or `*`).
+
+- **Pod annotations** (opted-in instances only; these get no SeedHostTask and no `tpm_socket`): `seed.loom.farm/tpm-mode` = `create` | `verify`, `seed.loom.farm/tpm-state-dir` = `/var/lib/seed-controller/tpm/<ns>-<instance>`, `seed.loom.farm/tpm-fingerprint` (verify only).
+- **SeedTPM** (`kubectl get stpm -A`, name = instance): `status.fingerprint` = lowercase hex SHA-256 of the SRK's marshaled TPMT_PUBLIC (owner hierarchy, ECC P-256 SRK template, unique = 2x32 zero bytes). If it's recorded, the instance is rendered in verify mode; if not, in create mode. A CEL rule makes it immutable. Deleting a SeedTPM (operator only, since the controller has no delete RBAC) is how you authorize a new TPM. SeedTPMs are never reaped.
+- **Create → verify flip** (`src/controller/tpm.ts`): after a create-mode boot the shim writes `<state-dir>/tpm-fingerprint`. Once the pod is Ready, the controller validates the file, records it, and re-renders that Deployment in verify mode, which rolls the pod once. If the file and the record disagree, the controller logs it, emits a `FingerprintMismatch` event and sets the condition. It never rewrites the record.
+- **Safety hold**: an opted-in instance with host-agent-era state (`tpm2-00.permall` present, no `tpm-fingerprint`) and no record stays on the legacy path until it's backfilled.
+- **Migration per instance**: run `nix run .#tpm-backfill -- --write-status <ns> <instance>` as root on a node. It works on a scratch copy and verifies the age identity decrypts against it. Then add the instance to `shimSwtpm`. The host-agent DaemonSet stays `OnDelete` until the final retirement commit.
+
 ### Dual-stack networking
 
 `seed.k3s.dualStack = true` adds `--cluster-cidr=10.42.0.0/16,fd00::/56` and `--service-cidr=10.43.0.0/16,fd01::/108` to k3s. The node must also have `--node-ip` set with both IPv4 and IPv6 addresses.
