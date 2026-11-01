@@ -553,6 +553,14 @@ done
 # If nixvar was mounted (nix eval/build workloads), set up nix state
 if [ -f /nix/var/nix/db/db.sqlite ]; then
   mkdir -p /tmp/nix-state/db
+  # The host DB runs in WAL mode: paths registered moments ago (e.g. the
+  # controller's input prefetch) live only in db.sqlite-wal until the next
+  # checkpoint. Copy the WAL too, or the VM sees those paths as invalid and
+  # tries to delete and re-fetch them. WAL first: if a checkpoint lands
+  # between the two copies, replaying already-checkpointed frames is harmless.
+  if [ -f /nix/var/nix/db/db.sqlite-wal ]; then
+    cp /nix/var/nix/db/db.sqlite-wal /tmp/nix-state/db/
+  fi
   cp /nix/var/nix/db/db.sqlite /tmp/nix-state/db/
   export NIX_STATE_DIR=/tmp/nix-state
   export NIX_REMOTE=""
