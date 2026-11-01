@@ -190,6 +190,22 @@ in {
       };
     };
 
+    # Node upgrade agent (src/host-agent/upgrade.ts, runs in the host agent).
+    # Read by the host-side profile (infra/profiles/seed-upgrade.nix: whether
+    # the system.autoUpgrade timer stays on) and by controller.nix (the host
+    # agent DaemonSet's SEED_UPGRADE_MODE). Keep it the same on every node.
+    upgradeAgent.mode = lib.mkOption {
+      type = lib.types.enum [ "dry-run" "active" ];
+      default = "dry-run";
+      description = ''
+        dry-run: the host's system.autoUpgrade timer keeps upgrading; the
+        agent only acquires/releases the seed-system/node-upgrade Lease at its
+        window and logs what it would do.
+        active: system.autoUpgrade is disabled and the agent runs the whole
+        flow (Lease, cordon, seed-upgrade.service, drain, reboot, health gate).
+      '';
+    };
+
     k8s.services = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
