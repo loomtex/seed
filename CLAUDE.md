@@ -18,7 +18,7 @@ seed/
 ├── vm.nix                 # NixOS VM configuration for testing
 ├── src/                   # TypeScript controller components
 │   ├── shared/
-│   │   ├── types.ts       # SeedHostTask CRD types, metadata types
+│   │   ├── types.ts       # CRD types (SeedTPM, SeedDNSRecord, ...), metadata types
 │   │   ├── labels.ts      # Label constants, helpers
 │   │   └── kube.ts        # k8s client setup, helpers
 │   ├── controller/
@@ -182,7 +182,7 @@ Three k8s-native TypeScript components replace the legacy bash controller:
 
 Written in TypeScript with `@kubernetes/client-node`. Bundled via esbuild, packaged as OCI images via `nix-snapshotter.buildImage`.
 
-**CRD: SeedHostTask** — controller creates SeedHostTasks, host agent watches them and starts swtpm processes, updates status with socket paths. The controller reads the status to get socket paths for Kata pod annotations.
+**CRD: SeedTPM** — one per TPM instance (`kubectl get stpm -A`), recording the TPM fingerprint the Kata shim verifies on every boot. SeedHostTask is retired (swtpm moved to the shim on 2026-11-01); the controller only reaps leftover objects.
 
 **CRD: SeedDNSRecord** — DNS records as k8s resources. Two modes: **dynamic** (sourceRef to a Service, IP resolved from LoadBalancer status) and **static** (explicit records). The DNS reconciler watches SeedDNSRecords + ingress Services via informers, resolves IPs, and syncs to PowerDNS. Debounced 2s + 120s periodic full-sync as safety net. Blacklisted domains (.cluster.local, .local, .internal) get error status instead of syncing. `kubectl get sdr -A` shows all DNS records and their sync status.
 
@@ -219,7 +219,7 @@ seed.loom.farm/generation: <hash>
 
 **Event-driven reconciliation**: the controller does NOT poll. It runs one reconciliation on startup, then waits for webhook events. Triggers (webhooks, plant/replant, retry timers) go into a per-flake work queue (`src/controller/reconcile-queue.ts`) that runs up to `SEED_RECONCILE_CONCURRENCY` (`seed.controller.reconcileConcurrency`, default 3) flakes at once. A flake never has two reconciles in flight; a trigger that lands mid-reconcile coalesces into exactly one re-run afterwards. Startup reconciles go through the same queue.
 
-**Self-heal**: runs on a 60s timer independent of reconciliation. Checks that expected Deployments, Services, and SeedHostTasks exist and recreates any missing ones.
+**Self-heal**: runs on a 60s timer independent of reconciliation. Checks that expected Deployments and Services exist and recreates any missing ones.
 
 **Manifest generation**: done in TypeScript (replaces jq). Type-safe k8s manifests with `@kubernetes/client-node` types.
 
@@ -229,7 +229,7 @@ seed.loom.farm/generation: <hash>
 
 **Builder Jobs**: run on default runtime (not Kata — unix sockets don't traverse virtiofs). Mount host nix-daemon socket and nix store. Results delivered via ConfigMap.
 
-**RBAC**: ClusterRole with access to namespaces, pods, pvcs, services, configmaps, jobs, runtimeclasses, metallb CRDs, and SeedHostTask CRDs.
+**RBAC**: ClusterRole with access to namespaces, pods, pvcs, services, configmaps, jobs, runtimeclasses, metallb CRDs, SeedTPM CRDs, and leftover SeedHostTasks (reap only).
 
 **Legacy**: `controller.sh` is preserved for reference but no longer used in production.
 
@@ -348,7 +348,7 @@ head -c 64 /dev/zero | tpm2_createprimary -Q -C o -g sha256 -G ecc256:null:aes12
 tpm2_readpublic -Q -c srk.ctx -o srk.pub && tail -c +3 srk.pub | sha256sum
 ```
 
-**swtpm create-gate**: the `seed://` backend fails to load when `tpm2-00.permall` is missing unless `SWTPM_SEED_ALLOW_CREATE=1` (prevents silently manufacturing a TPM when CephFS is not mounted). The legacy host-agent must set it until retired.
+**swtpm create-gate**: the `seed://` backend fails to load when `tpm2-00.permall` is missing unless `SWTPM_SEED_ALLOW_CREATE=1` (prevents silently manufacturing a TPM when CephFS is not mounted).
 
 ### Shim-owned swtpm: controller side
 
