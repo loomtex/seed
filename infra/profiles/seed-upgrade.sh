@@ -70,6 +70,15 @@ for f in kernel initrd kernel-modules; do
   fi
 done
 
+# Reboot requested by the agent (seed.loom.farm/upgrade-reboot), e.g. for
+# maintenance or to exercise the reboot path: install with `boot` and report
+# reboot-required even though the kernel didn't change.
+if [ -e "$state_dir/force-reboot" ]; then
+  echo "seed-upgrade: reboot requested ($state_dir/force-reboot)"
+  rm -f "$state_dir/force-reboot"
+  reboot=true
+fi
+
 # Informational: would an in-place switch restart k3s?
 if dry="$("$system/bin/switch-to-configuration" dry-activate 2>&1)"; then
   if grep -E '^would (stop|restart) .*k3s\.service' <<<"$dry" >/dev/null; then

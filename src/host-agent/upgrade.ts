@@ -35,6 +35,8 @@ const COMPONENT = "upgrade";
 
 const UNIT = "seed-upgrade.service";
 const STATE_FILE = "/run/seed-upgrade/state";
+/** Marker read by seed-upgrade.sh: classify this run as reboot-required. */
+const FORCE_REBOOT_FILE = "/run/seed-upgrade/force-reboot";
 const HOST_BIN = "/run/current-system/sw/bin";
 const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 
@@ -553,7 +555,7 @@ class UpgradeAgent {
     }
   }
 
-  private async activeFlow(reason: string): Promise<FlowResult> {
+  private async activeFlow(reason: string, forceReboot = false): Promise<FlowResult> {
     // Preflight before touching the node: the host must already run a
     // system with seed-upgrade.service (rollout ordering), and it mustn't
     // be running already (e.g. started by hand).
@@ -567,18 +569,22 @@ class UpgradeAgent {
     await this.cordon();
     const started = new Date();
     await this.lease.annotate({ [A.PHASE]: "upgrading", [A.STARTED]: started.toISOString() });
+    if (forceReboot) {
+      await hostExec([`${HOST_BIN}/mkdir`, "-p", "/run/seed-upgrade"]);
+      await hostExec([`${HOST_BIN}/touch`, FORCE_REBOOT_FILE]);
+    }
     await systemctl("start", "--no-block", UNIT);
     await this.event("Normal", "UpgradeStarted", `started ${UNIT} (${reason})`);
     return this.continueUpgrading(started.getTime(), before.invocationId);
   }
 
-  private async dryRun(reason: string): Promise<FlowResult> {
+  private async dryRun(reason: string, forceReboot = false): Promise<FlowResult> {
     const node = await this.readNode();
     const pods = await this.podsOnNode();
     const health = await this.healthProblems(true);
     const plan = [
       node.spec?.unschedulable ? "node already cordoned: would leave the cordon alone" : "would cordon the node",
-      `would start ${UNIT} and wait for ${STATE_FILE}`,
+      forceReboot ? `would request a reboot (${FORCE_REBOOT_FILE}), then start ${UNIT} and wait for ${STATE_FILE}` : `would start ${UNIT} and wait for ${STATE_FILE}`,
       "if switched: health gate (control plane Ready + local /readyz), wait 2 min, uncordon, release",
       `if reboot-required: drain ${pods.length} pod(s) [${pods.map((p) => `${p.metadata?.namespace}/${p.metadata?.name}`).join(", ")}], then reboot`,
       `health gate right now: ${health.length === 0 ? "pass" : health.join("; ")}`,
@@ -679,7 +685,7 @@ class UpgradeAgent {
     }
   }
 
-  private async attempt(reason: string): Promise<void> {
+  private async attempt(reason: string, forceReboot = false): Promise<void> {
     const problems = await this.healthProblems(false);
     if (problems.length > 0) {
       await this.event("Warning", "UpgradeSkipped", `${reason} upgrade skipped, control plane not healthy: ${problems.join("; ")}`);
@@ -705,7 +711,7 @@ class UpgradeAgent {
     }
     log(COMPONENT, `acquired upgrade lease (${reason}, mode ${this.cfg.mode})`);
     this.lease.startRenewing();
-    const r = await this.guard(() => this.cfg.mode === "active" ? this.activeFlow(reason) : this.dryRun(reason));
+    const r = await this.guard(() => this.cfg.mode === "active" ? this.activeFlow(reason, forceReboot) : this.dryRun(reason, forceReboot));
     if (r === "rebooted") await this.resume();
   }
 
@@ -724,10 +730,11 @@ class UpgradeAgent {
         const nodes = await this.nodes();
         const self = nodes.find((n) => n.metadata?.name === this.me);
         if (self?.metadata?.annotations?.[A.UPGRADE_NOW] === "true") {
+          const forceReboot = self.metadata?.annotations?.[A.UPGRADE_REBOOT] === "true";
           // Removed up front so a reboot or restart mid-flow can't re-trigger it.
-          await withApiRetry("clear upgrade-now", () => this.patchNode({ metadata: { annotations: { [A.UPGRADE_NOW]: null } } }));
-          await this.event("Normal", "UpgradeRequested", `${A.UPGRADE_NOW} annotation seen, running the upgrade flow once`);
-          await this.attempt("on-demand");
+          await withApiRetry("clear upgrade-now", () => this.patchNode({ metadata: { annotations: { [A.UPGRADE_NOW]: null, [A.UPGRADE_REBOOT]: null } } }));
+          await this.event("Normal", "UpgradeRequested", `${A.UPGRADE_NOW} annotation seen, running the upgrade flow once${forceReboot ? " with a reboot" : ""}`);
+          await this.attempt("on-demand", forceReboot);
           prev = Date.now();
           continue;
         }
