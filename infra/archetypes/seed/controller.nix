@@ -24,6 +24,10 @@
     enable = true;
     flakePaths = []; # All flakes are SeedFlake CRDs now (identity-based)
     netpol.enable = true;
+    # Instances migrated to shim-owned swtpm (Kata shim runs swtpm, TPM
+    # fingerprint verified every boot). Backfill each with tpm-backfill
+    # --write-status before adding it here.
+    shimSwtpm = [ "s-heytkndeme4t/hello" "s-gi2wizddgm3w/shoot-demo" ];
     webhook = {
       enable = true;
       secretFile = "/etc/seed/secrets/gh-webhook-secret";
