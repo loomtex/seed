@@ -3,6 +3,14 @@
 // Runs as a privileged DaemonSet pod (hostNetwork). It used to also run
 // swtpm for every instance (SeedHostTask CRDs); the Kata shim owns swtpm
 // now, so restarting the host agent no longer touches guest TPMs.
+//
+// Netpol iptables rules deliberately outlive this process: shutdown does NOT
+// remove them (that used to drop tenant isolation on every host-agent
+// restart until the new pod re-applied them). The next pod adopts the
+// existing chains (initChains is idempotent, the informer re-list
+// re-reconciles each namespace, stale namespace chains are pruned). The only
+// teardown path is explicit: starting with SEED_NETPOL_ENABLED unset removes
+// any SEED-* chains left behind.
 
 import { loadKubeConfig, makeClients, log } from "../shared/kube.js";
 import { startPodWatcher, cleanupAll as cleanupNetpol } from "./netpol.js";
@@ -17,27 +25,22 @@ async function main(): Promise<void> {
 
   const netpolEnabled = !!process.env.SEED_NETPOL_ENABLED;
 
-  // Graceful shutdown
-  let shuttingDown = false;
-  const shutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    log(COMPONENT, "shutting down");
-    if (netpolEnabled) {
-      await cleanupNetpol().catch((err) =>
-        log(COMPONENT, `netpol cleanup error: ${err}`),
-      );
-    }
+  // Graceful shutdown: leave iptables rules in place (see header).
+  const shutdown = () => {
+    log(COMPONENT, "shutting down (netpol rules left in place)");
     process.exit(0);
   };
-  process.on("SIGTERM", () => { shutdown(); });
-  process.on("SIGINT", () => { shutdown(); });
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   // Stay up even with nothing to do, so the DaemonSet pod doesn't restart-loop.
   const idle = () => { setInterval(() => {}, 1 << 30); };
 
   if (!netpolEnabled) {
-    log(COMPONENT, "SEED_NETPOL_ENABLED not set, nothing to do");
+    log(COMPONENT, "SEED_NETPOL_ENABLED not set, removing any leftover netpol chains");
+    await cleanupNetpol().catch((err) =>
+      log(COMPONENT, `netpol cleanup error: ${err}`),
+    );
     idle();
     return;
   }

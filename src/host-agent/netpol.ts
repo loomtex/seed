@@ -114,6 +114,54 @@ async function jumpExists(chain: string, target: string, ipv6 = false): Promise<
   }
 }
 
+const ESTABLISHED_RULE = ["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"];
+
+/** Check if an exact rule exists in a chain (iptables -C). */
+async function ruleExists(chain: string, rule: string[], ipv6 = false): Promise<boolean> {
+  try {
+    await ipt(["-C", chain, ...rule], ipv6);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Names of existing SEED-NS-* chains (from iptables -S). */
+async function listNsChains(ipv6 = false): Promise<string[]> {
+  try {
+    const { stdout } = await ipt(["-S"], ipv6);
+    return stdout
+      .split("\n")
+      .map((l) => l.match(/^-N (SEED-NS-[0-9a-f]+)$/)?.[1])
+      .filter((c): c is string => !!c);
+  } catch {
+    return [];
+  }
+}
+
+/** Delete SEED-FWD jumps to a namespace chain (bottom-up by line number). */
+async function removeJumps(chain: string, ipv6 = false): Promise<void> {
+  try {
+    const { stdout } = await ipt(["-n", "--line-numbers", "-L", MAIN_CHAIN], ipv6);
+    const lines = stdout.split("\n").reverse();
+    for (const line of lines) {
+      if (line.includes(chain)) {
+        const num = line.match(/^(\d+)/)?.[1];
+        if (num) await ipt(["-D", MAIN_CHAIN, num], ipv6);
+      }
+    }
+  } catch { /* SEED-FWD may not exist */ }
+}
+
+/** Remove a namespace chain and every jump to it. */
+async function removeNsChain(chain: string, ipv6 = false): Promise<void> {
+  await removeJumps(chain, ipv6);
+  if (await chainExists(chain, ipv6)) {
+    await ipt(["-F", chain], ipv6);
+    await ipt(["-X", chain], ipv6);
+  }
+}
+
 /** Initialize top-level chains. Called once at startup. */
 export async function initChains(cfg: NetpolConfig): Promise<void> {
   config = cfg;
@@ -127,14 +175,13 @@ export async function initChains(cfg: NetpolConfig): Promise<void> {
       await ipt(["-I", "FORWARD", "1", "-j", MAIN_CHAIN], v6);
     }
 
-    // First rule in SEED-FWD: allow established/related
-    // Flush and rebuild to ensure correct order
-    await ipt(["-F", MAIN_CHAIN], v6);
-    await ipt([
-      "-A", MAIN_CHAIN,
-      "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
-      "-j", "ACCEPT",
-    ], v6);
+    // First rule in SEED-FWD: allow established/related. Not a flush: rules
+    // left by the previous host-agent pod stay in force across a restart
+    // (flushing here would drop every per-pod jump, i.e. tenant isolation,
+    // until the informer re-list re-reconciles each namespace).
+    if (!(await ruleExists(MAIN_CHAIN, ESTABLISHED_RULE, v6))) {
+      await ipt(["-I", MAIN_CHAIN, "1", ...ESTABLISHED_RULE], v6);
+    }
 
     // Internet egress chain (shared across namespaces)
     await ensureChain(EGRESS_CHAIN, v6);
@@ -170,24 +217,7 @@ async function reconcileNamespace(ns: string): Promise<void> {
 
     // If no pods for this IP family, clean up chain
     if (ips.length === 0) {
-      // Remove jumps from SEED-FWD referencing this chain
-      try {
-        // List rules, find and delete matching jumps
-        const { stdout } = await ipt(["-n", "--line-numbers", "-L", MAIN_CHAIN], v6);
-        const lines = stdout.split("\n").reverse(); // delete from bottom up
-        for (const line of lines) {
-          if (line.includes(chain)) {
-            const num = line.match(/^(\d+)/)?.[1];
-            if (num) await ipt(["-D", MAIN_CHAIN, num], v6);
-          }
-        }
-      } catch { /* chain may not exist */ }
-
-      // Flush and delete the namespace chain
-      if (await chainExists(chain, v6)) {
-        await ipt(["-F", chain], v6);
-        await ipt(["-X", chain], v6);
-      }
+      await removeNsChain(chain, v6);
       continue;
     }
 
@@ -254,16 +284,7 @@ async function reconcileNamespace(ns: string): Promise<void> {
 
     // Update SEED-FWD: remove old jumps for this chain, then add new per-IP jumps
     // (jumps must reference specific pod IPs so non-seed traffic passes through)
-    try {
-      const { stdout } = await ipt(["-n", "--line-numbers", "-L", MAIN_CHAIN], v6);
-      const lines = stdout.split("\n").reverse();
-      for (const line of lines) {
-        if (line.includes(chain)) {
-          const num = line.match(/^(\d+)/)?.[1];
-          if (num) await ipt(["-D", MAIN_CHAIN, num], v6);
-        }
-      }
-    } catch { /* ok */ }
+    await removeJumps(chain, v6);
 
     // Add per-IP jumps: traffic from OR to a seed pod goes to its namespace chain
     for (const ip of ips) {
@@ -387,8 +408,15 @@ function runReconcile(ns: string): void {
   reconcileLocks.set(ns, p);
 }
 
-/** Remove all SEED-* chains and rules. Called on shutdown. */
+/**
+ * Remove all SEED-* chains and rules. NOT called on shutdown: rules must
+ * outlive a host-agent restart. This is the explicit "netpol is being
+ * disabled" path; the host agent runs it at startup when SEED_NETPOL_ENABLED
+ * is unset, so chains left by an earlier netpol-enabled pod don't linger.
+ * Chains are discovered from iptables, not from in-memory state.
+ */
 export async function cleanupAll(): Promise<void> {
+  let removed = false;
   for (const v6 of [false, true]) {
     // Remove jump from FORWARD
     try {
@@ -397,34 +425,49 @@ export async function cleanupAll(): Promise<void> {
       for (const line of lines) {
         if (line.includes(MAIN_CHAIN)) {
           const num = line.match(/^(\d+)/)?.[1];
-          if (num) await ipt(["-D", "FORWARD", num], v6);
+          if (num) { await ipt(["-D", "FORWARD", num], v6); removed = true; }
         }
       }
     } catch { /* ok */ }
 
-    // Flush and delete SEED-FWD
-    if (await chainExists(MAIN_CHAIN, v6)) {
-      await ipt(["-F", MAIN_CHAIN], v6);
-      await ipt(["-X", MAIN_CHAIN], v6);
+    // Flush SEED-FWD first so nothing references the namespace chains
+    const hasMain = await chainExists(MAIN_CHAIN, v6);
+    if (hasMain) await ipt(["-F", MAIN_CHAIN], v6);
+
+    for (const chain of await listNsChains(v6)) {
+      await ipt(["-F", chain], v6);
+      await ipt(["-X", chain], v6);
+      removed = true;
     }
 
-    // Flush and delete all SEED-NS-* chains
-    for (const ns of namespaces.keys()) {
-      const chain = nsChainName(ns);
-      if (await chainExists(chain, v6)) {
-        await ipt(["-F", chain], v6);
-        await ipt(["-X", chain], v6);
-      }
-    }
+    if (hasMain) { await ipt(["-X", MAIN_CHAIN], v6); removed = true; }
 
-    // Flush and delete egress chain
     if (await chainExists(EGRESS_CHAIN, v6)) {
       await ipt(["-F", EGRESS_CHAIN], v6);
       await ipt(["-X", EGRESS_CHAIN], v6);
+      removed = true;
     }
   }
 
-  log(COMPONENT, "all iptables chains cleaned up");
+  log(COMPONENT, removed ? "all iptables chains cleaned up" : "no netpol iptables chains to clean up");
+}
+
+/**
+ * Remove SEED-NS-* chains (and their SEED-FWD jumps) for namespaces with no
+ * pods on this node. Run once after the informer's initial list: rules are
+ * left in place across restarts, so namespaces whose pods all went away
+ * while no host agent was running would otherwise keep stale per-IP jumps
+ * (and a reused pod IP could match the wrong namespace chain first).
+ */
+async function pruneStaleChains(): Promise<void> {
+  const known = new Set([...namespaces.keys()].map(nsChainName));
+  for (const v6 of [false, true]) {
+    for (const chain of await listNsChains(v6)) {
+      if (known.has(chain)) continue;
+      await removeNsChain(chain, v6);
+      log(COMPONENT, `pruned stale chain ${chain}${v6 ? " (ip6)" : ""}`);
+    }
+  }
 }
 
 /** Start the pod informer for network policy. */
@@ -437,8 +480,23 @@ export async function startPodWatcher(
 
   const labelSelector = `${LABELS.MANAGED_BY}=${MANAGED_BY_VALUE}`;
 
-  const listFn = async () =>
-    clients.core.listPodForAllNamespaces({ labelSelector });
+  // Prune stale chains once, after the first SUCCESSFUL list has been
+  // replayed as "add" events (the informer dispatches them synchronously
+  // right after listFn resolves; the timer runs after that). Never prune off
+  // a failed list: an empty `namespaces` map would wipe every chain.
+  let pruned = false;
+  const listFn = async () => {
+    const list = await clients.core.listPodForAllNamespaces({ labelSelector });
+    if (!pruned) {
+      pruned = true;
+      setTimeout(() => {
+        pruneStaleChains().catch((err) =>
+          log(COMPONENT, `stale chain prune failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }, 1_000);
+    }
+    return list;
+  };
 
   const informer = k8s.makeInformer<k8s.V1Pod>(
     kc,
