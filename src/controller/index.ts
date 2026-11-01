@@ -25,6 +25,8 @@ import { loadPdnsApiKey, startDNSReconciler } from "./dns.js";
 import { startDomainController } from "./domains.js";
 import { initAcme, updateAcmeNamespaces, updateAcmeValidZones } from "./acme.js";
 import { initEst, updateEstNamespaces } from "./est.js";
+import { loadShimTpmContext, deleteShimHostTasks, startTpmFlipController } from "./tpm.js";
+import { parseShimSwtpmOptIn, shimTpmModeFor, type ShimSwtpmOptIn, type ShimTpmRenderContext } from "../shared/tpm.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
@@ -56,6 +58,7 @@ function loadConfig(): ControllerConfig {
     builderImage: process.env["SEED_BUILDER_IMAGE"] || "",
     poolManagerUrl: process.env["SEED_POOL_MANAGER_URL"] || "",
     swtpmEnabled: !!process.env["SEED_SWTPM_ENABLED"],
+    shimSwtpm: process.env["SEED_SHIM_SWTPM"] || "",
     pdnsApiUrl: process.env["SEED_PDNS_API_URL"] || "",
     pdnsApiKeyFile: process.env["SEED_PDNS_API_KEY_FILE"] || "",
     pdnsZone: process.env["SEED_PDNS_ZONE"] || "loom.farm.",
@@ -273,6 +276,7 @@ export function renderDesiredState(
   acmeUrl?: string,
   instanceDomain?: string,
   domains?: Record<string, CombineDomainConfig>,
+  shimTpm?: ShimTpmRenderContext,
 ): DesiredState {
   const generation = computeGeneration(
     new Map([...buildResults].map(([name, r]) => [name, r.imagePath])),
@@ -284,9 +288,14 @@ export function renderDesiredState(
     const imageRef = `nix:0${result.imagePath}`;
     const { meta } = result;
 
+    // Shim-owned swtpm (opted in): mode from the SeedTPM record, no host task.
+    const shimTpmMode = swtpmEnabled && shimTpm?.optIn.matches(namespace, name)
+      ? shimTpmModeFor(shimTpm.records.get(name))
+      : undefined;
+
     // Check for TPM socket from host agent
     let tpmSocketPath: string | undefined;
-    if (swtpmEnabled) {
+    if (swtpmEnabled && !shimTpmMode) {
       const status = hostTaskStatuses.get(name);
       if (status?.ready) {
         tpmSocketPath = status.socketPath;
@@ -307,6 +316,7 @@ export function renderDesiredState(
       acmeUrl,
       estUrl,
       instanceDomain,
+      shimTpmMode,
     );
 
     const services: k8s.V1Service[] = [];
@@ -320,7 +330,7 @@ export function renderDesiredState(
 
     const ingressService = generateIngressService(name, generation, namespace, meta);
 
-    const hostTask = swtpmEnabled
+    const hostTask = swtpmEnabled && !shimTpmMode
       ? generateHostTask(name, namespace, generation)
       : null;
 
@@ -333,7 +343,10 @@ export function renderDesiredState(
       domains,
     );
 
-    instances.set(name, { imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, hostTask, dnsRecords });
+    instances.set(name, {
+      imagePath: result.imagePath, meta, deployment, services, ingressService, pvcs, hostTask, dnsRecords,
+      ...(shimTpmMode ? { shimTpm: shimTpmMode } : {}),
+    });
   }
 
   // Route services
@@ -359,6 +372,15 @@ export function renderDesiredState(
     routes: { ipv4: ipv4Services, ipv6: ipv6Services },
     domains: domainCRDs,
   };
+}
+
+/** Build results minus instances on the shim-owned swtpm path (no SeedHostTask for those). */
+function withoutShimTpm(
+  buildResults: Map<string, BuildResult>,
+  namespace: string,
+  optIn: ShimSwtpmOptIn,
+): Map<string, BuildResult> {
+  return new Map([...buildResults].filter(([name]) => !optIn.matches(namespace, name)));
 }
 
 /**
@@ -546,6 +568,9 @@ async function applyDesiredState(
       }
     });
   }
+
+  // Instances moved to shim-owned swtpm: stop the host agent's swtpm first
+  await deleteShimHostTasks(clients, desired);
 
   // Apply PVCs (before deployments, so volumes are available)
   for (const [name, instance] of desired.instances) {
@@ -1590,6 +1615,12 @@ async function main(): Promise<void> {
 
   log("controller", `starting (flakes=${config.flakePaths.join(", ")})`);
 
+  const shimOptIn = parseShimSwtpmOptIn(config.shimSwtpm);
+  if (shimOptIn.invalid.length > 0) {
+    log("controller", `warning: ignoring invalid SEED_SHIM_SWTPM entries: ${shimOptIn.invalid.join(", ")}`);
+  }
+  if (config.shimSwtpm) log("controller", `shim-owned swtpm opt-in: ${config.shimSwtpm}`);
+
   // Gate everything below on the k8s API being reachable. loadSeedFlakes issues
   // the first API call; if it runs before the connection is ready, listSeedFlakes
   // silently returns [] and flakeStates (plus the key index) stays empty until the
@@ -1946,10 +1977,14 @@ async function main(): Promise<void> {
         log("controller", `deploying generation ${generation} (was: ${deployed || "none"})`, flakePath);
       }
 
+      // Shim-owned swtpm: SeedTPM records (create vs verify) + effective opt-in
+      const shimTpm = await loadShimTpmContext(clients, namespace, shimOptIn, buildResults.keys());
+
       // Apply SeedHostTasks first and wait for readiness
       if (config.swtpmEnabled) {
-        await applySeedHostTasks(clients, namespace, buildResults, generation);
-        await waitForHostTasks(clients, namespace, buildResults, generation);
+        const legacyTpm = withoutShimTpm(buildResults, namespace, shimTpm.optIn);
+        await applySeedHostTasks(clients, namespace, legacyTpm, generation);
+        await waitForHostTasks(clients, namespace, legacyTpm, generation);
       }
 
       // Read host task statuses (now includes newly-ready tasks)
@@ -1973,6 +2008,7 @@ async function main(): Promise<void> {
         acmeUrl,
         config.instanceDomain,
         combineConfig?.domains,
+        shimTpm,
       );
 
       // Apply desired state (SeedHostTasks already applied, skipped inside)
@@ -2169,6 +2205,18 @@ async function main(): Promise<void> {
 
   // Start k8s API watches for drift correction (cluster-wide).
   startWatches(kc, clients, flakeStates, namespaceToFlake);
+
+  // Shim-owned swtpm: record fingerprints after create-mode boots, flip to verify.
+  if (config.swtpmEnabled && config.shimSwtpm) {
+    startTpmFlipController({
+      kc, clients, optIn: shimOptIn,
+      state: {
+        namespaces: () => [...namespaceToFlake.keys()],
+        desired: (ns) => flakeStates.get(namespaceToFlake.get(ns) ?? "")?.desired ?? null,
+        reconciling: (ns) => flakeStates.get(namespaceToFlake.get(ns) ?? "")?.reconciling ?? false,
+      },
+    });
+  }
 
   // Start DNS reconciler — watches SeedDNSRecord CRDs and syncs to pdns.
   // Replaces the old registerInstanceDNS polling + 60s periodic timer.

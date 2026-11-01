@@ -10,8 +10,15 @@ import { loadKubeConfig, makeClients, log } from "../shared/kube.js";
 import type { SeedHostTask } from "../shared/types.js";
 import { ensureSwtpm, stopSwtpm, stopAll, isSocketAlive } from "./swtpm.js";
 import { startPodWatcher, cleanupAll as cleanupNetpol } from "./netpol.js";
+import { parseShimSwtpmOptIn } from "../shared/tpm.js";
 
 const COMPONENT = "host-agent";
+
+// Instances whose swtpm the Kata shim owns. The controller doesn't create
+// SeedHostTasks for them; this guards against leftovers (or a controller
+// running older config) so the host agent never runs a second swtpm on the
+// same TPM state.
+const shimOptIn = parseShimSwtpmOptIn(process.env.SEED_SHIM_SWTPM);
 const CRD_GROUP = "seed.loom.farm";
 const CRD_VERSION = "v1alpha1";
 const CRD_PLURAL = "seedhosttasks";
@@ -99,6 +106,13 @@ async function handleTask(
   if (!name) return;
 
   const { type, instance, namespace: ns } = task.spec;
+
+  if (type === "swtpm" && shimOptIn.matches(ns, instance)) {
+    // Don't start swtpm. An already-running one is left alone until the task
+    // is deleted (the controller deletes it right before the rollout).
+    log(COMPONENT, `${ns}/${instance} uses shim-owned swtpm, ignoring task`, name);
+    return;
+  }
 
   // Already ready? Verify socket still exists (swtpm may have died on pod restart).
   if (task.status?.ready && task.status?.socketPath) {

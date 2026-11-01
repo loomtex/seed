@@ -78,7 +78,15 @@ export async function ensureSwtpm(
   ], {
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
-    env: { ...process.env, SWTPM_SEED_VOLATILE_DIR: volatileDir },
+    env: {
+      ...process.env,
+      SWTPM_SEED_VOLATILE_DIR: volatileDir,
+      // The seed backend refuses to create a TPM (no permall yet) unless this
+      // is set. The legacy host-agent path keeps today's create-on-first-use
+      // behaviour until it is retired; the shim path authorizes creation
+      // explicitly via tpm-mode=create.
+      SWTPM_SEED_ALLOW_CREATE: "1",
+    },
   });
 
   // Log stderr for debugging

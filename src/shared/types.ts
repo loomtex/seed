@@ -24,6 +24,47 @@ export interface SeedHostTask {
   status?: SeedHostTaskStatus;
 }
 
+// --- SeedTPM CRD ---
+//
+// One per TPM-enabled instance on the shim-owned swtpm path (name = instance
+// name). Records the fingerprint of the instance's TPM so every boot can
+// verify it is talking to the same TPM. The controller is the only writer
+// (plus the operator backfill tool); a recorded fingerprint is never
+// overwritten automatically, and the CRD rejects changing it.
+
+export interface SeedTPMCondition {
+  type: string;
+  status: "True" | "False" | "Unknown";
+  reason: string;
+  message: string;
+  lastTransitionTime: string;
+}
+
+export interface SeedTPMStatus {
+  /** Lowercase hex SHA-256 of the SRK's marshaled TPMT_PUBLIC. */
+  fingerprint: string;
+  /** When the TPM was created (shim path: fingerprint file mtime) or recorded (backfill). */
+  createdAt: string;
+  /** Host path of the TPM state directory. */
+  stateDir: string;
+  /** Who recorded the fingerprint. */
+  source?: "shim" | "backfill";
+  conditions?: SeedTPMCondition[];
+}
+
+export interface SeedTPM {
+  apiVersion: "seed.loom.farm/v1alpha1";
+  kind: "SeedTPM";
+  metadata: k8s.V1ObjectMeta;
+  spec?: Record<string, never>;
+  status?: SeedTPMStatus;
+}
+
+/** How a shim-owned-swtpm instance's TPM is rendered into its pod. */
+export type ShimTpmMode =
+  | { mode: "create" }
+  | { mode: "verify"; fingerprint: string };
+
 // --- Instance metadata (from nix eval) ---
 
 export interface SeedResources {
@@ -108,6 +149,8 @@ export interface InstanceState {
   pvcs: k8s.V1PersistentVolumeClaim[];
   hostTask: SeedHostTask | null;
   dnsRecords: SeedDNSRecord[];
+  /** Set when the instance's swtpm is owned by the Kata shim (opted in). */
+  shimTpm?: ShimTpmMode;
 }
 
 export interface DesiredState {
@@ -239,6 +282,8 @@ export interface ControllerConfig {
   builderImage: string;
   poolManagerUrl: string;
   swtpmEnabled: boolean;
+  /** SEED_SHIM_SWTPM: instances whose swtpm the Kata shim owns. */
+  shimSwtpm: string;
   pdnsApiUrl: string;
   pdnsApiKeyFile: string;
   pdnsZone: string;
