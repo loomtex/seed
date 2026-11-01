@@ -29,8 +29,8 @@ seed/
 │   │   ├── metallb.ts     # MetalLB configuration
 │   │   └── webhook.ts     # HTTP webhook handler
 │   └── host-agent/
-│       ├── index.ts       # CRD watcher, main loop
-│       └── swtpm.ts       # swtpm process management
+│       ├── index.ts       # main loop
+│       └── netpol.ts      # per-node network policy (iptables)
 ├── package.json           # Node.js deps (@kubernetes/client-node)
 ├── tsconfig.json          # TypeScript config
 ├── build.mjs              # esbuild bundler script
@@ -175,7 +175,7 @@ The image ref format is `nix:0/nix/store/...-seed-<name>` which nix-snapshotter 
 Three k8s-native TypeScript components replace the legacy bash controller:
 
 1. **seed-controller** (Deployment) — main reconciliation engine + webhook handler
-2. **seed-host-agent** (DaemonSet) — privileged pod managing swtpm processes on host
+2. **seed-host-agent** (DaemonSet) — privileged pod enforcing per-node network policy (swtpm moved to the Kata shim)
 3. **seed-builder** (Jobs) — nix build/eval in isolated pods
 
 Written in TypeScript with `@kubernetes/client-node`. Bundled via esbuild, packaged as OCI images via `nix-snapshotter.buildImage`.
@@ -329,15 +329,15 @@ Each instance gets a vTPM device (`/dev/tpm0`) backed by swtpm on the host, enab
 
 **NixOS option**: `seed.controller.swtpmImage` — set to the swtpm image store path to enable vTPM for all instances.
 
-### Shim-owned swtpm (migration in progress)
+### Shim-owned swtpm
 
-The host-agent swtpm path is being replaced: the Kata shim starts swtpm itself, and creating a TPM is an explicit, controller-authorized event, verified on every boot. Instances migrate one at a time via `seed.controller.shimSwtpm` (env `SEED_SHIM_SWTPM`; `<ns>/<instance>`, `<ns>/*`, or `*`).
+The Kata shim starts swtpm itself (the host agent no longer runs swtpm and only enforces network policy, so restarting it is safe). Creating a TPM is an explicit, controller-authorized event, verified on every boot. SeedHostTask is retired: the controller only reaps leftover objects.
 
-- **Pod annotations** (opted-in instances only; these get no SeedHostTask and no `tpm_socket`): `seed.loom.farm/tpm-mode` = `create` | `verify`, `seed.loom.farm/tpm-state-dir` = `/var/lib/seed-controller/tpm/<ns>-<instance>`, `seed.loom.farm/tpm-fingerprint` (verify only).
+- **Pod annotations** (every TPM instance; there is no `tpm_socket` annotation): `seed.loom.farm/tpm-mode` = `create` | `verify`, `seed.loom.farm/tpm-state-dir` = `/var/lib/seed-controller/tpm/<ns>-<instance>`, `seed.loom.farm/tpm-fingerprint` (verify only).
 - **SeedTPM** (`kubectl get stpm -A`, name = instance): `status.fingerprint` = lowercase hex SHA-256 of the SRK's marshaled TPMT_PUBLIC (owner hierarchy, ECC P-256 SRK template, unique = 2x32 zero bytes). If it's recorded, the instance is rendered in verify mode; if not, in create mode. A CEL rule makes it immutable. Deleting a SeedTPM (operator only, since the controller has no delete RBAC) is how you authorize a new TPM. SeedTPMs are never reaped.
 - **Create → verify flip** (`src/controller/tpm.ts`): after a create-mode boot the shim writes `<state-dir>/tpm-fingerprint`. Once the pod is Ready, the controller validates the file, records it, and re-renders that Deployment in verify mode, which rolls the pod once. If the file and the record disagree, the controller logs it, emits a `FingerprintMismatch` event and sets the condition. It never rewrites the record.
-- **Safety hold**: an opted-in instance with host-agent-era state (`tpm2-00.permall` present, no `tpm-fingerprint`) and no record stays on the legacy path until it's backfilled.
-- **Migration per instance**: run `nix run .#tpm-backfill -- --write-status <ns> <instance>` as root on a node. It works on a scratch copy and verifies the age identity decrypts against it. Then add the instance to `shimSwtpm`. The host-agent DaemonSet stays `OnDelete` until the final retirement commit.
+- **Safety stop**: if an instance has host-agent-era state (`tpm2-00.permall` present, no `tpm-fingerprint`) and no record, its flake's reconcile fails rather than render create mode over it. Fix it with `tpm-backfill`.
+- **Backfill**: run `nix run .#tpm-backfill -- --write-status <ns> <instance>` as root on a node. It records an existing state's fingerprint after verifying, on a scratch copy, that the age identity decrypts against it.
 
 ### Dual-stack networking
 
