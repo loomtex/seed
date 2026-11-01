@@ -1,0 +1,86 @@
+{
+  "fsid": "58ec6b96-5df6-49f2-86c3-182501b0602d",
+  "health": {
+    "status": "HEALTH_OK",
+    "checks": {},
+    "mutes": []
+  },
+  "election_epoch": 182,
+  "quorum": [
+    0,
+    1,
+    2
+  ],
+  "quorum_names": [
+    "seed-atl1-1",
+    "seed-atl1-2",
+    "seed-atl1-3"
+  ],
+  "quorum_age": 231,
+  "monmap": {
+    "epoch": 1,
+    "min_mon_release_name": "squid",
+    "num_mons": 3
+  },
+  "osdmap": {
+    "epoch": 722,
+    "num_osds": 3,
+    "num_up_osds": 3,
+    "osd_up_since": 1793516409,
+    "num_in_osds": 3,
+    "osd_in_since": 1773538661,
+    "num_remapped_pgs": 0
+  },
+  "pgmap": {
+    "pgs_by_state": [
+      {
+        "state_name": "active+clean",
+        "count": 81
+      }
+    ],
+    "num_pgs": 81,
+    "num_pools": 4,
+    "num_objects": 719,
+    "data_bytes": 1538925317,
+    "bytes_used": 4800638976,
+    "bytes_avail": 2875729907712,
+    "bytes_total": 2880530546688,
+    "write_bytes_sec": 2388,
+    "read_op_per_sec": 0,
+    "write_op_per_sec": 0
+  },
+  "fsmap": {
+    "epoch": 61,
+    "btime": "2026-11-01T00:59:59:726389-0600",
+    "id": 1,
+    "up": 1,
+    "in": 1,
+    "max": 1,
+    "by_rank": [
+      {
+        "filesystem_id": 1,
+        "rank": 0,
+        "name": "seed-atl1-2",
+        "status": "up:active",
+        "gid": 147881
+      }
+    ],
+    "up:standby": 2
+  },
+  "mgrmap": {
+    "available": true,
+    "num_standbys": 2,
+    "modules": [
+      "iostat",
+      "nfs",
+      "restful"
+    ],
+    "services": {}
+  },
+  "servicemap": {
+    "epoch": 170701,
+    "modified": "2026-11-01T01:01:10.842410-0600",
+    "services": {}
+  },
+  "progress_events": {}
+}

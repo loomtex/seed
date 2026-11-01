@@ -1,0 +1,30 @@
+{
+  "epoch": 722,
+  "fsid": "58ec6b96-5df6-49f2-86c3-182501b0602d",
+  "flags": "sortbitwise,recovery_deletes,purged_snapdirs,pglog_hardlimit",
+  "flags_set": [
+    "pglog_hardlimit",
+    "purged_snapdirs",
+    "recovery_deletes",
+    "sortbitwise"
+  ],
+  "crush_node_flags": {},
+  "device_class_flags": {},
+  "osds": [
+    {
+      "osd": 0,
+      "up": 1,
+      "in": 1
+    },
+    {
+      "osd": 1,
+      "up": 1,
+      "in": 1
+    },
+    {
+      "osd": 2,
+      "up": 1,
+      "in": 1
+    }
+  ]
+}

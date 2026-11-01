@@ -13,7 +13,13 @@
 //                       does the actual upgrade on its own timer.
 //   active            — the full flow; host autoUpgrade timer is disabled.
 //
-// All decisions are pure functions in upgrade-logic.ts / upgrade-schedule.ts.
+// Ceph (when the host has the ceph CLI + /etc/ceph/ceph.conf): the cluster
+// must tolerate losing this host before the Lease is taken; a reboot is
+// wrapped in `ceph osd set-group noout <host>` (recorded in the Lease) which
+// is cleared once this host's OSDs are back and every PG is active+clean.
+//
+// All decisions are pure functions in upgrade-logic.ts / upgrade-schedule.ts
+// / upgrade-ceph.ts.
 
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -27,6 +33,11 @@ import {
   nodeInternalIp, podsToDrain, parseSystemctlShow, unitRunning, parseStateFile,
   classifyRun, decideResume, toMs,
 } from "./upgrade-logic.js";
+import {
+  type CephStatus, type CephTree,
+  parseCephStatus, parseOsdTree, hostBucketFor, nooutGroups, globalNoout,
+  cephHostLossProblems, cephHostRecoveryProblems, pgProblems,
+} from "./upgrade-ceph.js";
 import {
   CONTROL_PLANE_LABEL, nodeSchedule, nextWindowAfter, windowCrossed, formatSecondsOfDay,
 } from "./upgrade-schedule.js";
@@ -54,6 +65,10 @@ const HEALTH_SETTLE_MS = 2 * 60_000;
 const DRY_RUN_HOLD_MS = 60_000;
 const REBOOT_WAIT_MS = 10 * 60_000;
 const REISSUE_GRACE_MS = 5 * 60_000;
+const CEPH_RECOVERY_TIMEOUT_MS = 20 * 60_000;
+const CEPH_POLL_MS = 15_000;
+
+const CEPH = `${HOST_BIN}/ceph`;
 
 export interface UpgradeAgentConfig {
   nodeName: string;
@@ -95,6 +110,25 @@ async function readStateFile(): Promise<string | null> {
   } catch {
     return null; // missing (tmpfs: gone after a reboot, or not written yet)
   }
+}
+
+/** The host has the ceph CLI and a cluster config (else: no Ceph here). */
+async function cephPresent(): Promise<boolean> {
+  try {
+    await hostExec([`${HOST_BIN}/test`, "-x", CEPH, "-a", "-e", "/etc/ceph/ceph.conf"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Run the host ceph CLI as root (admin keyring in /etc/ceph). */
+function ceph(...args: string[]): Promise<string> {
+  return hostExec([CEPH, "--connect-timeout", "30", ...args], 90_000);
+}
+
+async function cephJson(...args: string[]): Promise<unknown> {
+  return JSON.parse(await ceph(...args, "-f", "json"));
 }
 
 /** /proc/sys/kernel/random/boot_id is not namespaced: the host's boot ID. */
@@ -355,6 +389,14 @@ class UpgradeAgent {
           const r = await this.readyz(self);
           if (r) problems.push(r);
         }
+        // Every PG active+clean: cheap, and protects the next node in line.
+        if (await this.cephAvailable()) {
+          try {
+            problems.push(...pgProblems(parseCephStatus(await cephJson("status"))).map((p) => `ceph: ${p}`));
+          } catch (err) {
+            problems.push(`ceph: status failed: ${err}`);
+          }
+        }
       }
       return problems;
     } catch (err) {
@@ -380,6 +422,104 @@ class UpgradeAgent {
     }
     await this.event("Warning", "UpgradeUnhealthy", `health gate failed after ${HEALTH_TIMEOUT_MS / 60_000} min: ${last.join("; ")}`);
     return false;
+  }
+
+  // --- Ceph ---
+
+  private cephSeen: boolean | undefined;
+
+  /** Ceph CLI + config on the host? Logged when it changes (i.e. once). */
+  private async cephAvailable(): Promise<boolean> {
+    const present = await cephPresent();
+    if (present !== this.cephSeen) {
+      log(COMPONENT, present
+        ? "ceph CLI and /etc/ceph/ceph.conf present: Ceph checks enabled"
+        : "no ceph CLI / cluster config on this host: skipping Ceph steps");
+      this.cephSeen = present;
+    }
+    return present;
+  }
+
+  private async cephSnapshot(): Promise<{ status: CephStatus; tree: CephTree }> {
+    const status = parseCephStatus(await cephJson("status"));
+    const tree = parseOsdTree(await cephJson("osd", "tree"));
+    return { status, tree };
+  }
+
+  /** Pre-acquire: can Ceph lose this host? [] when fine or no Ceph. */
+  private async cephPrecheckProblems(): Promise<string[]> {
+    if (!(await this.cephAvailable())) return [];
+    try {
+      const { status, tree } = await this.cephSnapshot();
+      const problems = cephHostLossProblems(status, tree).map((p) => `ceph: ${p}`);
+      if (problems.length === 0) log(COMPONENT, "ceph pre-check: pass (quorum full, all OSDs up/in, all PGs active+clean)");
+      return problems;
+    } catch (err) {
+      return [`ceph: query failed: ${err}`];
+    }
+  }
+
+  /** Control-plane pre-check plus the Ceph one. */
+  private async precheckProblems(): Promise<string[]> {
+    return [...(await this.healthProblems(false)), ...(await this.cephPrecheckProblems())];
+  }
+
+  /** Before draining for a reboot: noout on our CRUSH host bucket, recorded in the Lease first. */
+  private async setHostNoout(): Promise<void> {
+    if (!(await this.cephAvailable())) return;
+    const host = hostBucketFor(parseOsdTree(await cephJson("osd", "tree")), this.me);
+    if (!host) {
+      log(COMPONENT, `no CRUSH host bucket with OSDs named ${this.me}; not setting noout`);
+      return;
+    }
+    // Annotate first: a crash between the two leaves an annotation for a
+    // flag that isn't set (unset-group is harmless), never the reverse.
+    await this.lease.annotate({ [A.CEPH_NOOUT]: host.name });
+    await ceph("osd", "set-group", "noout", host.name);
+    const set = nooutGroups(await cephJson("osd", "dump").catch(() => ({})));
+    if (set.includes(host.name)) {
+      await this.event("Normal", "UpgradeCephNoout", `ceph osd set-group noout ${host.name} (${host.osds.map((o) => o.name).join(", ")})`);
+    } else {
+      await this.event("Warning", "UpgradeCephNoout", `ceph osd set-group noout ${host.name} ran but osd dump doesn't show it; continuing`);
+    }
+  }
+
+  /**
+   * If the Lease says we set host noout: wait (20 min) for that host's OSDs
+   * to be up/in and every PG active+clean, then unset it and drop the
+   * annotation. False = not recovered (noout left set; caller holds).
+   */
+  private async clearHostNoout(): Promise<boolean> {
+    const lease = await withApiRetry("read upgrade lease", () => this.lease.read());
+    const host = lease?.metadata?.annotations?.[A.CEPH_NOOUT];
+    if (!host) return true;
+    if (!(await this.cephAvailable())) {
+      await this.event("Warning", "UpgradeCephUnavailable", `noout was set on ${host} but the ceph CLI is gone; cannot clear it`);
+      return false;
+    }
+    const deadline = Date.now() + CEPH_RECOVERY_TIMEOUT_MS;
+    let problems: string[] = [];
+    for (;;) {
+      this.checkLease();
+      try {
+        const { status, tree } = await this.cephSnapshot();
+        problems = cephHostRecoveryProblems(status, tree, host);
+      } catch (err) {
+        problems = [`query failed: ${err}`];
+      }
+      if (problems.length === 0) break;
+      if (Date.now() > deadline) {
+        await this.event("Warning", "UpgradeCephNotRecovered",
+          `Ceph not recovered after ${CEPH_RECOVERY_TIMEOUT_MS / 60_000} min, keeping noout on ${host}: ${problems.join("; ")}`);
+        return false;
+      }
+      log(COMPONENT, `waiting for Ceph recovery of ${host}: ${problems.join("; ")}`);
+      await sleep(CEPH_POLL_MS);
+    }
+    await ceph("osd", "unset-group", "noout", host);
+    await this.lease.annotate({ [A.CEPH_NOOUT]: null });
+    await this.event("Normal", "UpgradeCephRecovered", `${host} OSDs up, all PGs active+clean; ceph osd unset-group noout ${host}`);
+    return true;
   }
 
   private checkLease(): void {
@@ -470,11 +610,22 @@ class UpgradeAgent {
 
   // --- flow ---
 
-  private async finish(message: string): Promise<FlowResult> {
+  /**
+   * End of an upgrade that did work: clear our Ceph noout (if any), uncordon
+   * (if ours), release. Never releases with our noout still set.
+   */
+  private async wrapUp(message?: string): Promise<FlowResult> {
+    if (!(await this.clearHostNoout())) {
+      return this.hold("Ceph did not recover; host noout left set (clear with ceph osd unset-group noout <host> once healthy)");
+    }
     await this.uncordonIfOurs();
     await this.lease.release();
-    await this.event("Normal", "UpgradeComplete", message);
+    if (message) await this.event("Normal", "UpgradeComplete", message);
     return "done";
+  }
+
+  private finish(message: string): Promise<FlowResult> {
+    return this.wrapUp(message);
   }
 
   /** Keep renewing and do nothing else until a human deletes / takes the Lease. */
@@ -512,15 +663,12 @@ class UpgradeAgent {
         return this.hold("cluster unhealthy after switch");
       case "reboot-required":
         log(COMPONENT, `reboot required for ${detail}, draining`);
+        await this.setHostNoout();
         if (!(await this.drain())) return this.hold("drain timed out");
         return this.reboot(1);
       case "failed":
         await this.event("Warning", "UpgradeFailed", `seed-upgrade.service failed: ${detail}`);
-        if (await this.healthGate()) {
-          await this.uncordonIfOurs();
-          await this.lease.release();
-          return "done";
-        }
+        if (await this.healthGate()) return this.wrapUp();
         return this.hold(`upgrade failed (${detail}) and cluster unhealthy`);
     }
   }
@@ -582,12 +730,31 @@ class UpgradeAgent {
     const node = await this.readNode();
     const pods = await this.podsOnNode();
     const health = await this.healthProblems(true);
+    const cephPlan: string[] = [];
+    if (await this.cephAvailable()) {
+      try {
+        const { status, tree } = await this.cephSnapshot();
+        const loss = cephHostLossProblems(status, tree);
+        const dump = await cephJson("osd", "dump");
+        const host = hostBucketFor(tree, this.me);
+        cephPlan.push(`ceph pre-check right now: ${loss.length === 0 ? "pass" : loss.join("; ")}`);
+        cephPlan.push(`ceph noout flags now: host groups [${nooutGroups(dump).join(", ")}], global ${globalNoout(dump) ? "set" : "unset"}`);
+        cephPlan.push(host
+          ? `if reboot-required: would run \`ceph osd set-group noout ${host.name}\` (${host.osds.map((o) => o.name).join(", ")}) before draining; after the reboot wait up to ${CEPH_RECOVERY_TIMEOUT_MS / 60_000} min for its OSDs up + all PGs active+clean, then \`ceph osd unset-group noout ${host.name}\``
+          : `no CRUSH host bucket with OSDs named ${this.me}: no noout`);
+      } catch (err) {
+        cephPlan.push(`ceph query failed: ${err}`);
+      }
+    } else {
+      cephPlan.push("no Ceph on this host: Ceph steps skipped");
+    }
     const plan = [
       node.spec?.unschedulable ? "node already cordoned: would leave the cordon alone" : "would cordon the node",
       forceReboot ? `would request a reboot (${FORCE_REBOOT_FILE}), then start ${UNIT} and wait for ${STATE_FILE}` : `would start ${UNIT} and wait for ${STATE_FILE}`,
-      "if switched: health gate (control plane Ready + local /readyz), wait 2 min, uncordon, release",
+      "if switched: health gate (control plane Ready + local /readyz + Ceph PGs active+clean), wait 2 min, uncordon, release",
       `if reboot-required: drain ${pods.length} pod(s) [${pods.map((p) => `${p.metadata?.namespace}/${p.metadata?.name}`).join(", ")}], then reboot`,
       `health gate right now: ${health.length === 0 ? "pass" : health.join("; ")}`,
+      ...cephPlan,
     ];
     for (const step of plan) log(COMPONENT, `[dry-run] ${step}`);
     await this.event("Normal", "UpgradeDryRun", `dry-run (${reason}): holding the lease ${DRY_RUN_HOLD_MS / 1000}s, no changes made`);
@@ -626,13 +793,15 @@ class UpgradeAgent {
       case "none":
         return "none";
       case "abandoned":
-        await this.uncordonIfOurs();
-        await this.lease.release();
-        return "done";
+        return this.wrapUp();
       case "hold":
         return this.hold(action.reason, leasePhase(lease) === "held");
       case "post-reboot":
         await this.event("Normal", "UpgradeRebooted", `back up on boot ${bootId}`);
+        // Ceph first (its own 20 min budget; noout stays set on timeout).
+        if (!(await this.clearHostNoout())) {
+          return this.hold("Ceph did not recover after reboot; host noout left set (clear with ceph osd unset-group noout <host> once healthy)");
+        }
         if (await this.healthGate()) return this.finish("upgraded via reboot");
         return this.hold("cluster unhealthy after reboot");
       case "reissue-reboot": {
@@ -686,9 +855,9 @@ class UpgradeAgent {
   }
 
   private async attempt(reason: string, forceReboot = false): Promise<void> {
-    const problems = await this.healthProblems(false);
+    const problems = await this.precheckProblems();
     if (problems.length > 0) {
-      await this.event("Warning", "UpgradeSkipped", `${reason} upgrade skipped, control plane not healthy: ${problems.join("; ")}`);
+      await this.event("Warning", "UpgradeSkipped", `${reason} upgrade skipped, not safe to take this node down: ${problems.join("; ")}`);
       return;
     }
     const existing = await this.lease.read().catch(() => null);
@@ -699,9 +868,9 @@ class UpgradeAgent {
     const deadline = Date.now() + ACQUIRE_WAIT_MS;
     let acquired = false;
     for (;;) {
-      const p = await this.healthProblems(false);
+      const p = await this.precheckProblems();
       if (p.length === 0 && (await this.lease.tryAcquire())) { acquired = true; break; }
-      if (p.length > 0) log(COMPONENT, `waiting for lease, control plane not healthy: ${p.join("; ")}`);
+      if (p.length > 0) log(COMPONENT, `waiting for lease, not safe yet: ${p.join("; ")}`);
       if (Date.now() + ACQUIRE_RETRY_MS > deadline) break;
       await sleep(ACQUIRE_RETRY_MS);
     }
