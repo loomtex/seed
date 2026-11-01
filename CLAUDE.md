@@ -29,8 +29,11 @@ seed/
 │   │   ├── metallb.ts     # MetalLB configuration
 │   │   └── webhook.ts     # HTTP webhook handler
 │   └── host-agent/
-│       ├── index.ts       # main loop
-│       └── netpol.ts      # per-node network policy (iptables)
+│       ├── index.ts       # main loop (netpol + upgrade agent, independent)
+│       ├── netpol.ts      # per-node network policy (iptables)
+│       ├── upgrade.ts     # node upgrade agent (Lease, cordon, drain, reboot)
+│       ├── upgrade-logic.ts    # pure decisions (lease math, resume, drain filter)
+│       └── upgrade-schedule.ts # pure bucket/jitter/tz window computation
 ├── package.json           # Node.js deps (@kubernetes/client-node)
 ├── tsconfig.json          # TypeScript config
 ├── build.mjs              # esbuild bundler script
@@ -177,7 +180,7 @@ The image ref format is `nix:0/nix/store/...-seed-<name>` which nix-snapshotter 
 Three k8s-native TypeScript components replace the legacy bash controller:
 
 1. **seed-controller** (Deployment) — main reconciliation engine + webhook handler
-2. **seed-host-agent** (DaemonSet) — privileged pod enforcing per-node network policy (swtpm moved to the Kata shim)
+2. **seed-host-agent** (DaemonSet) — privileged (hostNetwork, hostPID) pod enforcing per-node network policy and running the node upgrade agent (see "Node upgrades"); swtpm moved to the Kata shim. Netpol iptables rules survive host-agent restarts (shutdown leaves them; the next pod adopts them and prunes chains for vanished namespaces); starting with netpol disabled removes them.
 3. **seed-builder** (Jobs) — nix build/eval in isolated pods
 
 Written in TypeScript with `@kubernetes/client-node`. Bundled via esbuild, packaged as OCI images via `nix-snapshotter.buildImage`.
@@ -361,6 +364,41 @@ The Kata shim starts swtpm itself (the host agent no longer runs swtpm and only 
 - **Create → verify flip** (`src/controller/tpm.ts`): after a create-mode boot the shim writes `<state-dir>/tpm-fingerprint`. Once the pod is Ready, the controller validates the file, records it, and re-renders that Deployment in verify mode, which rolls the pod once. If the file and the record disagree, the controller logs it, emits a `FingerprintMismatch` event and sets the condition. It never rewrites the record.
 - **Safety stop**: if an instance has host-agent-era state (`tpm2-00.permall` present, no `tpm-fingerprint`) and no record, its flake's reconcile fails rather than render create mode over it. Fix it with `tpm-backfill`.
 - **Backfill**: run `nix run .#tpm-backfill -- --write-status <ns> <instance>` as root on a node. It records an existing state's fingerprint after verifying, on a scratch copy, that the age identity decrypts against it.
+
+### Node upgrades (upgrade agent)
+
+NixOS upgrades of the k3s nodes are serialized through a Kubernetes Lease so only one node upgrades at a time (3 embedded-etcd servers need 2 for quorum; a reboot kills that node's Kata VMs, which restart elsewhere as normal Deployment pods).
+
+**Split of roles**:
+- **Upgrade agent** (`src/host-agent/upgrade.ts`, inside the host-agent DaemonSet, privileged + hostPID) coordinates: Lease, cordon, drain, reboot trigger, health gate. Host commands run via `nsenter -t 1 -m -u -i -n -p -- /run/current-system/sw/bin/systemctl ...`.
+- **Host unit** `seed-upgrade.service` (`infra/profiles/seed-upgrade.nix` + `.sh`, oneshot) does the work: resolves the infra flake to a pinned rev (`nix flake metadata --refresh`), `nixos-rebuild build --flake github:loomtex/seed/<rev>?dir=infra#<host> --refresh --option eval-cache false`, compares the built `kernel`/`initrd`/`kernel-modules` with `/run/booted-system` (the autoUpgrade allowReboot rule), logs whether `dry-activate` would restart `k3s.service`, then `nixos-rebuild boot` (reboot needed; activates nothing) or `switch`. Writes `/run/seed-upgrade/state` = `{"outcome": "switched"|"reboot-required"|"failed", "system", "time", "invocation", "error"?}`; exits non-zero on failure. It never reboots.
+
+**Modes** — `seed.upgradeAgent.mode` (module.nix, same on every node; default `"dry-run"`), passed to the host agent as `SEED_UPGRADE_MODE`:
+- `dry-run`: host `system.autoUpgrade` timer still upgrades (as before). At its window the agent pre-checks, acquires the Lease, logs the plan (cordon, unit, pods it would evict, current health gate), holds 1 min, releases. No cordon/trigger/drain/reboot.
+- `active`: `system.autoUpgrade.enable = false` (no timer) and the agent runs the full flow. The DaemonSet env comes from the controller node's config, the timer toggle from each node's own config — switch all nodes.
+
+**Schedule**: the agent computes it from the Node list, so the DaemonSet spec is identical everywhere: control-plane nodes (`node-role.kubernetes.io/control-plane`) by name, then the rest; bucket = index mod 4; local time 04:00 + 30 min × bucket + a fixed 0–10 min jitter from sha256(node name). `TZ` comes from the controller node's `time.timeZone` (ICU tz database, DST-correct). Only windows that start while the agent is running fire — missed windows don't catch up. `infra/profiles/seed-upgrade.nix` keeps the same rule for the autoUpgrade timer plus the "#servers ≤ buckets" assertion. On demand: `kubectl annotate node <n> seed.loom.farm/upgrade-now=true` runs the flow once (still Lease-gated); the agent removes the annotation when it starts.
+
+**Lease** `seed-system/node-upgrade` (`leaseDurationSeconds` 1800, holder = node name):
+- Pre-check: every control-plane node Ready with a heartbeat < 2 min old, else skip the window (Warning Event). Heartbeat = newer of the Ready condition's `lastHeartbeatTime` and the node's `kube-node-lease` renewTime — kubelet only rewrites an unchanged Ready condition every 5 min.
+- Acquire: create; held by another and unexpired → retry every 60 s for up to 60 min; expired (renewTime + duration < now) or empty holder → take over with a resourceVersion-guarded update. Renewed every 60 s (errors tolerated). Release clears `holderIdentity` (rv-guarded, never someone else's).
+- Lease annotations: `seed.loom.farm/upgrade-phase` = `upgrading` | `rebooting` | `held`, `upgrade-started` (validates the state file belongs to this run), `upgrade-boot-id` + `upgrade-reboot-attempts` (at reboot), `upgrade-hold-reason`.
+- Node annotation `seed.loom.farm/upgrade-cordoned=true` is set only if the agent did the cordon; it only uncordons when that's present.
+
+**Active flow**: preflight (unit loaded, not running) → acquire → cordon → phase=upgrading → `systemctl start --no-block seed-upgrade.service` → poll until done → read state:
+- `switched` → health gate → uncordon (if ours) → release.
+- `reboot-required` → drain → phase=rebooting + bootID → `systemctl reboot`.
+- `failed` → Warning Event; health gate passes → uncordon + release; else hold.
+
+**Drain**: policy/v1 Eviction of every pod on the node except DaemonSet-owned, mirror and finished pods; 429 (PDB) retried every 10 s; wait until gone; 15 min timeout → no reboot, Warning, hold. **Health gate**: every control-plane node (and this node) Ready + fresh, and `GET https://<InternalIP>:6443/readyz` with the SA token passes; then wait 2 min, re-check; up to 15 min, else hold.
+
+**Resume on (re)start** (host-agent rollouts are RollingUpdate, so this is routine): if the Lease is ours — phase=rebooting with a new boot ID → health gate → uncordon → release; same boot ID → wait 5 min, re-issue the reboot once, then hold; phase=upgrading → keep polling the unit / continue from its outcome (missing or older state file = failed); phase=held → keep holding; no phase → uncordon (if ours) + release. Never starts a second upgrade while holding.
+
+**Holding / manual intervention**: "hold" = keep renewing, do nothing (Warning Event `UpgradeHeld` on the Node, reason in the Lease). Fix the node, `kubectl uncordon <node>` if needed, then `kubectl delete lease node-upgrade -n seed-system` — the agent notices and stops holding. Check events with `kubectl get events -n default --field-selector involvedObject.kind=Node`. If a node finds itself cordoned by the agent without holding the Lease (Lease expired/taken over while it was down), it only emits `UpgradeOrphanedCordon`; uncordon by hand.
+
+**Bypass**: `nixos-rebuild switch`/`boot` run by hand on a node (or starting `nixos-upgrade.service` / `seed-upgrade.service` directly) bypasses the Lease entirely — nothing stops two nodes being rebuilt together that way. Take the Lease's state into account first (`kubectl get lease node-upgrade -n seed-system -o yaml`).
+
+**RBAC**: the host agent runs as the `seed-controller` ServiceAccount; the upgrade permissions are bound to it via ClusterRole `seed-upgrade-agent` (nodes get/list/watch/patch, pods list, pods/eviction create, events create/patch, `/readyz`), Role `seed-upgrade-agent` in seed-system (leases create; get/update/patch/delete on `node-upgrade`) and Role `seed-upgrade-agent` in kube-node-lease (leases get/list).
 
 ### Dual-stack networking
 

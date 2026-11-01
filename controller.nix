@@ -2,7 +2,8 @@
 #
 # Deploys as k8s-native components:
 #   - seed-controller: Deployment pod (reconciliation engine + webhook)
-#   - seed-host-agent: DaemonSet pod (privileged, per-node network policy)
+#   - seed-host-agent: DaemonSet pod (privileged, per-node network policy +
+#     node upgrade agent)
 #   - seed-builder: Jobs created by controller for nix build/eval
 #
 # The controller runs inside the cluster with proper RBAC, communicates
@@ -432,6 +433,71 @@ let
     };
   });
 
+  # --- Upgrade agent RBAC (src/host-agent/upgrade.ts). The host agent runs
+  # as the seed-controller ServiceAccount, so these bind to it. ---
+  upgradeClusterRole = pkgs.writeText "seed-upgrade-agent-clusterrole.yaml" (builtins.toJSON {
+    apiVersion = "rbac.authorization.k8s.io/v1";
+    kind = "ClusterRole";
+    metadata.name = "seed-upgrade-agent";
+    rules = [
+      { apiGroups = [ "" ]; resources = [ "nodes" ]; verbs = [ "get" "list" "watch" "patch" ]; }
+      { apiGroups = [ "" ]; resources = [ "pods" ]; verbs = [ "list" ]; }
+      { apiGroups = [ "" ]; resources = [ "pods/eviction" ]; verbs = [ "create" ]; }
+      { apiGroups = [ "" ]; resources = [ "events" ]; verbs = [ "create" "patch" ]; }
+      { nonResourceURLs = [ "/readyz" ]; verbs = [ "get" ]; }
+    ];
+  });
+
+  upgradeClusterRoleBinding = pkgs.writeText "seed-upgrade-agent-clusterrolebinding.yaml" (builtins.toJSON {
+    apiVersion = "rbac.authorization.k8s.io/v1";
+    kind = "ClusterRoleBinding";
+    metadata.name = "seed-upgrade-agent";
+    subjects = [{ kind = "ServiceAccount"; name = "seed-controller"; namespace = seedSystemNS; }];
+    roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "ClusterRole"; name = "seed-upgrade-agent"; };
+  });
+
+  # The node-upgrade Lease. create can't be restricted by resourceNames.
+  upgradeLeaseRole = pkgs.writeText "seed-upgrade-agent-lease-role.yaml" (builtins.toJSON {
+    apiVersion = "rbac.authorization.k8s.io/v1";
+    kind = "Role";
+    metadata = { name = "seed-upgrade-agent"; namespace = seedSystemNS; };
+    rules = [
+      { apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "create" ]; }
+      {
+        apiGroups = [ "coordination.k8s.io" ];
+        resources = [ "leases" ];
+        resourceNames = [ "node-upgrade" ];
+        verbs = [ "get" "update" "patch" "delete" ];
+      }
+    ];
+  });
+
+  upgradeLeaseRoleBinding = pkgs.writeText "seed-upgrade-agent-lease-rolebinding.yaml" (builtins.toJSON {
+    apiVersion = "rbac.authorization.k8s.io/v1";
+    kind = "RoleBinding";
+    metadata = { name = "seed-upgrade-agent"; namespace = seedSystemNS; };
+    subjects = [{ kind = "ServiceAccount"; name = "seed-controller"; namespace = seedSystemNS; }];
+    roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "seed-upgrade-agent"; };
+  });
+
+  # Node heartbeats: kubelet rewrites an unchanged Ready condition only every
+  # 5 min, but renews its kube-node-lease Lease every ~10 s. The agent's
+  # "fresh heartbeat (< 2 min)" check reads these.
+  upgradeNodeLeaseRole = pkgs.writeText "seed-upgrade-agent-node-lease-role.yaml" (builtins.toJSON {
+    apiVersion = "rbac.authorization.k8s.io/v1";
+    kind = "Role";
+    metadata = { name = "seed-upgrade-agent"; namespace = "kube-node-lease"; };
+    rules = [{ apiGroups = [ "coordination.k8s.io" ]; resources = [ "leases" ]; verbs = [ "get" "list" ]; }];
+  });
+
+  upgradeNodeLeaseRoleBinding = pkgs.writeText "seed-upgrade-agent-node-lease-rolebinding.yaml" (builtins.toJSON {
+    apiVersion = "rbac.authorization.k8s.io/v1";
+    kind = "RoleBinding";
+    metadata = { name = "seed-upgrade-agent"; namespace = "kube-node-lease"; };
+    subjects = [{ kind = "ServiceAccount"; name = "seed-controller"; namespace = seedSystemNS; }];
+    roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "seed-upgrade-agent"; };
+  });
+
   # ClusterRole for builder (needs configmap write in instance namespace)
   builderRole = pkgs.writeText "seed-builder-role.yaml" (builtins.toJSON {
     apiVersion = "rbac.authorization.k8s.io/v1";
@@ -596,7 +662,9 @@ let
     };
   });
 
-  # Host agent DaemonSet (privileged — network policy enforcement)
+  # Host agent DaemonSet (privileged — network policy enforcement + node
+  # upgrade agent). Deployed whether or not netpol is enabled: it carries the
+  # upgrade agent, and with netpol off it removes leftover netpol chains.
   hostAgentDaemonSet = pkgs.writeText "seed-host-agent-daemonset.yaml" (builtins.toJSON {
     apiVersion = "apps/v1";
     kind = "DaemonSet";
@@ -608,14 +676,16 @@ let
     spec = {
       selector.matchLabels."app.kubernetes.io/name" = "seed-host-agent";
       # Declared explicitly to replace the OnDelete hold from the swtpm era: the
-      # host agent no longer runs swtpm, so restarting it is safe.
+      # host agent no longer runs swtpm, netpol rules survive a restart, and
+      # the upgrade agent resumes from the Lease, so restarting it is safe.
       updateStrategy.type = "RollingUpdate";
       template = {
         metadata.labels = systemLabels "host-agent";
         spec = {
           serviceAccountName = "seed-controller";
-          # Default runtime — host agent needs host access, not Kata
-          hostPID = false;
+          # Default runtime — host agent needs host access, not Kata.
+          # hostPID: the upgrade agent runs host systemctl via nsenter -t 1.
+          hostPID = true;
           hostNetwork = true;
           containers = [{
             name = "host-agent";
@@ -631,6 +701,10 @@ let
                 name = "SEED_NODE_NAME";
                 valueFrom.fieldRef.fieldPath = "spec.nodeName";
               }
+              { name = "SEED_UPGRADE_MODE"; value = config.seed.upgradeAgent.mode; }
+              # Upgrade windows are local time; nodes share the controller
+              # node's zone. ICU's tz database handles DST.
+              { name = "TZ"; value = if config.time.timeZone != null then config.time.timeZone else "UTC"; }
             ];
           }];
         };
@@ -791,9 +865,14 @@ let
       { name = "05-controller-cert.json"; path = controllerCert; }
       { name = "05-controller-deployment.json"; path = controllerDeployment; }
       { name = "05-controller-service.json"; path = controllerService; }
-    ]
-    ++ lib.optional cfg.netpol.enable
+      { name = "04-upgrade-agent-clusterrole.json"; path = upgradeClusterRole; }
+      { name = "04-upgrade-agent-clusterrolebinding.json"; path = upgradeClusterRoleBinding; }
+      { name = "04-upgrade-agent-lease-role.json"; path = upgradeLeaseRole; }
+      { name = "04-upgrade-agent-lease-rolebinding.json"; path = upgradeLeaseRoleBinding; }
+      { name = "04-upgrade-agent-node-lease-role.json"; path = upgradeNodeLeaseRole; }
+      { name = "04-upgrade-agent-node-lease-rolebinding.json"; path = upgradeNodeLeaseRoleBinding; }
       { name = "05-host-agent-daemonset.json"; path = hostAgentDaemonSet; }
+    ]
     ++ lib.optionals cfg.poolManager.enable [
       { name = "05-pool-manager-daemonset.json"; path = poolManagerDaemonSet; }
       { name = "05-pool-manager-service.json"; path = poolManagerService; }
