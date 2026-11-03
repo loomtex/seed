@@ -1,5 +1,7 @@
 # Auth & Identity
 
+> **Partly superseded (2026-11-03):** its TPM-identity parts are replaced by the proposed design in [`instance-keys-and-transport.md`](instance-keys-and-transport.md).
+
 Seed instances run in hardware-isolated VMs with TPM-backed identities.
 This document specifies how those identities are used for authentication
 between instances, between users and instances, and for secret management

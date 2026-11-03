@@ -1,5 +1,7 @@
 # Connects & Firewall
 
+> **Partly superseded (2026-11-03):** its SPIFFE-via-vTPM identity and NetworkPolicy compilation parts are replaced by the proposed design in [`instance-keys-and-transport.md`](instance-keys-and-transport.md).
+
 Service connectivity and network access control for the Seed platform.
 
 This document specifies how Seed instances discover, connect to, and

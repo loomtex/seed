@@ -1,5 +1,7 @@
 # TLS and Ingress Design
 
+> **Partly superseded (2026-11-03):** its in-instance ACME / TPM private-key parts are replaced by the proposed design in [`instance-keys-and-transport.md`](instance-keys-and-transport.md).
+
 ## Overview
 
 Every seed instance gets L3 routing, automatic DNS, and access to a
