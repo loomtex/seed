@@ -79,10 +79,23 @@ to someone who already holds the node.
      straight between node VPC addresses: no VXLAN around them.
 ```
 
-### What the CNI plugin does
+### Who does what, and when
 
-A chained CNI plugin (`seed-mesh`, after flannel in the k3s conflist) runs
-at pod ADD for seed-managed pods:
+The work divides by timing. containerd runs the whole CNI chain before it
+hands the pod to the Kata shim (`internal/cri/server/sandbox_run.go`:
+`setupPodNetwork`, then `CreateSandbox`), and Kata reads the namespace when
+it builds the sandbox. So:
+
+- **At pod ADD**, the tap doesn't exist yet, and the pod IP must still be on
+  `eth0`, or Kata gives the VM no network. The CNI plugin does only what
+  Kata should see, or what must exist before it looks.
+- **After the sandbox starts**, seed-host-agent finishes the data path and
+  configures peers.
+
+### mycorrhizal: the CNI plugin (pod ADD)
+
+A chained CNI plugin, `mycorrhizal` (after flannel in the k3s conflist),
+for seed-managed pods:
 
 1. **Interface.** Create `wgt0` in the **node** namespace, so its UDP socket
    binds there, then move it into the pod namespace. Give it **no address**:
@@ -93,43 +106,61 @@ at pod ADD for seed-managed pods:
    key; there is nothing to store, back up or rotate.
 3. **Port.** Allocate a listen port from a per-node range and open it in the
    node firewall (VPC interface, cluster subnet only).
-4. **Data path.**
-   - Outbound: a tc rule on `tap0_kata`, ahead of Kata's mirror, sends
-     packets for mesh peers straight into `wgt0`.
-   - Inbound: the pod IP comes off the namespace's `eth0` (the VM owns it;
-     nothing in the namespace needs it), gets a `/32` route to `tap0_kata`,
-     and a permanent neighbor entry for the VM's MAC. Decrypted packets are
-     routed to the VM.
-   - Everything else (DNS, internet egress, kubelet probes) keeps Kata's
-     layer-2 mirror through flannel, unchanged.
-5. **MTU.** Lower the pod's veth MTU so the guest fits inside WireGuard over
+4. **MTU.** Lower the pod's veth MTU so the guest fits inside WireGuard over
    the VPC. The VPC NIC is 1450, so 1390 over IPv4, 1370 if the endpoints
-   are IPv6. Kata copies the veth MTU into the VM.
-6. **Publish.** Write the public key and endpoint (`<node VPC IP>:<port>`)
-   to `/run/seed-mesh/<pod uid>`. The plugin has no cluster credentials;
-   seed-host-agent publishes them.
+   are IPv6. Kata copies the veth MTU into the VM. **Set `wgt0` to the same
+   MTU.** WireGuard pads each packet to a multiple of 16 bytes, up to the
+   interface MTU; at its default of 1420, a full 1390-byte packet pads to
+   1392 and the outer packet is 1452 bytes, two over the VPC, so every
+   full-size packet fragments. (This happened in the plugin test: every
+   packet split in two, reassembly failures drove the retransmits, and four
+   parallel streams stalled completely.)
+5. **Record.** Write the public key, endpoint (`<node VPC IP>:<port>`), pod
+   IPs and the VM's MAC (the veth's) to `/run/mycorrhizal/<container id>`.
+   The plugin has no cluster credentials; seed-host-agent publishes them.
 
-At pod DEL the namespace goes away, taking `wgt0` and its socket with it;
-the plugin releases the port and the firewall rule.
+At pod DEL the plugin deletes `wgt0` (the namespace takes it anyway),
+releases the port and removes the firewall rule. Anything without a record
+is passed through untouched.
 
-### Peering: from metadata Seed already has
+### seed-host-agent: data path and peering (sandbox up)
 
 seed-host-agent already watches every seed-managed pod on its node
 (`netpol.ts`) and knows each one's namespace, instance label, IPs and expose
-annotation. It gains two jobs:
+annotation. Once a pod's `tap0_kata` exists it:
 
-- **Publish:** read `/run/seed-mesh/<pod uid>` and annotate the pod with
-  `seed.loom.farm/mesh-pubkey` and `seed.loom.farm/mesh-endpoint`.
-- **Peer:** for each local pod, configure as WireGuard peers every pod it
-  may talk to, with `allowed-ips` set to that pod's IPs (`/32` and `/128`).
+1. **Finishes the data path.**
+   - Inbound: the pod IPs come off the namespace's `eth0` (the VM owns them;
+     nothing in the namespace needs them), get `/32` and `/128` routes to
+     `tap0_kata`, and permanent neighbor entries for the VM's MAC. Decrypted
+     packets are routed to the VM.
+   - Outbound: tc rules on `tap0_kata`, ahead of Kata's mirror, send packets
+     for each mesh peer's IPs straight into `wgt0`.
+   - **IPv6 neighbor discovery stays on Kata's mirror** (a higher-priority
+     rule passes ICMPv6 types 135 and 136 to `eth0`). Same-node peers share
+     an on-link `/64`, so the VMs find each other with neighbor discovery;
+     routed through WireGuard, those packets lose their hop limit of 255 and
+     receivers drop them (RFC 4861). IPv4 needs no equivalent: ARP isn't IP.
+   - Everything else (DNS, internet egress, kubelet probes) keeps Kata's
+     layer-2 mirror through flannel, unchanged.
+2. **Publishes** the record as pod annotations,
+   `seed.loom.farm/mycorrhizal-pubkey` and
+   `seed.loom.farm/mycorrhizal-endpoint`.
+3. **Peers:** for each local pod, configures as WireGuard peers every pod
+   **on another node** it may talk to, with `allowed-ips` set to that pod's
+   IPs (`/32` and `/128`), and adds their tc rules. Peers on the same node
+   aren't tunneled: their traffic stays on Kata's mirror through the node
+   bridge. Encrypting it buys nothing, since the plaintext is on that host's
+   taps either way, and it costs 12–17× in throughput (see
+   [Performance](#performance)). Source validation (below) gives same-node
+   traffic the same identity guarantee.
+4. **Sets the readiness gate** `seed.loom.farm/mycorrhizal-ready` once the
+   data path and peers are in place. The pod isn't Ready before then.
 
 "May talk to" is today's policy: **every pod in the same namespace.** When
 `seed.firewall` / `seed.connect` are implemented, their rules compile to
 peer sets (plus ports, below) instead of NetworkPolicy objects. Peering a
 cross-namespace instance is adding it to the peer list.
-
-A pod isn't Ready until its peers are configured: a readiness gate,
-`seed.loom.farm/mesh-ready`, set by the host-agent.
 
 ### What the mesh gives instances
 
@@ -144,24 +175,26 @@ A pod isn't Ready until its peers are configured: a readiness gate,
 
 ### Enforcement
 
-Per-instance rules on the namespace's `eth0` ingress, maintained by the
-host-agent alongside today's iptables chains:
+Per-instance tc rules in the pod namespace, maintained by the host-agent
+alongside today's iptables chains:
 
-- **Spoofing:** drop anything arriving through flannel with a mesh peer's
-  source IP. A mesh peer's packets only ever arrive through `wgt0`.
-- **Plaintext between instances:** drop seed-pod-to-seed-pod traffic that
-  arrives through flannel at all. Instance-to-instance traffic is mesh
-  traffic or nothing.
-- **Ports:** `seed.firewall` port restrictions apply to traffic leaving
-  `wgt0` toward the VM.
+- **Source validation (`tap0_kata` ingress):** drop anything the VM sends
+  from an address that isn't its own. Every packet leaving an instance then
+  carries a true source, which is what makes same-node traffic (not
+  tunneled) as trustworthy as mesh traffic.
+- **Cross-node plaintext (`eth0` ingress):** drop traffic from a seed pod on
+  another node that arrives through flannel. Between nodes,
+  instance-to-instance traffic is WireGuard or nothing; this also covers
+  spoofed mesh-peer sources.
+- **Ports:** `seed.firewall` port restrictions apply to traffic heading to
+  the VM from `wgt0` and from same-node peers.
 
 DNS, exposed-port ingress and internet egress keep today's rules.
 
-### Test (2026-11-03, seed-atl1-1 and seed-atl1-2)
+### Tests (2026-11-03, seed-atl1-1 and seed-atl1-2)
 
-Two busybox Kata pods, one per node; WireGuard set up by hand after the pods
-started, exactly as steps 1, 2 and 4 above; temporary firewall rule for the
-ports.
+**1. By hand.** Two busybox Kata pods, one per node; WireGuard set up by
+hand after the pods started; temporary firewall rule for the ports.
 
 | Check | Result |
 |---|---|
@@ -171,9 +204,61 @@ ports.
 | Spoof-drop rule on `eth0` | Mesh traffic unaffected |
 | Plaintext on `tap0_kata` visible to node root | Yes, as expected (the trust-boundary cost above) |
 
-Not yet tested: setup at sandbox creation through a real CNI plugin (the
-address-less skip is from reading Kata's code), IPv6, large transfers at the
-lowered MTU, and pods on the same node.
+**2. Through a chained CNI plugin.** A shell prototype of `mycorrhizal`
+chained into the live flannel conflist on both nodes, acting only on test
+namespaces; a script standing in for seed-host-agent. Three Kata pods (two
+on atl1-1, one on atl1-2) plus canary pods in a non-matching namespace.
+
+| Check | Result |
+|---|---|
+| Kata starts with `wgt0` already in the namespace | **Yes.** Each sandbox was created 74–87 ms after the plugin finished; Kata skipped the address-less `wgt0`; the VMs saw only `eth0` and `lo` |
+| Lowered MTU reaches the VM | Yes (1390); 20 MiB transfers matched their md5 every time |
+| Cross-node and same-node, IPv4 and IPv6 | All pairs work, once neighbor discovery stays on the mirror (see above) |
+| Mesh traffic inside VXLAN | **None**; only WireGuard between the nodes |
+| DEL | State, port, firewall rule and both sockets removed |
+| Recreated pod | New key; port reused |
+| Pods outside the test namespaces | Flannel's result returned unchanged; canaries normal |
+
+Throughput: see [Performance](#performance).
+
+### Performance
+
+iperf3 between Kata pods (alpine), 10 s runs with the first 2 s discarded,
+two runs each, node CPU sampled during every run. Nodes: Xeon E-2286G (6
+cores, 12 threads, 4 GHz), 10 Gb/s VPC (`ixgbe`, MTU 1450), otherwise idle.
+Pod MTU 1390 in both columns; `wgt0` MTU fixed at 1390.
+
+| Test | Flannel (VXLAN) | Mesh (WireGuard) |
+|---|---|---|
+| Node to node over the VPC, no pods (ceiling) | 9.39 Gbit/s | 4.13 Gbit/s (plain WireGuard, host to host) |
+| Cross-node, 1 stream, 1 vCPU | 8.6 Gbit/s | 3.0–3.2 Gbit/s, 0 retransmits |
+| Cross-node, 1 stream, 4 vCPU | 8.4–8.6 Gbit/s | 3.4–3.55 Gbit/s, 0 retransmits |
+| Cross-node, 4 streams, 4 vCPU | 8.7 Gbit/s | 3.75–3.9 Gbit/s, 89k–198k retransmits |
+| Two pairs at once, NIC default hash | | 3.95 Gbit/s total |
+| Two pairs at once, UDP port hashing | | **5.7 Gbit/s** total |
+| Same-node, 1 stream | 34 Gbit/s | 2.0 Gbit/s (not tunneled in the design) |
+
+**What limits it: receive, not crypto.** WireGuard's ChaCha20-Poly1305 uses
+the CPU's vector instructions and runs across cores. But each peer pair is
+one UDP flow, so the receiving NIC puts all of it on one receive queue and
+one core (88% softirq in every WireGuard run, including plain host to host).
+VXLAN gets around this by varying its UDP source port per inner flow. The
+mesh reaches 76–94% of plain WireGuard; the rest is the extra hop
+(forwarding into the tap, re-segmenting at the redirect).
+
+**What follows for the design:**
+
+- **Per pair:** about 3–4 Gbit/s on this hardware. Enough for typical
+  instance traffic; bulk transfers between two instances will notice.
+- **Per node: requires UDP port hashing.** `ixgbe` hashes UDP on IP
+  addresses only by default, so every pair between two nodes shares one
+  queue and one core. Hashing on ports too
+  (`ethtool -N <vpc nic> rx-flow-hash udp4 sdfn`, and `udp6`) spreads pairs
+  across cores: two pairs went from 3.95 to 5.7 Gbit/s. This is a node
+  setting the Seed module must apply to the VPC NIC.
+- **Same-node pairs aren't tunneled** (see peering above).
+- **Four streams on one pair** still overrun that pair's receive core, and
+  WireGuard drops internally until TCP backs off.
 
 ---
 
@@ -274,27 +359,30 @@ the platform made the key.
 
 ## Open questions
 
-1. **Sandbox creation.** Confirm with a real `seed-mesh` CNI plugin that a
-   pod starts with an address-less `wgt0` already in its namespace.
-2. **IPv6 and dual-stack.** Pods are dual-stack; `allowed-ips` and the tap
-   routes must cover both families. Endpoint address family follows the VPC.
-3. **Port allocation.** Per-node range size, and reuse after pod DEL.
-4. **Same-node pairs.** Encrypt anyway (one model everywhere) or route
-   locally. Current plan: encrypt.
-5. **Ingress diversion.** Exactly where exposed-port traffic leaves Kata's
+Answered by the 2026-11-03 tests: sandbox creation with `wgt0` present,
+dual-stack, port reuse after DEL, same-node pairs (not tunneled), and
+throughput (see [Performance](#performance)).
+
+1. **Port range size.** One port per mesh pod per node; the prototype used
+   100 (51900–51999). Size it from the per-node pod limit.
+2. **Per-pair ceiling.** About 3–4 Gbit/s on this hardware. If two instances
+   ever need more, options include more than one WireGuard interface per pod,
+   with flows hashed across them. Not needed until a workload asks.
+3. **Throughput on real workloads.** The numbers above are iperf3 on idle
+   nodes. Measure a busy node with many pairs once port hashing is applied.
+4. **Ingress diversion.** Exactly where exposed-port traffic leaves Kata's
    mirror for the proxy (tc in the pod namespace is the obvious place), and
    how the proxy and key-holder are packaged for the shim.
-6. **Key-holder unlock source.** Controller-supplied passphrase first; KMS
+5. **Key-holder unlock source.** Controller-supplied passphrase first; KMS
    through workload identity later. Where the encrypted keys and their
    passphrases live on CephFS.
-7. **Throughput.** WireGuard in the node kernel, per instance. Measure
-   against today's VXLAN path.
 
 ## Phasing
 
-1. **Mesh.** `seed-mesh` CNI plugin; host-agent publishing and peering;
-   readiness gate; `eth0` enforcement. Within-namespace only, matching
-   today's policy.
+1. **Mesh.** `mycorrhizal` CNI plugin; host-agent data path, publishing and
+   peering; readiness gate; source validation and cross-node enforcement;
+   UDP port hashing on the VPC NIC. Within-namespace only, matching today's
+   policy.
 2. **Application keys.** Per-instance gpg-agent key-holder in the shim,
    vsock relay in `instance-base`, sops through the forwarded agent.
 3. **Ingress.** Per-instance keyless proxy; host-side issuance and renewal;
