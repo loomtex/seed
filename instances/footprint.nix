@@ -6,6 +6,26 @@
 { pkgs, ... }:
 
 {
+
+  import = [
+    ({ lib, ... }: {
+      services.logrotate.enable = false;
+
+      systemd.services = lib.genAttrs [
+        "systemd-journal-catalog-update"
+        "systemd-update-done"
+        "lastlog2-import"
+        #        "systemd-udevd"            # second stage
+        #        "systemd-logind"           # second stage; breaks login sessions
+      ] (_: { enable = false; });
+
+      systemd.sockets = lib.genAttrs [
+        "systemd-udevd-control"
+        "systemd-udevd-kernel"
+      ] (_: { enable = false; });
+    })
+  ];
+
   seed.size = "xs";
 
   systemd.timers.seed-footprint = {
