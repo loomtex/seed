@@ -7,7 +7,7 @@
 
 {
 
-  import = [
+  imports = [
     ({ lib, ... }: {
       services.logrotate.enable = false;
 
