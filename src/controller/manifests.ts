@@ -99,7 +99,10 @@ export function generateDeployment(
         },
         spec: {
           runtimeClassName: "kata",
-          terminationGracePeriodSeconds: 10,
+          // Upper bound only: the pod goes away as soon as systemd (StopSignal
+          // SIGRTMIN+3, lib/mkImage.nix) finishes halting. Stateful units
+          // (postgres checkpoint, etc.) need well over the old 10s.
+          terminationGracePeriodSeconds: 90,
           containers: [
             {
               name,

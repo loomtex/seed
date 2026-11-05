@@ -53,6 +53,10 @@ in pkgs.nix-snapshotter.buildImage {
   resolvedByNix = true;
   copyToRoot = rootfs;
   config.entrypoint = [ "${entrypoint}" ];
+  # systemd ignores SIGTERM as PID 1 (it re-executes on it); SIGRTMIN+3 is
+  # its "halt" signal, which runs an orderly shutdown of all units. The CRI
+  # StopContainer path sends the image's StopSignal to the guest's PID 1.
+  config.StopSignal = "SIGRTMIN+3";
   # Include the toplevel store path in the image config so that changes to the
   # NixOS closure produce a different image hash. Without this, buildImage with
   # resolvedByNix=true can produce identical output hashes when only the store
