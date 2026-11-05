@@ -308,19 +308,6 @@ in {
       (name: s: "d ${s.mountPoint} ${s.mode} ${s.user} ${s.group} -")
       cfg.storage;
 
-    # Open firewall for exposed ports
-    networking.firewall.allowedTCPPorts =
-      lib.pipe enabledExpose [
-        (lib.filterAttrs (_: e: e.protocol != "udp"))
-        (lib.mapAttrsToList (_: e: e.port))
-      ];
-
-    networking.firewall.allowedUDPPorts =
-      lib.pipe enabledExpose [
-        (lib.filterAttrs (_: e: e.protocol == "udp" || e.protocol == "dns"))
-        (lib.mapAttrsToList (_: e: e.port))
-      ];
-
     # When ACME is enabled, configure security.acme and Caddy to use the
     # platform's embedded ACME endpoint. NixOS requires acceptTerms + email
     # even though our internal server doesn't use them (it proxies to LE).

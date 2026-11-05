@@ -78,7 +78,4 @@ in
       RestartSec = "5s";
     };
   };
-
-  networking.firewall.allowedTCPPorts = [ 22 53 80 443 ];
-  networking.firewall.allowedUDPPorts = [ 53 ];
 }

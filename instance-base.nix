@@ -164,6 +164,11 @@ in {
   # Kata handles networking via virtio-net + tc redirects
   networking.useDHCP = lib.mkDefault false;
 
+  # Traffic is filtered on the host (host-agent netpol), not in the guest.
+  # The guest kernel has no nf_tables or ip6tables, so the NixOS firewall
+  # could never start here anyway.
+  networking.firewall.enable = lib.mkDefault false;
+
   # k8s service DNS (CoreDNS) — enables service name resolution + external DNS
   networking.nameservers = lib.mkDefault [ "10.43.0.10" ];
 

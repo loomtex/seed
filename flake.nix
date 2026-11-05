@@ -59,6 +59,11 @@
           echo 'CONFIG_TCG_CRB=y' >> .config
           echo 'CONFIG_TCG_TPM2_HMAC=y' >> .config
 
+          # POSIX ACLs + xattrs on tmpfs (/run): resolvconf and systemd setfacl
+          # their runtime dirs and fail with EOPNOTSUPP without them
+          sed -i 's/^# CONFIG_TMPFS_POSIX_ACL is not set$/CONFIG_TMPFS_POSIX_ACL=y/' .config
+          sed -i 's/^# CONFIG_TMPFS_XATTR is not set$/CONFIG_TMPFS_XATTR=y/' .config
+
           # Resolve new dependencies
           make olddefconfig
 
