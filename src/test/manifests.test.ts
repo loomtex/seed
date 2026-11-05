@@ -76,6 +76,11 @@ describe("generateDeployment", () => {
     assert.equal(dep.spec?.template?.spec?.runtimeClassName, "kata");
   });
 
+  it("does not mount a ServiceAccount token", () => {
+    const meta = makeMeta();
+    assert.equal(dep.spec?.template?.spec?.automountServiceAccountToken, false);
+  });
+
   it("includes Kata annotations on pod template for VM sizing", () => {
     const meta = makeMeta({ resources: { vcpus: 4, memory: 4096 } });
     const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);

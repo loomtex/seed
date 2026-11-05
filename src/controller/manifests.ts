@@ -99,6 +99,10 @@ export function generateDeployment(
         },
         spec: {
           runtimeClassName: "kata",
+          // Instances have no use for a k8s token, and its mount at
+          // /var/run/secrets makes /var/run a real directory, not NixOS's
+          // symlink to /run, which breaks nsncd's socket under ProtectSystem.
+          automountServiceAccountToken: false,
           // Upper bound only: the pod goes away as soon as systemd (StopSignal
           // SIGRTMIN+3, lib/mkImage.nix) finishes halting. Stateful units
           // (postgres checkpoint, etc.) need well over the old 10s.
