@@ -47,15 +47,23 @@ export interface ExecRequest {
   mounts?: Record<string, string>; // tag → mountPoint (for guest-side mounting)
 }
 
+/** The VM never became usable, so nothing ran in it: safe to retry. */
+export class VmUnavailableError extends Error {}
+
+const CLH_TIMEOUT_MS = 30_000;
+
 /**
  * Make an HTTP request to CLH's unix socket API.
  * CLH exposes its API on a unix socket at <workDir>/clh-api.sock.
+ * A CLH that stops answering (seen on vm.resume) must fail the request:
+ * without a timeout the slot and its caller wait forever.
  */
-function clhRequest(
+export function clhRequest(
   socketPath: string,
   method: string,
   path: string,
   body?: object,
+  timeoutMs = CLH_TIMEOUT_MS,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const encoded = body ? JSON.stringify(body) : undefined;
@@ -86,6 +94,9 @@ function clhRequest(
       });
     });
 
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`CLH ${method} ${path} timed out after ${timeoutMs}ms`));
+    });
     req.on("error", reject);
     if (encoded) req.write(encoded);
     req.end();
@@ -341,7 +352,7 @@ export class VmInstance {
       5_000,
     );
     if (!socketReady) {
-      throw new Error(`vsock socket not ready: ${this.vsockSocket}`);
+      throw new VmUnavailableError(`vsock socket not ready: ${this.vsockSocket}`);
     }
 
     // Retry CONNECT until the guest listener is ready
@@ -351,7 +362,9 @@ export class VmInstance {
         try {
           return await this.vsockConnect(6001);
         } catch (err) {
-          if (i === maxRetries - 1) throw err;
+          if (i === maxRetries - 1) {
+            throw new VmUnavailableError(err instanceof Error ? err.message : String(err), { cause: err });
+          }
           await sleep(200);
         }
       }

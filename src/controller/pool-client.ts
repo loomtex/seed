@@ -11,7 +11,7 @@
 // - nix fetcher cache from host (flake input resolution)
 // - NIX_REMOTE="" (no daemon — eval only)
 
-import { log } from "../shared/kube.js";
+import { log, TransientApiError } from "../shared/kube.js";
 import type { BuildResult, SeedMeta } from "../shared/types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -32,19 +32,29 @@ interface ExecResponse {
   stderr: string;
 }
 
-/** Execute a command in a pool VM. */
-async function poolExec(
+/**
+ * Execute a command in a pool VM. Pool infrastructure failures (unreachable,
+ * or 503: no VM came up, so nothing ran) throw TransientApiError so the
+ * reconcile is retried with backoff instead of waiting for the next push.
+ */
+export async function poolExec(
   poolUrl: string,
   request: ExecRequest,
 ): Promise<ExecResponse> {
-  const resp = await fetch(`${poolUrl}/exec`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${poolUrl}/exec`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+  } catch (err) {
+    throw new TransientApiError(`pool manager unreachable: ${err}`, { cause: err });
+  }
 
   if (!resp.ok) {
-    throw new Error(`pool manager returned ${resp.status}: ${await resp.text()}`);
+    const msg = `pool manager returned ${resp.status}: ${await resp.text()}`;
+    throw resp.status === 503 ? new TransientApiError(msg) : new Error(msg);
   }
 
   return (await resp.json()) as ExecResponse;

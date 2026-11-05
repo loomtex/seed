@@ -9,7 +9,7 @@
 
 import { mkdir, rm, cp } from "node:fs/promises";
 import { log } from "../shared/kube.js";
-import { VmInstance, type VmConfig, type MountSpec, type ExecRequest, type ExecResult } from "./vm.js";
+import { VmInstance, VmUnavailableError, type VmConfig, type MountSpec, type ExecRequest, type ExecResult } from "./vm.js";
 
 const COMPONENT = "pool-manager";
 
@@ -112,25 +112,29 @@ export class Pool {
       const vm = new VmInstance(this.config, slot.id);
       slot.vm = vm;
 
-      // 1. Start virtiofsd for each mount
-      const fsSockets: { tag: string; socket: string }[] = [];
-      for (const mount of mounts) {
-        const socket = await vm.startVirtiofsd(mount.tag, mount.hostPath);
-        fsSockets.push({ tag: mount.tag, socket });
+      try {
+        // 1. Start virtiofsd for each mount
+        const fsSockets: { tag: string; socket: string }[] = [];
+        for (const mount of mounts) {
+          const socket = await vm.startVirtiofsd(mount.tag, mount.hostPath);
+          fsSockets.push({ tag: mount.tag, socket });
+        }
+
+        // 2. Restore CLH from slot's snapshot copy (VM starts paused)
+        await vm.restoreFromSnapshot(slot.dir);
+
+        // 3. Hotplug vsock + virtiofs devices (not in snapshot — per-slot paths)
+        await vm.addVsock();
+        for (const { tag, socket } of fsSockets) {
+          await vm.addFs(tag, socket);
+        }
+
+        // 4. Resume VM — guest phase 2 will mount nixstore,
+        //    command agent mounts the rest from request.mounts
+        await vm.resume();
+      } catch (err) {
+        throw new VmUnavailableError(`VM setup failed: ${err instanceof Error ? err.message : err}`, { cause: err });
       }
-
-      // 2. Restore CLH from slot's snapshot copy (VM starts paused)
-      await vm.restoreFromSnapshot(slot.dir);
-
-      // 3. Hotplug vsock + virtiofs devices (not in snapshot — per-slot paths)
-      await vm.addVsock();
-      for (const { tag, socket } of fsSockets) {
-        await vm.addFs(tag, socket);
-      }
-
-      // 4. Resume VM — guest phase 2 will mount nixstore,
-      //    command agent mounts the rest from request.mounts
-      await vm.resume();
 
       // 5. Build mount map for the guest command agent (excludes nixstore,
       //    which is mounted automatically by the init script)

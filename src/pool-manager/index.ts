@@ -18,7 +18,7 @@ import { readdir, realpath } from "node:fs/promises";
 import { log, loadKubeConfig, makeClients, type KubeClients } from "../shared/kube.js";
 import { LABELS } from "../shared/labels.js";
 import { Pool, type PoolConfig } from "./pool.js";
-import type { ExecRequest, MountSpec } from "./vm.js";
+import { VmUnavailableError, type ExecRequest, type MountSpec } from "./vm.js";
 
 /** Path to the host nix store. */
 const NIX_STORE_PATH = "/nix/store";
@@ -297,7 +297,9 @@ async function main(): Promise<void> {
 
       if (!res.headersSent) {
         const errorBody = JSON.stringify({ error: msg });
-        res.writeHead(500, {
+        // 503 = nothing ran, retry. 500 may be the workload's fault (e.g. an
+        // eval that hit its timeout), so the controller must not retry it.
+        res.writeHead(err instanceof VmUnavailableError ? 503 : 500, {
           "Content-Type": "application/json",
           "Content-Length": String(Buffer.byteLength(errorBody)),
         });
