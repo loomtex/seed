@@ -354,9 +354,6 @@
       zitadel = mkSeed (ns // { name = "zitadel"; module = ./instances/zitadel.nix; });
       postgres = mkSeed (ns // { name = "postgres"; module = ./instances/postgres.nix; });
       sandbox = mkSeed (ns // { name = "sandbox"; module = ./instances/sandbox.nix; });
-      footprint-base = mkSeed (ns // { name = "footprint-base"; module = ./instances/footprint.nix; });
-      footprint-stage1 = mkSeed (ns // { name = "footprint-stage1"; module = ./instances/footprint-stage1.nix; });
-      footprint-stage2 = mkSeed (ns // { name = "footprint-stage2"; module = ./instances/footprint-stage2.nix; });
     };
 
     # Controller + host agent TypeScript packages

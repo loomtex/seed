@@ -3,7 +3,6 @@
 # It runs no workload, so it measures the platform baseline. Stats are written
 # at 1 minute and 5 minutes after init starts, to show startup and settled use.
 # Add `imports = [ ./footprint.nix ];` to another instance to measure that one.
-# footprint-stage1.nix and footprint-stage2.nix layer unit trimming on top.
 { pkgs, ... }:
 
 {
