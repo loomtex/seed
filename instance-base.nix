@@ -194,9 +194,8 @@ in {
   # No polkit — headless instances don't need privilege negotiation
   security.polkit.enable = lib.mkDefault false;
 
-  # No nscd/nsncd — instances use /etc/resolv.conf + /etc/passwd directly.
-  # nsncd fails in Kata VMs and cascades to nss-lookup.target failure,
-  # breaking DNS resolution and user lookups for all services.
+  # No nscd/nsncd — instances use /etc/resolv.conf + /etc/passwd directly,
+  # so it would only be one more daemon per VM.
   services.nscd.enable = lib.mkDefault false;
   system.nssModules = lib.mkForce [];
 
