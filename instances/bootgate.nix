@@ -1,9 +1,10 @@
 # Seed bootgate instance — temporary boot-time measurement target
 #
 # Sized like the demo instances and deliberately unexposed (no Service, no
-# DNS). Reports boot metrics to the journal, which the log streamer carries to
-# kubectl logs, because Kata guests have no kubectl exec. Remove once the
-# single-store-mount gate has been decided.
+# DNS). Kata guests have no kubectl exec and the journal log streamer doesn't
+# survive every boot, so metrics go to a per-boot file in the instance's guest
+# TPM dir, readable from any node. Remove once the single-store-mount gate has
+# been decided.
 { pkgs, ... }:
 
 {
@@ -18,6 +19,8 @@
     after = [ "multi-user.target" ];
     path = [ pkgs.coreutils pkgs.gawk pkgs.gnugrep pkgs.systemd ];
     script = ''
+      exec >>"/seed/tpm/bootgate-$(cat /proc/sys/kernel/random/boot_id).log" 2>&1
+
       sample() {
         echo "BOOTGATE $1" \
           "wall=$(date +%s.%N)" \
