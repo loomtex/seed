@@ -31,6 +31,9 @@
       cut -d' ' -f1 /proc/uptime
 
       section "boot"
+      journalctl -b -o short-monotonic --no-pager | head -n 100
+      systemd-analyze critical-chain run-wrappers.mount
+      systemctl show -p After run-wrappers.mount
       systemd-analyze time
       systemd-analyze blame | head -n 30
       systemd-analyze critical-chain
