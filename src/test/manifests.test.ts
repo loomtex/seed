@@ -106,12 +106,13 @@ describe("generateDeployment", () => {
     assert.equal(nodeIpEnv?.valueFrom?.fieldRef?.fieldPath, "status.hostIP");
   });
 
-  it("has no volumes when no storage", () => {
+  it("has only the seed-ca volume when no storage", () => {
     const meta = makeMeta({ storage: {} });
     const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
 
-    assert.equal(dep.spec?.template?.spec?.volumes, undefined);
-    assert.equal(dep.spec?.template?.spec?.containers[0].volumeMounts, undefined);
+    const tmpl = dep.spec?.template?.spec;
+    assert.deepEqual(tmpl?.volumes?.map((v) => v.name), ["seed-ca"]);
+    assert.deepEqual(tmpl?.containers[0].volumeMounts?.map((m) => m.name), ["seed-ca"]);
   });
 
   it("adds storage volumes and mounts", () => {
@@ -124,8 +125,8 @@ describe("generateDeployment", () => {
     const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta);
 
     const tmpl = dep.spec?.template?.spec;
-    assert.equal(tmpl?.volumes?.length, 2);
-    assert.equal(tmpl?.containers[0].volumeMounts?.length, 2);
+    assert.equal(tmpl?.volumes?.length, 3); // data, logs, seed-ca
+    assert.equal(tmpl?.containers[0].volumeMounts?.length, 3);
 
     const dataVol = tmpl?.volumes?.find((v) => v.name === "data");
     assert.ok(dataVol, "data volume should exist");
@@ -227,11 +228,11 @@ describe("generateDeployment", () => {
     const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, meta, { mode: "create" });
 
     const tmpl = dep.spec?.template?.spec;
-    assert.equal(tmpl?.volumes?.length, 2);
-    assert.equal(tmpl?.containers[0].volumeMounts?.length, 2);
+    assert.equal(tmpl?.volumes?.length, 3);
+    assert.equal(tmpl?.containers[0].volumeMounts?.length, 3);
 
     const volNames = tmpl?.volumes?.map((v) => v.name).sort();
-    assert.deepEqual(volNames, ["data", "tpm"]);
+    assert.deepEqual(volNames, ["data", "seed-ca", "tpm"]);
   });
 });
 
