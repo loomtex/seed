@@ -141,9 +141,11 @@ in
 
   config = lib.mkIf cfg.enable {
     # NSS catchall: any unknown username resolves to the configured user.
-    # Requires nscd for NixOS to wire the library path into glibc's search path.
+    # NixOS asserts nscd is enabled when nssModules is set, but the daemon
+    # itself isn't needed: sshd gets the module path via LD_LIBRARY_PATH.
     # instance-base.nix sets nssModules = mkForce [] — we override with our own mkForce.
     services.nscd.enable = true;
+    systemd.services.nscd.enable = lib.mkForce false;
     system.nssModules = lib.mkForce [ nssModule ];
     system.nssDatabases.passwd = lib.mkAfter [ cfg.nssName ];
 
