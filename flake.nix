@@ -354,6 +354,7 @@
       zitadel = mkSeed (ns // { name = "zitadel"; module = ./instances/zitadel.nix; });
       postgres = mkSeed (ns // { name = "postgres"; module = ./instances/postgres.nix; });
       sandbox = mkSeed (ns // { name = "sandbox"; module = ./instances/sandbox.nix; });
+      bootgate = mkSeed (ns // { name = "bootgate"; module = ./instances/bootgate.nix; });
     };
 
     # Controller + host agent TypeScript packages
