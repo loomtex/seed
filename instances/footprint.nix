@@ -3,28 +3,10 @@
 # It runs no workload, so it measures the platform baseline. Stats are written
 # at 1 minute and 5 minutes after init starts, to show startup and settled use.
 # Add `imports = [ ./footprint.nix ];` to another instance to measure that one.
+# footprint-stage1.nix and footprint-stage2.nix layer unit trimming on top.
 { pkgs, ... }:
 
 {
-
-  imports = [
-    ({ lib, ... }: {
-      services.logrotate.enable = false;
-
-      systemd.services = lib.genAttrs [
-        "systemd-journal-catalog-update"
-        "systemd-update-done"
-        "lastlog2-import"
-        "systemd-udevd"            # second stage
-        "systemd-logind"           # second stage; breaks login sessions
-      ] (_: { enable = lib.mkForce false; });
-
-      systemd.sockets = lib.genAttrs [
-        "systemd-udevd-control"
-        "systemd-udevd-kernel"
-      ] (_: { enable = false; });
-    })
-  ];
 
   seed.size = "xs";
 
