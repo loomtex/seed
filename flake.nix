@@ -532,8 +532,11 @@ done
 # Overlay: writable nix store (tmpfs upper for lock files + new paths,
 # virtiofs lower for existing store paths). Required because nix creates
 # .lock files in /nix/store/ during flake input resolution.
+# xino=off: with xattrs on the tmpfs upper, xino=auto looks up every entry on
+# readdir, a virtiofs round trip each. That made one glob of the store ~20x
+# slower, and the globs below run before the vsock listener starts.
 mount -t overlay overlay \
-  -o lowerdir=/tmp/nix-lower,upperdir=/tmp/store-upper,workdir=/tmp/store-work \
+  -o lowerdir=/tmp/nix-lower,upperdir=/tmp/store-upper,workdir=/tmp/store-work,xino=off \
   /nix/store
 
 # Find tools in nix store
