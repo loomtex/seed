@@ -31,6 +31,7 @@ seed/
 │   └── host-agent/
 │       ├── index.ts       # main loop (netpol + upgrade agent, independent)
 │       ├── netpol.ts      # per-node network policy (iptables)
+│       ├── netpol-rules.ts     # pure per-namespace rule building (policy lives here)
 │       ├── upgrade.ts     # node upgrade agent (Lease, cordon, drain, reboot)
 │       ├── upgrade-logic.ts    # pure decisions (lease math, resume, drain filter)
 │       ├── upgrade-schedule.ts # pure bucket/jitter/tz window computation

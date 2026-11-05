@@ -4,14 +4,15 @@
 // Chain hierarchy:
 //   FORWARD → SEED-FWD (jump at top of FORWARD)
 //     → SEED-FWD: conntrack ESTABLISHED/RELATED → ACCEPT
-//     → SEED-FWD: per-pod-IP jumps to SEED-NS-<hash> chains
-//     → SEED-FWD: known seed pod IP with no namespace match → DROP + LOG
-//   SEED-NS-<hash>: per-namespace rules
-//     → Allow DNS egress (kube-dns:53)
-//     → Allow intra-namespace
-//     → Allow exposed port ingress
-//     → Allow internet egress (non-cluster CIDRs)
+//     → SEED-FWD: -j SEED-OUT, then -j SEED-IN
+//   SEED-OUT: -s <local tenant pod IP> → SEED-NS-<hash>
+//   SEED-IN:  -d <local tenant pod IP> → SEED-NS-<hash>
+//   SEED-NS-<hash>: per-namespace rules (see netpol-rules.ts)
+//     → per source pod: DNS, IPv6 NDP, services, internet; then LOG + DROP
+//     → exposed port ingress
 //     → LOG + DROP (default deny)
+// A local tenant pod's traffic is decided by its own source block, so it can
+// reach other pods only through services, never by pod IP.
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -19,10 +20,15 @@ import * as k8s from "@kubernetes/client-node";
 import { log } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, ANNOTATIONS } from "../shared/labels.js";
 import type { SeedExposeEntry } from "../shared/types.js";
+import {
+  MAIN_CHAIN, OUT_CHAIN, IN_CHAIN, EGRESS_CHAIN, buildNamespaceRules,
+  type ExposedPort,
+} from "./netpol-rules.js";
 
 const COMPONENT = "netpol";
-const MAIN_CHAIN = "SEED-FWD";
-const EGRESS_CHAIN = "SEED-EGRESS-INET";
+// Chains holding per-pod jumps to namespace chains. SEED-FWD held them before
+// SEED-OUT/SEED-IN existed; reconcile still deletes any left there.
+const JUMP_PARENTS = [MAIN_CHAIN, OUT_CHAIN, IN_CHAIN];
 
 interface NetpolConfig {
   clusterCidrs: string[];   // e.g. ["10.42.0.0/16", "fd00::/56"]
@@ -36,11 +42,6 @@ interface PodInfo {
   instance: string;
   ips: string[];            // podIPs (IPv4 and/or IPv6)
   exposePorts: ExposedPort[];
-}
-
-interface ExposedPort {
-  port: number;
-  protocols: ("tcp" | "udp")[];
 }
 
 // Namespace state: all pods and their info
@@ -110,17 +111,19 @@ function restoreArg(a: string): string {
   return /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a;
 }
 
-/** Current SEED-FWD rules jumping to a chain, as -D lines for iptables-restore. */
+/** Current jumps to a chain (in any JUMP_PARENTS chain), as -D lines for iptables-restore. */
 async function jumpDeletes(chain: string, ipv6 = false): Promise<string[]> {
-  try {
-    const { stdout } = await ipt(["-S", MAIN_CHAIN], ipv6);
-    return stdout
-      .split("\n")
-      .filter((l) => l.startsWith(`-A ${MAIN_CHAIN} `) && l.endsWith(` -j ${chain}`))
-      .map((l) => "-D" + l.slice(2));
-  } catch {
-    return []; // SEED-FWD may not exist yet
+  const deletes: string[] = [];
+  for (const parent of JUMP_PARENTS) {
+    try {
+      const { stdout } = await ipt(["-S", parent], ipv6);
+      deletes.push(...stdout
+        .split("\n")
+        .filter((l) => l.startsWith(`-A ${parent} `) && l.endsWith(` -j ${chain}`))
+        .map((l) => "-D" + l.slice(2)));
+    } catch { /* parent may not exist yet */ }
   }
+  return deletes;
 }
 
 /** Check if a chain exists. */
@@ -175,18 +178,10 @@ async function listNsChains(ipv6 = false): Promise<string[]> {
   }
 }
 
-/** Delete SEED-FWD jumps to a namespace chain (bottom-up by line number). */
+/** Delete every jump to a namespace chain. */
 async function removeJumps(chain: string, ipv6 = false): Promise<void> {
-  try {
-    const { stdout } = await ipt(["-n", "--line-numbers", "-L", MAIN_CHAIN], ipv6);
-    const lines = stdout.split("\n").reverse();
-    for (const line of lines) {
-      if (line.includes(chain)) {
-        const num = line.match(/^(\d+)/)?.[1];
-        if (num) await ipt(["-D", MAIN_CHAIN, num], ipv6);
-      }
-    }
-  } catch { /* SEED-FWD may not exist */ }
+  const deletes = await jumpDeletes(chain, ipv6);
+  if (deletes.length > 0) await iptRestore(deletes, ipv6);
 }
 
 /** Remove a namespace chain and every jump to it. */
@@ -219,6 +214,24 @@ export async function initChains(cfg: NetpolConfig): Promise<void> {
       await ipt(["-I", MAIN_CHAIN, "1", ...ESTABLISHED_RULE], v6);
     }
 
+    // Then SEED-OUT before SEED-IN, ahead of any per-pod jumps an older
+    // host agent left in SEED-FWD (those keep working until each namespace
+    // is reconciled, which moves its jumps here in one transaction).
+    await ensureChain(OUT_CHAIN, v6);
+    await ensureChain(IN_CHAIN, v6);
+    const { stdout } = await ipt(["-S", MAIN_CHAIN], v6);
+    const fwd = stdout.split("\n").filter((l) => l.startsWith(`-A ${MAIN_CHAIN} `));
+    const outAt = fwd.indexOf(`-A ${MAIN_CHAIN} -j ${OUT_CHAIN}`);
+    const inAt = fwd.indexOf(`-A ${MAIN_CHAIN} -j ${IN_CHAIN}`);
+    if (outAt !== 1 || inAt !== 2) {
+      await iptRestore([
+        ...(outAt >= 0 ? [`-D ${MAIN_CHAIN} -j ${OUT_CHAIN}`] : []),
+        ...(inAt >= 0 ? [`-D ${MAIN_CHAIN} -j ${IN_CHAIN}`] : []),
+        `-I ${MAIN_CHAIN} 2 -j ${OUT_CHAIN}`,
+        `-I ${MAIN_CHAIN} 3 -j ${IN_CHAIN}`,
+      ], v6);
+    }
+
     // Internet egress chain (shared across namespaces)
     await ensureChain(EGRESS_CHAIN, v6);
     await ipt(["-F", EGRESS_CHAIN], v6);
@@ -240,94 +253,34 @@ async function reconcileNamespace(ns: string): Promise<void> {
   const state = namespaces.get(ns);
   const chain = nsChainName(ns);
 
-  // Collect all pod IPs in this namespace
-  const allIps: string[] = [];
-  if (state) {
-    for (const pod of state.pods.values()) {
-      allIps.push(...pod.ips);
-    }
-  }
+  const pods = state ? [...state.pods.values()] : [];
 
   for (const v6 of [false, true]) {
-    const ips = allIps.filter((ip) => v6 ? ip.includes(":") : !ip.includes(":"));
-
     // Remove existing jumps to this chain in the same transaction as the
     // rebuild. If another writer (e.g. the previous host-agent pod during a
     // roll) changed them since we read, a -D fails, the whole transaction is
     // rejected, and the retry re-reads: no duplicates, no half-applied state.
     const deletes = await jumpDeletes(chain, v6);
 
+    const { rules, outJumps, inJumps } = buildNamespaceRules(ns, chain, pods, config, v6);
+
     // If no pods for this IP family, remove the chain
-    if (ips.length === 0) {
+    if (outJumps.length === 0) {
       if (deletes.length > 0 || await chainExists(chain, v6)) {
         await iptRestore([`:${chain} - [0:0]`, ...deletes, `-X ${chain}`], v6);
       }
       continue;
     }
 
-    const rules: string[][] = [];
-    const dnsIp = config.dnsIp;
-    const dnsMatch = v6 ? dnsIp.includes(":") : !dnsIp.includes(":");
-    const svcCidrsForFamily = v6
-      ? config.serviceCidrs.filter(c => c.includes(":"))
-      : config.serviceCidrs.filter(c => !c.includes(":"));
-
-    for (const ip of ips) {
-      // 1. DNS egress — match on original destination (pre-DNAT) since kube-proxy
-      // DNATs service IP to real coredns pod IP before the FORWARD chain
-      if (dnsMatch) {
-        rules.push(["-s", ip, "-p", "udp", "--dport", "53",
-          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"]);
-        rules.push(["-s", ip, "-p", "tcp", "--dport", "53",
-          "-m", "conntrack", "--ctorigdst", dnsIp, "-j", "ACCEPT"]);
-      }
-
-      // 2. Intra-namespace (src=this pod, dst=any pod in namespace)
-      for (const dstIp of ips) {
-        if (dstIp !== ip) rules.push(["-s", ip, "-d", dstIp, "-j", "ACCEPT"]);
-      }
-
-      // 3. Exposed port ingress
-      if (state) {
-        for (const pod of state.pods.values()) {
-          if (!pod.ips.includes(ip)) continue;
-          for (const ep of pod.exposePorts) {
-            for (const proto of ep.protocols) {
-              rules.push(["-d", ip, "-p", proto, "--dport", String(ep.port), "-j", "ACCEPT"]);
-            }
-          }
-        }
-      }
-
-      // 4. Cluster service egress — allow access to service CIDRs (pre-DNAT).
-      // This permits reaching services in other namespaces (e.g. seed-system controller)
-      // while still blocking direct pod-to-pod cross-namespace traffic.
-      // Uses conntrack original dst since kube-proxy DNATs before FORWARD.
-      for (const cidr of svcCidrsForFamily) {
-        rules.push(["-s", ip, "-m", "conntrack", "--ctorigdst", cidr, "-j", "ACCEPT"]);
-      }
-
-      // 5. Internet egress
-      rules.push(["-s", ip, "-j", EGRESS_CHAIN]);
-    }
-
-    // 6. LOG + DROP (default deny)
-    rules.push(["-j", "LOG", "--log-prefix", `SEED-DROP ${ns.slice(0, 12)}: `,
-      "-m", "limit", "--limit", "10/min"]);
-    rules.push(["-j", "DROP"]);
-
     // One transaction: declare (create or flush) the chain, fill it, swap the
-    // SEED-FWD jumps (jumps reference specific pod IPs so non-seed traffic
-    // passes through). Traffic from OR to a seed pod goes to its namespace chain.
-    const jumps: string[][] = [];
-    for (const ip of ips) {
-      jumps.push(["-s", ip, "-j", chain], ["-d", ip, "-j", chain]);
-    }
+    // jumps (they reference specific pod IPs so non-seed traffic passes
+    // through).
     await iptRestore([
       `:${chain} - [0:0]`,
       ...rules.map((r) => [`-A ${chain}`, ...r.map(restoreArg)].join(" ")),
       ...deletes,
-      ...jumps.map((j) => [`-A ${MAIN_CHAIN}`, ...j].join(" ")),
+      ...outJumps.map((j) => [`-A ${OUT_CHAIN}`, ...j].join(" ")),
+      ...inJumps.map((j) => [`-A ${IN_CHAIN}`, ...j].join(" ")),
     ], v6);
   }
 
@@ -480,9 +433,13 @@ export async function cleanupAll(): Promise<void> {
       }
     } catch { /* ok */ }
 
-    // Flush SEED-FWD first so nothing references the namespace chains
+    // Flush the jump chains first so nothing references the namespace chains
     const hasMain = await chainExists(MAIN_CHAIN, v6);
     if (hasMain) await ipt(["-F", MAIN_CHAIN], v6);
+    const jumpChains: string[] = [];
+    for (const c of [OUT_CHAIN, IN_CHAIN]) {
+      if (await chainExists(c, v6)) { await ipt(["-F", c], v6); jumpChains.push(c); }
+    }
 
     for (const chain of await listNsChains(v6)) {
       await ipt(["-F", chain], v6);
@@ -490,6 +447,7 @@ export async function cleanupAll(): Promise<void> {
       removed = true;
     }
 
+    for (const c of jumpChains) { await ipt(["-X", c], v6); removed = true; }
     if (hasMain) { await ipt(["-X", MAIN_CHAIN], v6); removed = true; }
 
     if (await chainExists(EGRESS_CHAIN, v6)) {
@@ -503,7 +461,7 @@ export async function cleanupAll(): Promise<void> {
 }
 
 /**
- * Remove SEED-NS-* chains (and their SEED-FWD jumps) for namespaces with no
+ * Remove SEED-NS-* chains (and their jumps) for namespaces with no
  * pods on this node. Run once after the informer's initial list: rules are
  * left in place across restarts, so namespaces whose pods all went away
  * while no host agent was running would otherwise keep stale per-IP jumps
