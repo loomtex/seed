@@ -15,8 +15,8 @@
         "systemd-journal-catalog-update"
         "systemd-update-done"
         "lastlog2-import"
-        #        "systemd-udevd"            # second stage
-        #        "systemd-logind"           # second stage; breaks login sessions
+        "systemd-udevd"            # second stage
+        "systemd-logind"           # second stage; breaks login sessions
       ] (_: { enable = lib.mkForce false; });
 
       systemd.sockets = lib.genAttrs [
