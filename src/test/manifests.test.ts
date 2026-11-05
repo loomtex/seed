@@ -77,7 +77,7 @@ describe("generateDeployment", () => {
   });
 
   it("does not mount a ServiceAccount token", () => {
-    const meta = makeMeta();
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, makeMeta());
     assert.equal(dep.spec?.template?.spec?.automountServiceAccountToken, false);
   });
 
