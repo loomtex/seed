@@ -8,3 +8,4 @@ infra/legacy/node_modules/
 eval-results.json
 eval-results/
 .seed-identity-key
+instances/shell-tui/tui
