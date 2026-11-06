@@ -24,7 +24,7 @@
       ];
     };
 
-    mkInstance = import ./lib/mkInstance.nix { inherit nixpkgs self; };
+    mkInstance = import ./lib/mkInstance.nix { inherit nixpkgs; seed = self; };
     mkImage = import ./lib/mkImage.nix { inherit pkgs; };
     mkSeed = import ./lib/mkSeed.nix { inherit mkInstance mkImage; };
   in {

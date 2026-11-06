@@ -111,9 +111,10 @@ in {
       default = null;
       internal = true;
       description = ''
-        The k8s namespace this instance runs in. Platform-assigned, derived
-        from the flake's .seed-identity (IPNS CID). Set by mkInstance only —
-        instances cannot override this (prevents namespace spoofing).
+        The k8s namespace this instance runs in, derived from the flake's
+        .seed-identity (IPNS CID) when the flake passes self to mkSeed. Set by
+        mkInstance only — instances cannot override this, and the controller
+        rejects any value but the assigned namespace.
       '';
     };
 
