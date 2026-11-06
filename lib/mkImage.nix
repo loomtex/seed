@@ -37,13 +37,23 @@ let
     # trap: systemd sends SIGTERM to stray processes on startup — ignore it.
     # TERM=dumb: prevent journalctl from adding ANSI color codes to JSON.
     #
+    # Wait for the journal flush: journalctl -f started while only the /run
+    # journal exists never follows it to /var/log/journal, and sits silent
+    # forever. -b -n all replays the boot, which -f alone would cut to 10 lines.
+    # The wait is bounded so a failed flush unit can't cost us the logs.
+    #
     (
       trap "" TERM HUP PIPE
       # Write immediately to establish the pipe before entering the
       # sleep loop. The Kata agent may close idle pipes.
       echo '{"MESSAGE":"seed-log-streamer: waiting for journald","PRIORITY":"6","SYSLOG_IDENTIFIER":"seed"}' 2>/dev/null
       while [ ! -S /run/systemd/journal/stdout ]; do sleep 1; done
-      TERM=dumb exec journalctl -f --output=json --no-pager
+      i=0
+      until systemctl is-active --quiet systemd-journal-flush.service || [ $i -ge 150 ]; do
+        i=$((i+1))
+        sleep 0.2
+      done
+      TERM=dumb exec journalctl -b -n all -f --output=json --no-pager
     ) &
 
     exec ${toplevel}/init
