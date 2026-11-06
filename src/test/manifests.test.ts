@@ -76,6 +76,11 @@ describe("generateDeployment", () => {
     assert.equal(dep.spec?.template?.spec?.runtimeClassName, "kata");
   });
 
+  it("uses the instance name as the pod hostname", () => {
+    const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, makeMeta());
+    assert.equal(dep.spec?.template?.spec?.hostname, "web");
+  });
+
   it("does not mount a ServiceAccount token", () => {
     const dep = generateDeployment("web", "nix:0/nix/store/abc", gen, ns, makeMeta());
     assert.equal(dep.spec?.template?.spec?.automountServiceAccountToken, false);

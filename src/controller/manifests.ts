@@ -99,6 +99,9 @@ export function generateDeployment(
         },
         spec: {
           runtimeClassName: "kata",
+          // Stable across rolls, and matches networking.hostName. The runtime
+          // owns /etc/hostname, so the guest can't set this itself.
+          hostname: name,
           // Instances have no use for a k8s token, and its mount at
           // /var/run/secrets makes /var/run a real directory, not NixOS's
           // symlink to /run, which breaks nsncd's socket under ProtectSystem.

@@ -146,6 +146,17 @@ in {
   # the right closure size. Services needing /run/* dirs should use RuntimeDirectory.
   boot.isContainer = lib.mkDefault true;
 
+  # The runtime bind-mounts these over /etc, so NixOS can't replace them. The
+  # pod's hostname comes from the controller (spec.hostname = instance name).
+  environment.etc.hostname.enable = false;
+  environment.etc.hosts.enable = false;
+
+  assertions = [{
+    assertion = config.networking.extraHosts == ""
+      && lib.all (ip: lib.elem ip [ "127.0.0.1" "::1" "127.0.0.2" ]) (lib.attrNames config.networking.hosts);
+    message = "seed instances can't set networking.hosts or extraHosts: Kubernetes owns /etc/hosts.";
+  }];
+
   # No documentation — smaller closure
   documentation.enable = lib.mkDefault false;
 

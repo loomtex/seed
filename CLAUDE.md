@@ -425,7 +425,9 @@ Instances run NixOS inside Kata VMs with `boot.isContainer = true` (set in `inst
 
 **No `kubectl exec`**: Kata VMs don't support `kubectl exec` (cgroup attach fails). Interact with services via their network APIs or k8s port-forward, not exec.
 
-**No systemd journal in `kubectl logs`**: `kubectl logs` captures the container runtime's stdout/stderr pipe, not `/dev/console`. NixOS stage 2 boot messages appear (they go to console), but once systemd starts, its journal is internal. `ForwardToConsole` doesn't reach kubectl logs either. Debug via service APIs or readiness probes.
+**Journal in `kubectl logs`**: a background streamer in the `mkImage.nix` entrypoint holds the container's stdout and runs `journalctl -f` as JSON, after waiting for the journal flush (`-f` started before it never follows the journal to `/var/log/journal`). Stage 2 boot messages appear as plain text before it. `ForwardToConsole` doesn't reach kubectl logs.
+
+**`/etc/hostname`, `/etc/hosts`, `/etc/resolv.conf`**: the runtime bind-mounts these, so NixOS can't replace them. The controller sets the pod hostname to the instance name, and `instance-base.nix` rejects `networking.hosts` and `extraHosts`.
 
 **PVC ownership**: PVC filesystems are root-owned by default. If a service runs as a non-root user (e.g. pdns runs as `pdns`), add a tmpfiles rule to chown the mount point: `systemd.tmpfiles.rules = [ "d /seed/storage/data 0755 pdns pdns -" ];`
 
