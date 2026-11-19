@@ -3,9 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
-    # The 25.11 revision ATL1 ran before the 26.05 move. Ceph and the VM
-    # stack (kata, cloud-hypervisor, guest kernel, swtpm) stay on it until
-    # they get their own upgrades; see `pinned` in overlays.default.
+    # The 25.11 revision ATL1 ran before the 26.05 move. The VM stack (kata,
+    # cloud-hypervisor, guest kernel, swtpm) and k3s stay on it until they
+    # get their own upgrades; see `pinned` in overlays.default.
     nixpkgs-25-11.url = "github:nixos/nixpkgs/0c88e1f2bdb93d5999019e99cb0e61e1fe2af4c5";
     nix-snapshotter = {
       url = "github:joshperry/nix-snapshotter/k3s-1.34-support";
@@ -40,16 +40,10 @@
         overlays = [ nix-snapshotter.overlays.default ];
       };
     in {
-      # Held on nixos-25.11 (see the nixpkgs-25-11 input). Ceph 19 -> 20 is a
-      # major cluster upgrade, the kata patches don't apply to 3.29 yet, and
-      # nix-snapshotter's k3s overlay has no vendorHash for 26.05's 1.34.11.
+      # Held on nixos-25.11 (see the nixpkgs-25-11 input). The kata patches
+      # don't apply to 3.29 yet, and nix-snapshotter's k3s overlay has no
+      # vendorHash for 26.05's 1.34.11.
       k3s = pinned.k3s;
-      ceph = pinned.ceph;
-      # 26.05's Ceph 20 (Tentacle), for the daemon-by-daemon upgrade in
-      # infra/profiles/seed-ceph.nix (tentacleDaemons).
-      ceph-tentacle = prev.ceph;
-      ceph-client = pinned.ceph-client;
-      ceph-csi = pinned.ceph-csi;
       cloud-hypervisor = pinned.cloud-hypervisor;
 
       # Custom guest kernel: kata's minimal config + TPM 2.0 CRB support

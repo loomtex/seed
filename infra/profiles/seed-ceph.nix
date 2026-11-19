@@ -12,12 +12,6 @@ let
   osdId = nodeCeph.osdId;
   osdDevice = nodeCeph.osdDevice;
   ceph = pkgs.ceph;
-  # Ceph 19 -> 20 (Tentacle): daemon types already moved, added one rollout at
-  # a time in the order the upgrade notes require (mon, mgr, osd, then mds
-  # with its standbys stopped). Bootstrap scripts and clients stay on `ceph`
-  # until every daemon runs 20.
-  tentacleDaemons = [ "mon" "mgr" "osd" "mds" ];
-  daemonPackage = type: if lib.elem type tentacleDaemons then pkgs.ceph-tentacle else ceph;
   # Slash-separated MON addresses for kernel CephFS mount (mon_addr option).
   # Use port 6789 (v1/v2 dual-mode) — the kernel CephFS client auto-negotiates.
   monAddrOption = lib.concatStringsSep "/" (
@@ -36,8 +30,9 @@ in {
       fsid = clusterCeph.fsid;
       monHost = clusterCeph.monHost;
       monInitialMembers = clusterCeph.monInitialMembers;
-      # The default is pkgs.ceph's; the mgr must load its own version's modules.
-      mgrModulePath = "${(daemonPackage "mgr").lib}/lib/ceph/mgr";
+      # The default is pkgs.ceph's; the mgr must load its own version's modules
+      # (a 20 mgr on 19's modules fails orchestrator/volumes/nfs).
+      mgrModulePath = "${config.services.ceph.mgr.package.lib}/lib/ceph/mgr";
     };
 
     extraConfig = {
@@ -52,22 +47,18 @@ in {
 
     mon = {
       enable = true;
-      package = daemonPackage "mon";
       daemons = [ hostname ];
     };
     mgr = {
       enable = true;
-      package = daemonPackage "mgr";
       daemons = [ hostname ];
     };
     osd = {
       enable = true;
-      package = daemonPackage "osd";
       daemons = [ osdId ];
     };
     mds = {
       enable = true;
-      package = daemonPackage "mds";
       daemons = [ hostname ];
     };
   };
@@ -75,17 +66,17 @@ in {
   # OSD service override: ceph-volume activation for dmcrypt.
   # dmcrypt OSDs require both OSD ID and OSD FSID for activation.
   # The FSID is generated at prepare time, so we look it up at runtime.
-  systemd.services."ceph-osd-${osdId}" = let osdCeph = daemonPackage "osd"; in {
+  systemd.services."ceph-osd-${osdId}" = {
     serviceConfig.ExecStartPre = lib.mkForce [
       ("!" + pkgs.writeShellScript "ceph-osd-${osdId}-activate" ''
-        OSD_FSID=$(${osdCeph.out}/bin/ceph-volume lvm list ${osdId} --format json \
+        OSD_FSID=$(${ceph.out}/bin/ceph-volume lvm list ${osdId} --format json \
           | ${pkgs.jq}/bin/jq -r '."${osdId}"[0].tags["ceph.osd_fsid"]')
-        exec ${osdCeph.out}/bin/ceph-volume lvm activate --bluestore ${osdId} "$OSD_FSID" --no-systemd
+        exec ${ceph.out}/bin/ceph-volume lvm activate --bluestore ${osdId} "$OSD_FSID" --no-systemd
       '')
-      "${osdCeph.lib}/libexec/ceph/ceph-osd-prestart.sh --id ${osdId} --cluster ceph"
+      "${ceph.lib}/libexec/ceph/ceph-osd-prestart.sh --id ${osdId} --cluster ceph"
     ];
     serviceConfig.ExecStopPost = [
-      "!${osdCeph.out}/bin/ceph-volume lvm deactivate ${osdId}"
+      "!${ceph.out}/bin/ceph-volume lvm deactivate ${osdId}"
     ];
     unitConfig.ConditionPathExists = lib.mkForce [];
     path = with pkgs; [ util-linux lvm2 cryptsetup ];
