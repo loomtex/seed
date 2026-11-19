@@ -6,7 +6,7 @@
 #
 # Also configures the VPC NIC in the initrd for nodes that use LUKS
 # auto-unlock via Clevis/Tang over the VPC network.
-{ config, lib, pkgs, ... }:
+{ config, options, lib, pkgs, ... }:
 
 let
   vpcData = import ../data/vpc.nix;
@@ -37,13 +37,17 @@ in {
     description = "Name of the VPC NIC. When set with IPv6, forces flannel VXLAN to use this interface.";
   };
 
-  config = lib.mkIf (cfg.vpcAddress != null) {
-    # Force flannel VXLAN to use the VPC NIC so IPv6 tunnels go over VPC
-    # instead of public addresses. Without this, flannel auto-detects the
-    # public IPv6 and cross-node pod traffic fails.
+  config = lib.mkIf (cfg.vpcAddress != null) (lib.mkMerge [
+  # Force flannel VXLAN to use the VPC NIC so IPv6 tunnels go over VPC
+  # instead of public addresses. Without this, flannel auto-detects the
+  # public IPv6 and cross-node pod traffic fails. Only k3s nodes import
+  # seed's node module; puncher and stake use this profile without it.
+  (lib.optionalAttrs (options.seed ? k3s) {
     seed.k3s.extraFlags = lib.mkIf (cfg.vpcNic != null && cfg.vpcIpv6 != null) [
       "--flannel-iface" cfg.vpcNic
     ];
+  })
+  {
     # --- Runtime: auto-detect VPC NIC and assign static IP ---
     systemd.services.seed-vpc = {
       description = "Configure Vultr VPC network interface";
@@ -111,5 +115,6 @@ in {
 
     # Ensure common VPC NIC drivers are available in initrd
     boot.initrd.availableKernelModules = [ "virtio_net" "igb" ];
-  };
+  }
+  ]);
 }
