@@ -105,6 +105,17 @@ in {
         description = "Additional flags passed to k3s.";
       };
 
+      clusterInterface = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "enp1s0f1";
+        description = ''
+          Interface that carries node-to-node traffic (etcd, MetalLB memberlist,
+          flannel VXLAN). When set, those ports are opened on it only; otherwise
+          on every interface, including a public one.
+        '';
+      };
+
       disableDefaults = lib.mkOption {
         type = lib.types.listOf (lib.types.enum [
           "traefik" "servicelb" "metrics-server" "coredns" "local-storage" "network-policy"
@@ -226,17 +237,24 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    # k3s cluster communication ports
+    # BGP peers with the upstream router, which may only be reachable
+    # publicly, so it isn't limited to the cluster interface.
     networking.firewall.allowedTCPPorts = lib.mkIf (cfg.role == "server") [
       179   # BGP (MetalLB speaker ↔ upstream router)
-      2379  # etcd client
-      2380  # etcd peer
-      7946  # MetalLB memberlist (speaker gossip)
     ];
-    networking.firewall.allowedUDPPorts = [
-      7946  # MetalLB memberlist (speaker gossip)
-      8472  # flannel VXLAN (cross-node pod traffic)
-    ];
+
+    # k3s cluster communication ports
+    networking.firewall.interfaces.${if cfg.k3s.clusterInterface != null then cfg.k3s.clusterInterface else "default"} = {
+      allowedTCPPorts = lib.optionals (cfg.role == "server") [
+        2379  # etcd client
+        2380  # etcd peer
+        7946  # MetalLB memberlist (speaker gossip)
+      ];
+      allowedUDPPorts = [
+        7946  # MetalLB memberlist (speaker gossip)
+        8472  # flannel VXLAN (cross-node pod traffic)
+      ];
+    };
 
     # Deploy MetalLB + RuntimeClass via kubectl apply (server only)
     seed.k8s.services.metallb = lib.mkIf (cfg.role == "server") {

@@ -197,6 +197,11 @@ let
           metadata.labels.app = "csi-rbdplugin-provisioner";
           spec = {
             serviceAccountName = "rbd-csi-provisioner";
+            # Host network like the node plugin: Ceph ports only accept the
+            # VPC NIC and lo, and pod traffic to its own node's MON would
+            # arrive on cni0.
+            hostNetwork = true;
+            dnsPolicy = "ClusterFirstWithHostNet";
             containers = [
               (provisioner.container {
                 args = [

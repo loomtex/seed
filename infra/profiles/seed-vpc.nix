@@ -46,6 +46,8 @@ in {
     seed.k3s.extraFlags = lib.mkIf (cfg.vpcNic != null && cfg.vpcIpv6 != null) [
       "--flannel-iface" cfg.vpcNic
     ];
+    # etcd, memberlist and VXLAN only on the VPC, never the public NIC.
+    seed.k3s.clusterInterface = lib.mkIf (cfg.vpcNic != null) cfg.vpcNic;
   })
   {
     # --- Runtime: auto-detect VPC NIC and assign static IP ---

@@ -346,13 +346,23 @@ in {
 
   # --- Firewall ---
 
-  networking.firewall.allowedTCPPorts = [
-    3300  # MON v2 (msgr2)
-    6789  # MON v1 (legacy compatibility)
-  ];
-  networking.firewall.allowedTCPPortRanges = [
-    { from = 6800; to = 7300; }  # OSD + MGR
-  ];
+  # VPC only. OSD/MDS/MGR bind 0.0.0.0, so opening these on every interface
+  # exposed them on the public address. Clients (kernel CephFS/RBD, ceph-csi)
+  # all run in the host network namespace: local daemons come in over lo,
+  # other nodes' over the VPC NIC.
+  assertions = [{
+    assertion = config.seed.vpcNic != null;
+    message = "seed-ceph: seed.vpcNic must be set (Ceph ports are opened on the VPC interface only)";
+  }];
+  networking.firewall.interfaces.${config.seed.vpcNic} = {
+    allowedTCPPorts = [
+      3300  # MON v2 (msgr2)
+      6789  # MON v1 (legacy compatibility)
+    ];
+    allowedTCPPortRanges = [
+      { from = 6800; to = 7300; }  # OSD + MGR + MDS
+    ];
+  };
 
   # --- k3s ordering: wait for Ceph before starting k3s ---
 
