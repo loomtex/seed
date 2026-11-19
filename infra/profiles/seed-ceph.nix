@@ -36,6 +36,8 @@ in {
       fsid = clusterCeph.fsid;
       monHost = clusterCeph.monHost;
       monInitialMembers = clusterCeph.monInitialMembers;
+      # The default is pkgs.ceph's; the mgr must load its own version's modules.
+      mgrModulePath = "${(daemonPackage "mgr").lib}/lib/ceph/mgr";
     };
 
     extraConfig = {
