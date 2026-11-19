@@ -24,6 +24,7 @@ let
       seed.nixosModules.zitadel
       seed.nixosModules.sops
       seed.nixosModules.ssh-auth
+      seed.nixosModules.nginx
       { networking.hostName = name; }
       { nixpkgs.overlays = [ seed.overlays.default ]; }
       module

@@ -134,6 +134,7 @@
       inherit system;
       modules = [
         sops-nix.nixosModules.sops
+        seed.nixosModules.nginx
         ./archetypes/stake/configuration.nix
         ./profiles/seed-vpc.nix
 

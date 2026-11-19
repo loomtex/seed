@@ -214,6 +214,9 @@
       # SSH any-key identity auth (used by seed-shell and silo)
       ssh-auth = ./ssh-auth.nix;
 
+      # nginx pinned to a release with the 2026 HTTP/2 RCE fixes
+      nginx = ./nginx.nix;
+
       # silo's git service on a plain NixOS host (local stand-in for VM tests)
       silo-standalone = ./instances/silo/standalone.nix;
 

@@ -77,7 +77,7 @@ in {
   services.nginx.virtualHosts."silo.loom.farm" = {
     locations."~ ^/([^/]+)/archive/([^/]+)\\.tar\\.gz$" = {
       extraConfig = ''
-        include ${pkgs.nginx}/conf/fastcgi_params;
+        include ${config.services.nginx.package}/conf/fastcgi_params;
         fastcgi_param SCRIPT_FILENAME "${siloArchiveCgi}";
         fastcgi_param REQUEST_URI $request_uri;
         fastcgi_pass unix:/run/fcgiwrap/fcgiwrap.sock;

@@ -15,6 +15,7 @@ let
 in {
   imports = [
     ../../ssh-auth.nix
+    ../../nginx.nix
     ./shell.nix
     ./hooks.nix
     ./git-http.nix

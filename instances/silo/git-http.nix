@@ -48,7 +48,7 @@ in {
         auth_request /_silo_auth;
         auth_request_set $silo_key_blob $upstream_http_x_silo_key_blob;
 
-        include ${pkgs.nginx}/conf/fastcgi_params;
+        include ${config.services.nginx.package}/conf/fastcgi_params;
         fastcgi_param SCRIPT_FILENAME "${pkgs.git}/libexec/git-core/git-http-backend";
         fastcgi_param GIT_PROJECT_ROOT ${reposDir};
         fastcgi_param GIT_HTTP_EXPORT_ALL "";
@@ -67,7 +67,7 @@ in {
           set $needs_auth 1;
         }
 
-        include ${pkgs.nginx}/conf/fastcgi_params;
+        include ${config.services.nginx.package}/conf/fastcgi_params;
         fastcgi_param SCRIPT_FILENAME "${pkgs.git}/libexec/git-core/git-http-backend";
         fastcgi_param GIT_PROJECT_ROOT ${reposDir};
         fastcgi_param GIT_HTTP_EXPORT_ALL "";
