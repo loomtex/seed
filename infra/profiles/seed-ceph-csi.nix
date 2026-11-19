@@ -72,6 +72,11 @@ in {
         echo "Pool k8s-rbd already exists"
       fi
 
+      # client.k8s (like client.cephfs) stays an `aes` key: the kernel RBD and
+      # CephFS clients only speak aes256k from Linux 7.0. Every other key in
+      # ATL1 is aes256k, and its mons refuse to create new aes keys
+      # (mon_auth_allow_insecure_key=false): recreating this one there needs
+      # that set back to true first.
       # Create CSI user with pre-generated key from sops.
       # ceph auth import replaces get-or-create because --key authenticates
       # the client, not the new user. Import a keyring with our key instead.
