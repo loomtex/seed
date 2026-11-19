@@ -1,15 +1,17 @@
+diff --git a/pkg/containerd-shim-v2/create.go b/pkg/containerd-shim-v2/create.go
+index 8e848ee8a..22b2590f2 100644
 --- a/pkg/containerd-shim-v2/create.go
 +++ b/pkg/containerd-shim-v2/create.go
-@@ -76,7 +76,7 @@
+@@ -75,7 +75,7 @@ func copyLayersToMounts(rootFs *virtcontainers.RootFs, spec *specs.Spec) error {
  
  func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*container, error) {
- 	rootFs := vc.RootFs{}
+ 	rootFs := virtcontainers.RootFs{}
 -	if len(r.Rootfs) == 1 {
 +	if len(r.Rootfs) >= 1 {
  		m := r.Rootfs[0]
  		rootFs.Source = m.Source
  		rootFs.Type = m.Type
-@@ -303,7 +303,7 @@
+@@ -308,7 +308,7 @@ func loadRuntimeConfig(s *service, r *taskAPI.CreateTaskRequest, anno map[string
  }
  
  func checkAndMount(s *service, r *taskAPI.CreateTaskRequest) (bool, error) {
@@ -18,7 +20,7 @@
  		m := r.Rootfs[0]
  
  		// Plug the block backed rootfs directly instead of mounting it.
-@@ -341,6 +341,7 @@
+@@ -350,6 +350,7 @@ func doMount(mounts []*containerd_types.Mount, rootfs string) error {
  	for _, rm := range mounts {
  		m := &mount.Mount{
  			Type:    rm.Type,
@@ -26,10 +28,11 @@
  			Source:  rm.Source,
  			Options: rm.Options,
  		}
-
+diff --git a/virtcontainers/mount_linux.go b/virtcontainers/mount_linux.go
+index 2fe1f32bc..518bc0690 100644
 --- a/virtcontainers/mount_linux.go
 +++ b/virtcontainers/mount_linux.go
-@@ -101,7 +101,26 @@
+@@ -101,7 +101,26 @@ func bindMountContainerRootfs(ctx context.Context, shareDir, cid, cRootFs string
  
  	rootfsDest := filepath.Join(shareDir, cid, rootfsDir)
  

@@ -1,64 +1,10 @@
-From fda6603f3520d95339d3b3d8b2e3c96a62f0c97b Mon Sep 17 00:00:00 2001
-From: Ada <ada@6bit.com>
-Date: Sat, 31 Oct 2026 17:55:26 -0600
-Subject: [PATCH] runtime: shim-owned swtpm for seed TPM sandboxes
-
-Sandboxes annotated with seed.loom.farm/tpm-mode (create|verify) get one
-swtpm owned by the shim, managed like virtiofsd. Before cloud-hypervisor
-starts, the shim:
-
-1. checks that swtpm_sentinel_path contains swtpm_expected_fsid, and
-   that the state dir is below the sentinel's dir on the same filesystem
-2. takes an exclusive flock on <state-dir>/.session-lock (up to
-   swtpm_lock_timeout); the lock fd is shared with swtpm so the lock is
-   held for as long as swtpm lives
-3. starts swtpm (seed:// backend, startup-clear, ctrl socket in the
-   sandbox dir, per-sandbox volatile dir, SWTPM_SEED_ALLOW_CREATE=1 only
-   in create mode) with Pdeathsig on a locked OS thread and its own
-   process group; create mode refuses an existing permall
-4. computes the TPM fingerprint over the swtpm ctrl + data channels:
-   SHA-256 of the marshaled TPMT_PUBLIC of the owner-hierarchy ECC P-256
-   SRK (TCG template, unique = 32+32 zero bytes)
-5. create: writes <state-dir>/tpm-fingerprint atomically; verify:
-   compares with seed.loom.farm/tpm-fingerprint
-6. closes its data channel and syncs on the ctrl channel so swtpm has
-   dropped the data fd before CLH sends CMD_SET_DATAFD; CLH's own
-   CMD_STOP/CMD_INIT then power-cycles the TPM
-
-swtpm dying after boot stops the VM (CLH never reconnects). On teardown
-swtpm gets SIGTERM, then SIGKILL, and only then is the lock released and
-the volatile dir and socket removed. The legacy tpm_socket annotation is
-unchanged; the two are mutually exclusive.
-
-New config keys (hypervisor.clh): swtpm_path, swtpm_sentinel_path,
-swtpm_expected_fsid, swtpm_lock_timeout.
-
-TPM2 marshaling (CreatePrimary, FlushContext, Startup) is implemented
-inline; kata vendors no TPM library.
-
-Co-Authored-By: Joshua Perry <josh@6bit.com>
----
- config/configuration-clh.toml.in              |  17 +
- pkg/katautils/config.go                       |  22 +
- pkg/oci/seed_tpm_test.go                      |  77 ++
- pkg/oci/utils.go                              |  38 +
- virtcontainers/clh.go                         |  53 +-
- virtcontainers/hypervisor.go                  |  11 +
- virtcontainers/pkg/annotations/annotations.go |   7 +
- virtcontainers/swtpm.go                       | 985 ++++++++++++++++++
- virtcontainers/swtpm_test.go                  | 719 +++++++++++++
- 9 files changed, 1927 insertions(+), 2 deletions(-)
- create mode 100644 src/runtime/pkg/oci/seed_tpm_test.go
- create mode 100644 src/runtime/virtcontainers/swtpm.go
- create mode 100644 src/runtime/virtcontainers/swtpm_test.go
-
 diff --git a/config/configuration-clh.toml.in b/config/configuration-clh.toml.in
-index 204b2fb70..a0b336d70 100644
+index 70d6caa08..6dc91e9e7 100644
 --- a/config/configuration-clh.toml.in
 +++ b/config/configuration-clh.toml.in
 @@ -22,6 +22,23 @@ image = "@IMAGEPATH@"
  #   - erofs
- rootfs_type=@DEFROOTFSTYPE@
+ rootfs_type = @DEFROOTFSTYPE@
  
 +# Seed shim-owned swtpm. Used only for sandboxes annotated with
 +# seed.loom.farm/tpm-mode (create|verify), seed.loom.farm/tpm-state-dir and,
@@ -77,16 +23,16 @@ index 204b2fb70..a0b336d70 100644
 +# Seconds to wait for the session lock.
 +#swtpm_lock_timeout = 120
 +
- # Enable confidential guest support.
- # Toggling that setting may trigger different hardware features, ranging
- # from memory encryption to both memory and CPU-state encryption and integrity.
+ # Enable running clh VMM as a non-root user.
+ # By default clh VMM run as root. When this is set to true, clh VMM process runs as
+ # a non-root random user. See documentation for the limitations of this mode.
 diff --git a/pkg/katautils/config.go b/pkg/katautils/config.go
-index 05c281937..38cf34304 100644
+index b42d611b2..c73fded68 100644
 --- a/pkg/katautils/config.go
 +++ b/pkg/katautils/config.go
-@@ -110,6 +110,10 @@ type hypervisor struct {
- 	SnpIdBlock                     string                    `toml:"snp_id_block"`
- 	SnpIdAuth                      string                    `toml:"snp_id_auth"`
+@@ -113,6 +113,10 @@ type hypervisor struct {
+ 	SnpGuestPolicy                 *uint64                   `toml:"snp_guest_policy"`
+ 	MeasurementAlgo                string                    `toml:"measurement_algo"`
  	TpmSocket                      string                    `toml:"tpm_socket"`
 +	SwtpmPath                      string                    `toml:"swtpm_path"`
 +	SwtpmSentinelPath              string                    `toml:"swtpm_sentinel_path"`
@@ -95,7 +41,7 @@ index 05c281937..38cf34304 100644
  	HypervisorPathList             []string                  `toml:"valid_hypervisor_paths"`
  	JailerPathList                 []string                  `toml:"valid_jailer_paths"`
  	VirtioFSDaemonList             []string                  `toml:"valid_virtio_fs_daemon_paths"`
-@@ -691,6 +695,20 @@ func (h hypervisor) getNetRateLimiterOpsOneTimeBurst() int64 {
+@@ -753,6 +757,20 @@ func (h hypervisor) getNetRateLimiterOpsOneTimeBurst() int64 {
  	return h.NetRateLimiterOpsOneTimeBurst
  }
  
@@ -116,7 +62,7 @@ index 05c281937..38cf34304 100644
  func (h hypervisor) getIOMMUPlatform() bool {
  	if h.IOMMUPlatform {
  		kataUtilsLogger.Info("IOMMUPlatform is enabled by default.")
-@@ -1109,6 +1127,10 @@ func newClhHypervisorConfig(h hypervisor) (vc.HypervisorConfig, error) {
+@@ -1237,6 +1255,10 @@ func newClhHypervisorConfig(h hypervisor) (vc.HypervisorConfig, error) {
  		DisableGuestSeLinux:            h.DisableGuestSeLinux,
  		NetRateLimiterBwMaxRate:        h.getNetRateLimiterBwMaxRate(),
  		TpmSocket:                      h.TpmSocket,
@@ -211,10 +157,10 @@ index 000000000..7e1aa9096
 +	}
 +}
 diff --git a/pkg/oci/utils.go b/pkg/oci/utils.go
-index 217ebeb4b..b0ef96ada 100644
+index 2b169eff6..13cfe3676 100644
 --- a/pkg/oci/utils.go
 +++ b/pkg/oci/utils.go
-@@ -578,6 +578,44 @@ func addHypervisorConfigOverrides(ocispec specs.Spec, config *vc.SandboxConfig,
+@@ -608,6 +608,44 @@ func addHypervisorConfigOverrides(ocispec specs.Spec, config *vc.SandboxConfig,
  		}
  	}
  
@@ -260,10 +206,10 @@ index 217ebeb4b..b0ef96ada 100644
  }
  
 diff --git a/virtcontainers/clh.go b/virtcontainers/clh.go
-index f83e431db..20ee2ed90 100644
+index 8b8c776ba..bfdc2f64b 100644
 --- a/virtcontainers/clh.go
 +++ b/virtcontainers/clh.go
-@@ -252,6 +252,7 @@ func (s *CloudHypervisorState) reset() {
+@@ -266,6 +266,7 @@ func (s *CloudHypervisorState) reset() {
  type cloudHypervisor struct {
  	console         console.Console
  	virtiofsDaemon  VirtiofsDaemon
@@ -271,7 +217,7 @@ index f83e431db..20ee2ed90 100644
  	APIClient       clhClient
  	ctx             context.Context
  	id              string
-@@ -565,7 +566,19 @@ func (clh *cloudHypervisor) CreateVM(ctx context.Context, id string, network Net
+@@ -609,7 +610,19 @@ func (clh *cloudHypervisor) CreateVM(ctx context.Context, id string, network Net
  	clh.vmconfig.Rng.SetIommu(clh.config.IOMMU)
  
  	// vTPM: pass swtpm socket to CLH for TPM 2.0 CRB device in guest
@@ -292,8 +238,8 @@ index f83e431db..20ee2ed90 100644
  		clh.vmconfig.Tpm = chclient.NewTpmConfig(clh.config.TpmSocket)
  	}
  
-@@ -707,6 +720,21 @@ func (clh *cloudHypervisor) StartVM(ctx context.Context, timeout int) error {
- 		defer label.SetProcessLabel("")
+@@ -748,6 +761,21 @@ func (clh *cloudHypervisor) StartVM(ctx context.Context, timeout int) error {
+ 		defer selinux.SetExecLabel("")
  	}
  
 +	// Seed: sentinel, session lock, swtpm, fingerprint check -- all before
@@ -314,7 +260,7 @@ index f83e431db..20ee2ed90 100644
  	err = clh.setupVirtiofsDaemon(ctx)
  	if err != nil {
  		return err
-@@ -731,10 +759,18 @@ func (clh *cloudHypervisor) StartVM(ctx context.Context, timeout int) error {
+@@ -776,10 +804,18 @@ func (clh *cloudHypervisor) StartVM(ctx context.Context, timeout int) error {
  	ctx, cancel := context.WithTimeout(ctx, bootTimeout*time.Second)
  	defer cancel()
  
@@ -334,7 +280,7 @@ index f83e431db..20ee2ed90 100644
  	clh.state.state = clhReady
  	return nil
  }
-@@ -1272,6 +1308,19 @@ func (clh *cloudHypervisor) terminate(ctx context.Context, waitOnly bool) (err e
+@@ -1434,6 +1470,19 @@ func (clh *cloudHypervisor) terminate(ctx context.Context, waitOnly bool) (err e
  		}
  	}()
  
@@ -355,10 +301,10 @@ index f83e431db..20ee2ed90 100644
  
  	if pidRunning && !waitOnly {
 diff --git a/virtcontainers/hypervisor.go b/virtcontainers/hypervisor.go
-index 615a0adc8..739a725d0 100644
+index a989a8dcf..e63664ec3 100644
 --- a/virtcontainers/hypervisor.go
 +++ b/virtcontainers/hypervisor.go
-@@ -406,6 +406,17 @@ type HypervisorConfig struct {
+@@ -560,6 +560,17 @@ type HypervisorConfig struct {
  	// TpmSocket is the path to the swtpm socket for vTPM device passthrough via CLH
  	TpmSocket string
  
@@ -377,10 +323,10 @@ index 615a0adc8..739a725d0 100644
  	// VMid is "" if the hypervisor is not created by the factory.
  	VMid string
 diff --git a/virtcontainers/pkg/annotations/annotations.go b/virtcontainers/pkg/annotations/annotations.go
-index c31733ad9..466369706 100644
+index adecfb62c..66b302dc6 100644
 --- a/virtcontainers/pkg/annotations/annotations.go
 +++ b/virtcontainers/pkg/annotations/annotations.go
-@@ -176,6 +176,13 @@ const (
+@@ -182,6 +182,13 @@ const (
  	// TpmSocket is a sandbox annotation to specify the swtpm socket path for vTPM device
  	TpmSocket = kataAnnotHypervisorPrefix + "tpm_socket"
  
@@ -2110,6 +2056,3 @@ index 000000000..c75d06cdf
 +	os.Stdout.Sync()
 +	select {}
 +}
--- 
-2.54.0
-

@@ -22,20 +22,25 @@ let
   # per-pod VM sizing via annotations (vCPUs, memory), plus the shim-owned
   # swtpm settings (the seed.loom.farm/tpm-* annotations themselves are not
   # io.katacontainers.* keys, so enable_annotations does not apply to them).
-  kataConfig = builtins.replaceStrings
-    [
-      ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params"]''
-      ''#swtpm_sentinel_path = "/var/lib/seed-controller/tpm/.seed-fs"''
-      ''#swtpm_expected_fsid = ""''
-      ''#swtpm_lock_timeout = 120''
-    ]
-    [
-      ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory", "tpm_socket"]''
-      ''swtpm_sentinel_path = "${cfg.tpm.sentinelPath}"''
-      (if cfg.tpm.expectedFsid == null then ''#swtpm_expected_fsid = ""'' else ''swtpm_expected_fsid = "${cfg.tpm.expectedFsid}"'')
-      ''swtpm_lock_timeout = ${toString cfg.tpm.lockTimeout}''
-    ]
-    (builtins.readFile "${pkgs.kata-runtime}/share/defaults/kata-containers/${hypervisorConfigFile}");
+  # Each edit must match the upstream file exactly; a kata bump that changes
+  # one fails evaluation instead of silently dropping VM sizing.
+  kataConfigUpstream = builtins.readFile "${pkgs.kata-runtime}/share/defaults/kata-containers/${hypervisorConfigFile}";
+  kataConfigEdits = [
+    { from = ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "kernel_verity_params"]'';
+      to = ''enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "kernel_verity_params", "default_vcpus", "default_memory", "default_maxvcpus", "default_maxmemory", "tpm_socket"]''; }
+    { from = ''#swtpm_sentinel_path = "/var/lib/seed-controller/tpm/.seed-fs"'';
+      to = ''swtpm_sentinel_path = "${cfg.tpm.sentinelPath}"''; }
+    { from = ''#swtpm_expected_fsid = ""'';
+      to = if cfg.tpm.expectedFsid == null then ''#swtpm_expected_fsid = ""'' else ''swtpm_expected_fsid = "${cfg.tpm.expectedFsid}"''; }
+    { from = ''#swtpm_lock_timeout = 120'';
+      to = ''swtpm_lock_timeout = ${toString cfg.tpm.lockTimeout}''; }
+  ];
+  kataConfigMissing = lib.filter (e: !lib.hasInfix e.from kataConfigUpstream) kataConfigEdits;
+  kataConfig =
+    if kataConfigMissing != [ ] then
+      throw "seed: ${hypervisorConfigFile} from kata-runtime ${pkgs.kata-runtime.version} no longer contains: ${lib.concatMapStringsSep "; " (e: e.from) kataConfigMissing}"
+    else
+      builtins.replaceStrings (map (e: e.from) kataConfigEdits) (map (e: e.to) kataConfigEdits) kataConfigUpstream;
 
   # MetalLB: bare-metal LoadBalancer implementation (L2/BGP)
   # Using FRR mode for IPv6 BGP support (native mode only supports IPv4 BGP)

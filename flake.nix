@@ -3,9 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
-    # The 25.11 revision ATL1 ran before the 26.05 move. The VM stack (kata,
-    # cloud-hypervisor, guest kernel, swtpm) and k3s stay on it until they
-    # get their own upgrades; see `pinned` in overlays.default.
+    # The 25.11 revision ATL1 ran before the 26.05 move. k3s stays on it
+    # until nix-snapshotter's overlay has a 1.34.11 vendorHash; see `pinned`
+    # in overlays.default.
     nixpkgs-25-11.url = "github:nixos/nixpkgs/0c88e1f2bdb93d5999019e99cb0e61e1fe2af4c5";
     nix-snapshotter = {
       url = "github:joshperry/nix-snapshotter/k3s-1.34-support";
@@ -40,25 +40,25 @@
         overlays = [ nix-snapshotter.overlays.default ];
       };
     in {
-      # Held on nixos-25.11 (see the nixpkgs-25-11 input). The kata patches
-      # don't apply to 3.29 yet, and nix-snapshotter's k3s overlay has no
-      # vendorHash for 26.05's 1.34.11.
+      # Held on nixos-25.11 (see the nixpkgs-25-11 input): nix-snapshotter's
+      # k3s overlay has no vendorHash for 26.05's 1.34.11.
       k3s = pinned.k3s;
-      cloud-hypervisor = pinned.cloud-hypervisor;
 
       # Custom guest kernel: kata's minimal config + TPM 2.0 CRB support
       # Upstream kata-images ships without CONFIG_TCG_TPM — we rebuild
       # the guest vmlinux from the same config with TPM options enabled.
-      kata-guest-kernel-tpm = pinned.stdenv.mkDerivation {
+      # Version and config number follow the kata release (versions.yaml,
+      # tools/packaging/kernel/kata_config_version).
+      kata-guest-kernel-tpm = final.stdenv.mkDerivation {
         pname = "kata-guest-kernel-tpm";
-        version = "6.12.22";
+        version = "6.18.15";
 
         src = final.fetchurl {
-          url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.22.tar.xz";
-          hash = "sha256-q0iACrSZhaeNIxiuisXyj9PhI+oXNX7yFJgQWlMzczY=";
+          url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.15.tar.xz";
+          hash = "sha256-fHFiFsPEE07Q3mkZVwHmd1d7vN05efMxwYKs0Gvy8XA=";
         };
 
-        nativeBuildInputs = with pinned; [
+        nativeBuildInputs = with final; [
           flex bison bc perl openssl elfutils
         ];
 
@@ -66,7 +66,7 @@
           runHook preConfigure
 
           # Start from kata's minimal guest kernel config
-          cp ${pinned.kata-runtime.passthru.kata-images}/share/kata-containers/config-6.12.22-151 .config
+          cp ${prev.kata-runtime.passthru.kata-images}/share/kata-containers/config-6.18.15-189 .config
           chmod +w .config
 
           # Enable TPM 2.0 support (CRB interface for CLH/swtpm)
@@ -82,6 +82,12 @@
 
           # Resolve new dependencies
           make olddefconfig
+
+          # The seds above match "is not set" lines; fail if a new kata config
+          # words them differently instead of shipping a guest without them.
+          for opt in TCG_TPM SECURITYFS TCG_CRB TCG_TPM2_HMAC TMPFS_POSIX_ACL TMPFS_XATTR; do
+            grep -qx "CONFIG_$opt=y" .config || { echo "CONFIG_$opt not enabled"; exit 1; }
+          done
 
           runHook postConfigure
         '';
@@ -157,7 +163,7 @@
       # IMPORTANT: This is a separate package, NOT an override of pkgs.swtpm.
       # Overriding swtpm globally would cascade: tpm2-tss (test dep on swtpm)
       # → systemd → zfs → ceph → everything, rebuilding the entire closure.
-      swtpm-seed = pinned.swtpm.overrideAttrs (old: {
+      swtpm-seed = prev.swtpm.overrideAttrs (old: {
         pname = "swtpm-seed";
         patches = (old.patches or []) ++ [
           ./patches/swtpm-seed-backend.patch
@@ -167,7 +173,7 @@
       # Zitadel v4 — nixpkgs is stuck on v2.71.7
       zitadel = final.callPackage ./pkgs/zitadel/package.nix {};
 
-      kata-runtime = pinned.kata-runtime.overrideAttrs (old: {
+      kata-runtime = prev.kata-runtime.overrideAttrs (old: {
         # Patch kata shim to support multi-mount rootfs from snapshotters
         # like nix-snapshotter that return overlay + bind mounts:
         # 1. Populate rootFs metadata from first mount even with multiple mounts
