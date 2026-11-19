@@ -16,7 +16,7 @@ let
   # a time in the order the upgrade notes require (mon, mgr, osd, then mds
   # with its standbys stopped). Bootstrap scripts and clients stay on `ceph`
   # until every daemon runs 20.
-  tentacleDaemons = [ "mon" "mgr" "osd" ];
+  tentacleDaemons = [ "mon" "mgr" "osd" "mds" ];
   daemonPackage = type: if lib.elem type tentacleDaemons then pkgs.ceph-tentacle else ceph;
   # Slash-separated MON addresses for kernel CephFS mount (mon_addr option).
   # Use port 6789 (v1/v2 dual-mode) — the kernel CephFS client auto-negotiates.
