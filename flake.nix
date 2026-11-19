@@ -46,9 +46,10 @@
       k3s = pinned.k3s;
       # age-plugin-tpm 1.0 still decrypts 0.3's format but encrypts in one 0.3
       # can't read, even to old age1tpm1 recipients. The controller encrypts
-      # EST challenges with its node's plugin, so guests (including tenants
-      # pinned to an older seed) must all have 1.0 before the controller does.
-      age-plugin-tpm = pinned.age-plugin-tpm;
+      # EST challenges with this until every guest (including tenants pinned
+      # to an older seed) has 1.0; then controller.nix goes back to
+      # age-plugin-tpm and this is dropped.
+      age-plugin-tpm_0_3 = pinned.age-plugin-tpm;
       ceph = pinned.ceph;
       ceph-client = pinned.ceph-client;
       ceph-csi = pinned.ceph-csi;
