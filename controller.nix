@@ -579,7 +579,7 @@ let
               { name = "SSL_CERT_FILE"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               { name = "GIT_SSL_CAINFO"; value = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; }
               # PATH: nix + git + coreutils (for nix eval/build)
-              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz pkgs.age pkgs.age-plugin-tpm_0_3 ]; }
+              { name = "PATH"; value = lib.makeBinPath [ pkgs.nix pkgs.git pkgs.coreutils pkgs.gnutar pkgs.gzip pkgs.xz pkgs.age pkgs.age-plugin-tpm ]; }
               { name = "SEED_SILO_HOST"; value = cfg.siloHost; }
               { name = "SEED_RECONCILE_CONCURRENCY"; value = toString cfg.reconcileConcurrency; }
             ] ++ lib.optional (cfg.ipv4Address != "") {

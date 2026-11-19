@@ -44,12 +44,6 @@
       # major cluster upgrade, the kata patches don't apply to 3.29 yet, and
       # nix-snapshotter's k3s overlay has no vendorHash for 26.05's 1.34.11.
       k3s = pinned.k3s;
-      # age-plugin-tpm 1.0 still decrypts 0.3's format but encrypts in one 0.3
-      # can't read, even to old age1tpm1 recipients. The controller encrypts
-      # EST challenges with this until every guest (including tenants pinned
-      # to an older seed) has 1.0; then controller.nix goes back to
-      # age-plugin-tpm and this is dropped.
-      age-plugin-tpm_0_3 = pinned.age-plugin-tpm;
       ceph = pinned.ceph;
       ceph-client = pinned.ceph-client;
       ceph-csi = pinned.ceph-csi;
