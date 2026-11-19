@@ -2,7 +2,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildNamespaceRules, EGRESS_CHAIN, type RulePod } from "../host-agent/netpol-rules.js";
+import {
+  buildNamespaceRules, buildEgressRules, EGRESS_CHAIN, HOST_RULES, OUT_CHAIN, type RulePod,
+} from "../host-agent/netpol-rules.js";
 
 const cfg = { serviceCidrs: ["10.43.0.0/16", "fd01::/108"], dnsIp: "10.43.0.10" };
 const chain = "SEED-NS-abcd1234";
@@ -83,5 +85,49 @@ describe("buildNamespaceRules", () => {
   it("emits DNS rules for IPv6 when the DNS IP is IPv6", () => {
     const r = buildNamespaceRules("s-test", chain, [web], { ...cfg, dnsIp: "fd01::a" }, true);
     assert.ok(r.rules.some((x) => x.includes("fd01::a")));
+  });
+});
+
+describe("buildEgressRules", () => {
+  const cluster = ["10.42.0.0/16", "fd00::/56"];
+  const svc = ["10.43.0.0/16", "fd01::/108"];
+  const v4 = buildEgressRules(cluster, svc, false);
+  const v6 = buildEgressRules(cluster, svc, true);
+  const returned = (rules: string[][]) => rules.filter((r) => r[0] === "-d").map((r) => r[1]);
+
+  it("returns this node's own addresses before anything is accepted", () => {
+    for (const rules of [v4, v6]) {
+      assert.deepEqual(rules[0], ["-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN"]);
+    }
+  });
+
+  it("returns the VPC, metadata service and other private ranges", () => {
+    for (const cidr of ["10.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16"]) {
+      assert.ok(returned(v4).includes(cidr), cidr);
+    }
+    for (const cidr of ["fc00::/7", "fe80::/10"]) assert.ok(returned(v6).includes(cidr), cidr);
+  });
+
+  it("returns the cluster and service CIDRs of its own family only", () => {
+    assert.deepEqual(returned(v4).slice(0, 2), ["10.42.0.0/16", "10.43.0.0/16"]);
+    assert.deepEqual(returned(v6).slice(0, 2), ["fd00::/56", "fd01::/108"]);
+    assert.ok(!returned(v4).some((c) => c.includes(":")));
+    assert.ok(!returned(v6).some((c) => !c.includes(":")));
+  });
+
+  it("accepts everything else last", () => {
+    for (const rules of [v4, v6]) {
+      assert.deepEqual(rules.at(-1), ["-j", "ACCEPT"]);
+      assert.equal(rules.filter((r) => r.at(-1) === "ACCEPT").length, 1);
+    }
+  });
+});
+
+describe("HOST_RULES", () => {
+  it("lets replies through, then sends everything to the per-pod blocks", () => {
+    assert.deepEqual(HOST_RULES, [
+      ["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"],
+      ["-j", OUT_CHAIN],
+    ]);
   });
 });

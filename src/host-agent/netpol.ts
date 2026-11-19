@@ -21,7 +21,8 @@ import { log } from "../shared/kube.js";
 import { LABELS, MANAGED_BY_VALUE, ANNOTATIONS } from "../shared/labels.js";
 import type { SeedExposeEntry } from "../shared/types.js";
 import {
-  MAIN_CHAIN, OUT_CHAIN, IN_CHAIN, EGRESS_CHAIN, buildNamespaceRules,
+  MAIN_CHAIN, OUT_CHAIN, IN_CHAIN, EGRESS_CHAIN, HOST_CHAIN, HOST_RULES,
+  buildNamespaceRules, buildEgressRules,
   type ExposedPort,
 } from "./netpol-rules.js";
 
@@ -232,17 +233,24 @@ export async function initChains(cfg: NetpolConfig): Promise<void> {
       ], v6);
     }
 
-    // Internet egress chain (shared across namespaces)
+    // Internet egress chain (shared across namespaces), replaced in one
+    // transaction so there's no window with it empty.
     await ensureChain(EGRESS_CHAIN, v6);
-    await ipt(["-F", EGRESS_CHAIN], v6);
+    await iptRestore([
+      `-F ${EGRESS_CHAIN}`,
+      ...buildEgressRules(cfg.clusterCidrs, cfg.serviceCidrs, v6)
+        .map((r) => `-A ${EGRESS_CHAIN} ${r.map(restoreArg).join(" ")}`),
+    ], v6);
 
-    // Block cluster-internal destinations in egress chain
-    const cidrs = v6 ? cfg.clusterCidrs.filter(c => c.includes(":")) : cfg.clusterCidrs.filter(c => !c.includes(":"));
-    const svcCidrs = v6 ? cfg.serviceCidrs.filter(c => c.includes(":")) : cfg.serviceCidrs.filter(c => !c.includes(":"));
-    for (const cidr of [...cidrs, ...svcCidrs]) {
-      await ipt(["-A", EGRESS_CHAIN, "-d", cidr, "-j", "RETURN"], v6);
+    // Tenant pods -> this node (INPUT): same per-namespace policy.
+    await ensureChain(HOST_CHAIN, v6);
+    await iptRestore([
+      `-F ${HOST_CHAIN}`,
+      ...HOST_RULES.map((r) => `-A ${HOST_CHAIN} ${r.map(restoreArg).join(" ")}`),
+    ], v6);
+    if (!(await jumpExists("INPUT", HOST_CHAIN, v6))) {
+      await ipt(["-I", "INPUT", "1", "-j", HOST_CHAIN], v6);
     }
-    await ipt(["-A", EGRESS_CHAIN, "-j", "ACCEPT"], v6);
   }
 
   log(COMPONENT, "iptables chains initialized");
@@ -432,6 +440,19 @@ export async function cleanupAll(): Promise<void> {
         }
       }
     } catch { /* ok */ }
+
+    // Remove the INPUT jump and HOST_CHAIN (it references OUT_CHAIN)
+    try {
+      while (await jumpExists("INPUT", HOST_CHAIN, v6)) {
+        await ipt(["-D", "INPUT", "-j", HOST_CHAIN], v6);
+        removed = true;
+      }
+    } catch { /* ok */ }
+    if (await chainExists(HOST_CHAIN, v6)) {
+      await ipt(["-F", HOST_CHAIN], v6);
+      await ipt(["-X", HOST_CHAIN], v6);
+      removed = true;
+    }
 
     // Flush the jump chains first so nothing references the namespace chains
     const hasMain = await chainExists(MAIN_CHAIN, v6);

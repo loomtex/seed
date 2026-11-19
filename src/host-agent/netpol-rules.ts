@@ -13,6 +13,17 @@ export const MAIN_CHAIN = "SEED-FWD";
 export const OUT_CHAIN = "SEED-OUT";
 export const IN_CHAIN = "SEED-IN";
 export const EGRESS_CHAIN = "SEED-EGRESS-INET";
+// Jumped from INPUT: a tenant pod's traffic to its own node gets the same
+// namespace chain as its forwarded traffic.
+export const HOST_CHAIN = "SEED-HOST";
+
+// Destinations that aren't the internet, beyond the cluster's own CIDRs:
+// the VPC and other private networks, link-local (cloud metadata service at
+// 169.254.169.254), loopback and CGNAT. Tenant traffic to them is dropped.
+export const NON_INTERNET_CIDRS = {
+  v4: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8"],
+  v6: ["fc00::/7", "fe80::/10", "::1/128"],
+};
 
 export interface ExposedPort {
   port: number;
@@ -36,6 +47,36 @@ export interface NamespaceRules {
 }
 
 const isV6 = (addr: string) => addr.includes(":");
+
+/**
+ * EGRESS_CHAIN contents for one IP family: RETURN (to the namespace chain's
+ * DROP) for this node's own addresses, the cluster and service CIDRs and
+ * every non-internet range; ACCEPT the rest.
+ */
+export function buildEgressRules(clusterCidrs: string[], serviceCidrs: string[], v6: boolean): string[][] {
+  const family = (cidr: string) => isV6(cidr) === v6;
+  const cidrs = [
+    ...clusterCidrs.filter(family),
+    ...serviceCidrs.filter(family),
+    ...(v6 ? NON_INTERNET_CIDRS.v6 : NON_INTERNET_CIDRS.v4),
+  ];
+  return [
+    ["-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN"],
+    ...cidrs.map((cidr) => ["-d", cidr, "-j", "RETURN"]),
+    ["-j", "ACCEPT"],
+  ];
+}
+
+/**
+ * HOST_CHAIN contents. Replies to connections the host opened pass; anything
+ * else goes through OUT_CHAIN, where a tenant pod's block ends in ACCEPT
+ * (DNS, services DNATed to a host-network pod here) or DROP. Other sources
+ * fall through back to INPUT.
+ */
+export const HOST_RULES: string[][] = [
+  ["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"],
+  ["-j", OUT_CHAIN],
+];
 
 /** Build one IP family's rules for a namespace's pods on this node. */
 export function buildNamespaceRules(
