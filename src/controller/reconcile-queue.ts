@@ -9,7 +9,7 @@
 
 /** Payload for a queued flake reconcile. */
 export interface ReconcileJob {
-  /** Startup reconcile: prefetch first and hand fetch failures to retryFetch. */
+  /** Startup reconcile: prefetch first and hand fetch failures to the fetch retrier. */
   startup: boolean;
   /** Pass --refresh to nix (webhook-style trigger: the flake may have changed). */
   refresh: boolean;

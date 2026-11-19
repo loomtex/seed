@@ -30,6 +30,7 @@ import { shimTpmModeFor, type ShimTpmRenderContext } from "../shared/tpm.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
+import { FetchRetrier } from "./fetch-retry.js";
 import { ReconcileQueue, parseConcurrency, type ReconcileJob } from "./reconcile-queue.js";
 
 const execFileAsync = promisify(execFile);
@@ -160,8 +161,10 @@ async function getFlakeRevision(flakePath: string): Promise<string | null> {
  * source is unreachable — a broken flake.nix still prefetches fine, so this
  * separates fetch failures (worth retrying) from build failures (wait for a push).
  */
-async function prefetchFlake(flakePath: string): Promise<void> {
-  await execFileAsync("nix", ["flake", "prefetch", flakePath, "--json"], { timeout: 120_000 });
+async function prefetchFlake(flakePath: string, refresh = false): Promise<void> {
+  const args = ["flake", "prefetch", flakePath, "--json"];
+  if (refresh) args.push("--refresh");
+  await execFileAsync("nix", args, { timeout: 120_000 });
 }
 
 // --- Authorized keys extraction ---
@@ -1888,16 +1891,35 @@ async function main(): Promise<void> {
   }
   await refreshKeyIndex();
 
+  // Retry a flake whose source couldn't be fetched (silo not up yet on a cold
+  // start, or restarting when a webhook lands) until the fetch works, then
+  // queue it like a webhook. Build failures are deliberately not retried —
+  // they wait for the next push.
+  const fetchRetrier = new FetchRetrier({
+    probe: (flakePath) => prefetchFlake(flakePath, true),
+    onReachable: triggerReconcile,
+    log: (flakePath, msg) => log("controller", msg, flakePath),
+  });
+
   // A reconcile that failed on API errors outlasting withApiRetry (not a build
   // failure) is re-queued with backoff until it gets through, so a flaky API
-  // can't leave a flake half-applied until the next push.
+  // can't leave a flake half-applied until the next push. Any other failure is
+  // either an unreachable source (handed to fetchRetrier) or a broken flake;
+  // the reconcile's nix error doesn't say which, so probe the source again.
   const apiRetryDelay = new Map<string, number>();
-  function handleReconcileResult(flakePath: string, err?: unknown): void {
+  async function handleReconcileResult(flakePath: string, err?: unknown): Promise<void> {
     if (err === undefined) {
       apiRetryDelay.delete(flakePath);
       return;
     }
     if (!(err instanceof TransientApiError)) {
+      try {
+        await prefetchFlake(flakePath, true);
+      } catch (fetchErr) {
+        log("controller", `reconciliation failed and the flake source is unreachable: ${fetchErr}`, flakePath);
+        fetchRetrier.start(flakePath);
+        return;
+      }
       log("controller", `reconciliation failed (will retry on next webhook): ${err}`, flakePath);
       return;
     }
@@ -1905,23 +1927,6 @@ async function main(): Promise<void> {
     apiRetryDelay.set(flakePath, Math.min(delay * 2, 600_000));
     log("controller", `reconciliation hit API errors, retrying in ${delay / 1000}s: ${err}`, flakePath);
     setTimeout(() => triggerReconcile(flakePath), delay).unref();
-  }
-
-  // Retry a flake whose source couldn't be fetched (e.g. silo not up yet on a
-  // cold start) until the fetch works, then queue it like a webhook. Build
-  // failures are deliberately not retried — they wait for the next push.
-  function retryFetch(flakePath: string, delay: number): void {
-    setTimeout(async () => {
-      try {
-        await prefetchFlake(flakePath);
-        log("controller", "flake source reachable, queueing reconciliation", flakePath);
-        triggerReconcile(flakePath);
-      } catch (err) {
-        const next = Math.min(delay * 2, 600_000);
-        log("controller", `flake fetch failed, retrying in ${next / 1000}s: ${err}`, flakePath);
-        retryFetch(flakePath, next);
-      }
-    }, delay);
   }
 
   // Key index rebuilds after webhook-triggered reconciles (keys may have
@@ -1965,12 +1970,12 @@ async function main(): Promise<void> {
       }
       if (job.startup) {
         // A fetch failure at boot (e.g. silo not up yet) is retried until the
-        // source is reachable; retryFetch then queues a normal trigger.
+        // source is reachable; fetchRetrier then queues a normal trigger.
         try {
           await prefetchFlake(flakePath);
         } catch (err) {
-          log("controller", `flake fetch failed, retrying in 30s: ${err}`, flakePath);
-          retryFetch(flakePath, 30_000);
+          log("controller", `flake fetch failed: ${err}`, flakePath);
+          fetchRetrier.start(flakePath);
           return;
         }
       } else {
@@ -1978,9 +1983,9 @@ async function main(): Promise<void> {
       }
       try {
         await reconcile(flakePath, fs.namespace, job.refresh);
-        handleReconcileResult(flakePath);
+        await handleReconcileResult(flakePath);
       } catch (err) {
-        handleReconcileResult(flakePath, err);
+        await handleReconcileResult(flakePath, err);
       }
     } finally {
       if (job.refresh) scheduleKeyIndexRebuild();
