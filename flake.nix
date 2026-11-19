@@ -2,7 +2,11 @@
   description = "The Vercel for Nix derivations — VM-isolated compute on k3s + Kata Containers";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
+    # The 25.11 revision ATL1 ran before the 26.05 move. Ceph and the VM
+    # stack (kata, cloud-hypervisor, guest kernel, swtpm) stay on it until
+    # they get their own upgrades; see `pinned` in overlays.default.
+    nixpkgs-25-11.url = "github:nixos/nixpkgs/0c88e1f2bdb93d5999019e99cb0e61e1fe2af4c5";
     nix-snapshotter = {
       url = "github:joshperry/nix-snapshotter/k3s-1.34-support";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -13,7 +17,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, nix-snapshotter, sops-nix, ... }:
+  outputs = { self, nixpkgs, nixpkgs-25-11, nix-snapshotter, sops-nix, ... }:
   let
     system = "x86_64-linux";
     pkgs = import nixpkgs {
@@ -29,11 +33,26 @@
     mkSeed = import ./lib/mkSeed.nix { inherit mkInstance mkImage; };
   in {
     # Overlay: patch kata-runtime for nix-snapshotter + CLH paths + TPM kernel
-    overlays.default = final: prev: {
+    overlays.default = final: prev:
+    let
+      pinned = import nixpkgs-25-11 {
+        system = final.stdenv.hostPlatform.system;
+        overlays = [ nix-snapshotter.overlays.default ];
+      };
+    in {
+      # Held on nixos-25.11 (see the nixpkgs-25-11 input). Ceph 19 -> 20 is a
+      # major cluster upgrade, the kata patches don't apply to 3.29 yet, and
+      # nix-snapshotter's k3s overlay has no vendorHash for 26.05's 1.34.11.
+      k3s = pinned.k3s;
+      ceph = pinned.ceph;
+      ceph-client = pinned.ceph-client;
+      ceph-csi = pinned.ceph-csi;
+      cloud-hypervisor = pinned.cloud-hypervisor;
+
       # Custom guest kernel: kata's minimal config + TPM 2.0 CRB support
       # Upstream kata-images ships without CONFIG_TCG_TPM — we rebuild
       # the guest vmlinux from the same config with TPM options enabled.
-      kata-guest-kernel-tpm = final.stdenv.mkDerivation {
+      kata-guest-kernel-tpm = pinned.stdenv.mkDerivation {
         pname = "kata-guest-kernel-tpm";
         version = "6.12.22";
 
@@ -42,7 +61,7 @@
           hash = "sha256-q0iACrSZhaeNIxiuisXyj9PhI+oXNX7yFJgQWlMzczY=";
         };
 
-        nativeBuildInputs = with final; [
+        nativeBuildInputs = with pinned; [
           flex bison bc perl openssl elfutils
         ];
 
@@ -50,7 +69,7 @@
           runHook preConfigure
 
           # Start from kata's minimal guest kernel config
-          cp ${prev.kata-runtime.passthru.kata-images}/share/kata-containers/config-6.12.22-151 .config
+          cp ${pinned.kata-runtime.passthru.kata-images}/share/kata-containers/config-6.12.22-151 .config
           chmod +w .config
 
           # Enable TPM 2.0 support (CRB interface for CLH/swtpm)
@@ -141,7 +160,7 @@
       # IMPORTANT: This is a separate package, NOT an override of pkgs.swtpm.
       # Overriding swtpm globally would cascade: tpm2-tss (test dep on swtpm)
       # → systemd → zfs → ceph → everything, rebuilding the entire closure.
-      swtpm-seed = prev.swtpm.overrideAttrs (old: {
+      swtpm-seed = pinned.swtpm.overrideAttrs (old: {
         pname = "swtpm-seed";
         patches = (old.patches or []) ++ [
           ./patches/swtpm-seed-backend.patch
@@ -151,7 +170,7 @@
       # Zitadel v4 — nixpkgs is stuck on v2.71.7
       zitadel = final.callPackage ./pkgs/zitadel/package.nix {};
 
-      kata-runtime = prev.kata-runtime.overrideAttrs (old: {
+      kata-runtime = pinned.kata-runtime.overrideAttrs (old: {
         # Patch kata shim to support multi-mount rootfs from snapshotters
         # like nix-snapshotter that return overlay + bind mounts:
         # 1. Populate rootFs metadata from first mount even with multiple mounts
