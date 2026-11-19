@@ -3,10 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
-    # The 25.11 revision ATL1 ran before the 26.05 move. k3s stays on it
-    # until nix-snapshotter's overlay has a 1.34.11 vendorHash; see `pinned`
-    # in overlays.default.
-    nixpkgs-25-11.url = "github:nixos/nixpkgs/0c88e1f2bdb93d5999019e99cb0e61e1fe2af4c5";
     nix-snapshotter = {
       url = "github:joshperry/nix-snapshotter/k3s-1.34-support";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -17,7 +13,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, nixpkgs-25-11, nix-snapshotter, sops-nix, ... }:
+  outputs = { self, nixpkgs, nix-snapshotter, sops-nix, ... }:
   let
     system = "x86_64-linux";
     pkgs = import nixpkgs {
@@ -33,17 +29,7 @@
     mkSeed = import ./lib/mkSeed.nix { inherit mkInstance mkImage; };
   in {
     # Overlay: patch kata-runtime for nix-snapshotter + CLH paths + TPM kernel
-    overlays.default = final: prev:
-    let
-      pinned = import nixpkgs-25-11 {
-        system = final.stdenv.hostPlatform.system;
-        overlays = [ nix-snapshotter.overlays.default ];
-      };
-    in {
-      # Held on nixos-25.11 (see the nixpkgs-25-11 input): nix-snapshotter's
-      # k3s overlay has no vendorHash for 26.05's 1.34.11.
-      k3s = pinned.k3s;
-
+    overlays.default = final: prev: {
       # Custom guest kernel: kata's minimal config + TPM 2.0 CRB support
       # Upstream kata-images ships without CONFIG_TCG_TPM — we rebuild
       # the guest vmlinux from the same config with TPM options enabled.

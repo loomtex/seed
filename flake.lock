@@ -68,11 +68,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1774913541,
-        "narHash": "sha256-dJQ46q4ce7FAbzCNI0fXfn7EcUAYJJWHiMX2ZUm3lZ4=",
+        "lastModified": 1795118363,
+        "narHash": "sha256-0dlvDmRmh+y5B3HyUmtGz/z9uWp46Kul5vMfI5MJdzQ=",
         "owner": "joshperry",
         "repo": "nix-snapshotter",
-        "rev": "eb3a87074f26ef2c4be372807ccdb6f366641993",
+        "rev": "efde98548e78ed69700d38cc7aff6e6cad4b923c",
         "type": "github"
       },
       "original": {
@@ -98,27 +98,10 @@
         "type": "github"
       }
     },
-    "nixpkgs-25-11": {
-      "locked": {
-        "lastModified": 1778003029,
-        "narHash": "sha256-q/nkKLDtHIyLjZpKhWk3cSK5IYsFqtMd6UtXF3ddjgA=",
-        "owner": "nixos",
-        "repo": "nixpkgs",
-        "rev": "0c88e1f2bdb93d5999019e99cb0e61e1fe2af4c5",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nixos",
-        "repo": "nixpkgs",
-        "rev": "0c88e1f2bdb93d5999019e99cb0e61e1fe2af4c5",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
         "nix-snapshotter": "nix-snapshotter",
         "nixpkgs": "nixpkgs",
-        "nixpkgs-25-11": "nixpkgs-25-11",
         "sops-nix": "sops-nix"
       }
     },
