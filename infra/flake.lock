@@ -153,16 +153,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1795119337,
-        "narHash": "sha256-i87ZRLCpZ35NmY8fJ3VzXrJ42f+Ve/azjBDljxaEdL8=",
+        "lastModified": 1795149671,
+        "narHash": "sha256-neirXcEFYorSVr43b1uWsjjZ/9YJFcHDWYObvRG3cl0=",
         "owner": "joshperry",
         "repo": "nix-snapshotter",
-        "rev": "69d112874dc74797bf86d3b121513b8c6507b6bf",
+        "rev": "059c931452362291f543b1e79be2c9cb319cf76d",
         "type": "github"
       },
       "original": {
         "owner": "joshperry",
-        "ref": "k3s-1.34-support",
+        "ref": "k3s-1.35-support",
         "repo": "nix-snapshotter",
         "type": "github"
       }

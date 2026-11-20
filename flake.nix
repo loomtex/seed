@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     nix-snapshotter = {
-      url = "github:joshperry/nix-snapshotter/k3s-1.34-support";
+      url = "github:joshperry/nix-snapshotter/k3s-1.35-support";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     sops-nix = {
